@@ -64,14 +64,15 @@ export struct ControlColorPicker {
     Column({space:4}) {
       Row({space:4}) {
         Text(this.title).fontSize(11).fontColor(this.palette.muted).layoutWeight(1)
-        Button('默认').type(ButtonType.Normal).borderRadius(6).height(28).fontSize(11).backgroundColor(Color.Transparent).fontColor(this.palette.accent).onClick(()=>this.choose_('#FFFFFF'))
-        Button('收起').type(ButtonType.Normal).borderRadius(6).height(28).fontSize(11).backgroundColor(Color.Transparent).fontColor(this.palette.muted).onClick(()=>this.onClose())
+        Button('默认').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette.accent).onClick(()=>this.choose_('#FFFFFF'))
+        Button('收起').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette.muted).onClick(()=>this.onClose())
       }.width('100%')
       Stack({alignContent:Alignment.TopStart}) {
         Column().width('100%').height('100%').backgroundColor(controlRgbHex(controlHsvToRgb(this.hue,1,1)))
         Column().width('100%').height('100%').linearGradient({direction:GradientDirection.Right,colors:[['#FFFFFFFF',0],['#00FFFFFF',1]]})
         Column().width('100%').height('100%').linearGradient({direction:GradientDirection.Bottom,colors:[['#00000000',0],['#FF000000',1]]})
-        Circle().width(10).height(10).fill(Color.Transparent).stroke('#FFFFFF').strokeWidth(2)
+        // 选中点只需一个透明圆环；基础边框在所有受支持系统版本上都可绘制。
+        Row().width(10).height(10).borderRadius(5).border({width:2,color:'#FFFFFF'})
           .position({x:Math.max(0,Math.min(this.squareWidth-10,this.saturation*this.squareWidth-5)),y:Math.max(0,Math.min(66,(1-this.hsvValue)*76-5))})
           .hitTestBehavior(HitTestMode.None)
       }.height(76).width('100%').clip(true).borderRadius(5)
@@ -79,24 +80,24 @@ export struct ControlColorPicker {
         .onTouch((event: TouchEvent): void=>this.touch_(event))
         .priorityGesture(PanGesture({fingers:1,distance:0}).onActionUpdate(()=>{}))
         .accessibilityText('颜色饱和度和明度；也可使用下方颜色值输入')
-      Slider({value:this.hue,min:0,max:359,step:1}).height(24).width('100%')
+      Slider({value:this.hue,min:0,max:359,step:1}).height(44).width('100%')
         .selectedColor(this.palette.accentFill).onChange((value: number,mode: SliderChangeMode): void=>{
           if(mode===SliderChangeMode.Begin)this.tracking=true
           if(mode!==SliderChangeMode.Begin&&mode!==SliderChangeMode.Click&&!this.tracking)return
           this.hue=value;this.emit_(mode)
           if(mode===SliderChangeMode.End||mode===SliderChangeMode.Click)this.tracking=false
         })
-      Row({space:4}) {
+      Flex({wrap:FlexWrap.Wrap,justifyContent:FlexAlign.Start}) {
         ForEach(this.presets,(rgb: string)=>{
-          // 八个色块均分面板净宽；系统Button最小宽度与默认内边距会把末项挤出窄面板。
-          Button().type(ButtonType.Normal).borderRadius(6).height(26).layoutWeight(1).constraintSize({minWidth:0}).padding(0).borderRadius(4).backgroundColor(rgb)
+          // 固定44vp触区后按浮窗实宽折行，保留原八种颜色顺序。
+          Button().type(ButtonType.Normal).width(44).height(44).margin({right:4,bottom:4}).padding(0).borderRadius(8).backgroundColor(rgb)
             .accessibilityText('颜色 '+rgb).onClick(()=>this.choose_(rgb))
         },(rgb: string): string=>rgb)
       }.width('100%')
       Row({space:6}) {
-        TextInput({text:this.hex,placeholder:'#RRGGBB'}).height(32).layoutWeight(1).fontSize(12)
+        TextInput({text:this.hex,placeholder:'#RRGGBB'}).height(44).layoutWeight(1).fontSize(12)
           .fontColor(this.palette.text).backgroundColor(this.palette.surface).maxLength(7).onChange((value: string): void=>{this.hex=value})
-        Button('应用').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(12).fontColor(this.palette.accent).backgroundColor(this.palette.surfaceActive).onClick(()=>this.applyHex_())
+        Button('应用').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).fontColor(this.palette.accent).backgroundColor(this.palette.surfaceActive).onClick(()=>this.applyHex_())
       }.width('100%')
       if(this.message.length>0){Text(this.message).fontSize(11).fontColor(this.palette.warning)}
     }.width('100%').padding(8).backgroundColor(this.palette.surface).borderRadius(6)

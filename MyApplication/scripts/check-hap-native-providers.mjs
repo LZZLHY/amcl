@@ -8,17 +8,28 @@ import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
 import {resolve,join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readUniqueZipEntry} from './zip-entry-buffer.mjs';
+import {resolveBundleFileLock} from './lib/sdl3-artifact-lock.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const PROVIDERS=[
   ['libglfw.so','cmake'],['libopenal.so','cmake'],['libamcl_vulkan_wsi.so','cmake'],
   ['libamcl_game_dialog.so','cmake'],
-  ['libSDL3.so','prebuilt'],['libfreetype.so','prebuilt'],['libshaderc.so','prebuilt'],['libspirv-cross.so','prebuilt'],
+  ['libamcl_lwjgl_jemalloc.so','prebuilt'],['libSDL3.so','prebuilt'],['libfreetype.so','prebuilt'],['libshaderc.so','prebuilt'],['libspirv-cross.so','prebuilt'],
   // zstd JNI沿同一source→stage→strip→HAP字节链审核，身份来自独立版本/绑定锁。
   ['libamcl_zstdjni_std.so','zstd-prebuilt'],['libamcl_zstdjni_dh.so','zstd-prebuilt']
 ];
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const requireCondition=(yes,message)=>{if(!yes)throw Error(message);};
+
+export function lockedBundleProvider(root, modules, artifact) {
+  const matches = modules.filter(({native}) =>
+    native?.kind === 'bundle-file' && native.artifact === 'entry/libs/arm64-v8a/' + artifact);
+  requireCondition(matches.length === 1, `${artifact}: unique locked provider required`);
+  const lock = resolveBundleFileLock(root, matches[0].name, matches[0].native);
+  requireCondition(/^[0-9a-f]{64}$/.test(lock.sha256), `${artifact}: locked source SHA-256 required`);
+  requireCondition(Number.isSafeInteger(lock.size) && lock.size > 0, `${artifact}: locked source size required`);
+  return lock;
+}
 
 /**
  * strip允许移除调试/符号等非装载节，不允许改变任何SHF_ALLOC节的类型、地址、大小、
@@ -51,10 +62,13 @@ export function allocatedElfIdentity(bytes){
 }
 
 /** 真实字节四段核对的纯核心，允许测试提供独立负控，不调用外部工具或信任文件mtime。 */
-export function verifyProviderBytes({artifact,origin,staged,stripped,embedded,expectedSourceSha256}){
+export function verifyProviderBytes({artifact,origin,staged,stripped,embedded,expectedSourceSha256,expectedSourceSize,expectedHap}){
+  if(expectedSourceSize!==undefined)requireCondition(origin.length===expectedSourceSize,`${artifact}: locked prebuilt source size mismatch`);
   if(expectedSourceSha256)requireCondition(hash(origin)===expectedSourceSha256,`${artifact}: locked prebuilt source mismatch`);
   requireCondition(origin.equals(staged),`${artifact}: origin/staged bytes differ`);
   requireCondition(stripped.equals(embedded),`${artifact}: stripped/HAP bytes differ`);
+  if(expectedHap)requireCondition(embedded.length===expectedHap.size && hash(embedded)===expectedHap.sha256,
+    `${artifact}: locked HAP entry mismatch`);
   const before=allocatedElfIdentity(origin),after=allocatedElfIdentity(stripped);
   requireCondition(JSON.stringify(before)===JSON.stringify(after),`${artifact}: SDK strip changed allocated ELF content`);
   return {artifact,originSha256:hash(origin),stagedSha256:hash(staged),strippedSha256:hash(stripped),hapEntrySha256:hash(embedded),sizeBytes:embedded.length,allocatedImageSha256:hash(Buffer.from(JSON.stringify(after)))};
@@ -82,11 +96,12 @@ export function checkHapNativeProviders({root=ROOT,product,mode,hapPath}){
     const source=kind==='cmake'?resolve(base,'intermediates/cmake',product,'obj/arm64-v8a',artifact):resolve(root,'entry/libs/arm64-v8a',artifact);
     const staged=resolve(base,'intermediates/libs',product,'arm64-v8a',artifact);
     const stripped=resolve(base,'intermediates/stripped_native_libs',product,'arm64-v8a',artifact);
-    let expectedSourceSha256;
+    let expectedSourceSha256,expectedSourceSize,expectedHap;
     if(kind==='prebuilt'){
-      const matches=policy.modules.filter(x=>x.native?.kind==='bundle-file'&&x.native.artifact==='entry/libs/arm64-v8a/'+artifact);
-      requireCondition(matches.length===1&&/^[0-9a-f]{64}$/.test(matches[0].native.sha256),`${artifact}: unique locked provider required`);
-      expectedSourceSha256=matches[0].native.sha256;
+      const lock=lockedBundleProvider(root,policy.modules,artifact);
+      expectedSourceSha256=lock.sha256;
+      expectedSourceSize=lock.size;
+      expectedHap=lock.hap;
     }
     if(kind==='zstd-prebuilt'){
       const lock=JSON.parse(readFileSync(resolve(root,'prebuilt/mod-natives/zstd-jni/artifacts.json'),'utf8'));
@@ -94,7 +109,7 @@ export function checkHapNativeProviders({root=ROOT,product,mode,hapPath}){
       requireCondition(matches.length===1&&/^[0-9a-f]{64}$/.test(matches[0].sha256),`${artifact}: unique zstd provider required`);
       expectedSourceSha256=matches[0].sha256;
     }
-    providers.push({...verifyProviderBytes({artifact,origin:readFileSync(source),staged:readFileSync(staged),stripped:readFileSync(stripped),embedded:readUniqueZipEntry(bytes,'libs/arm64-v8a/'+artifact),expectedSourceSha256}),kind,source,staged,stripped});
+    providers.push({...verifyProviderBytes({artifact,origin:readFileSync(source),staged:readFileSync(staged),stripped:readFileSync(stripped),embedded:readUniqueZipEntry(bytes,'libs/arm64-v8a/'+artifact),expectedSourceSha256,expectedSourceSize,expectedHap}),kind,source,staged,stripped});
   }
   return {schema:'amcl-hap-external-providers/v1',at:new Date().toISOString(),product,mode,abi:'arm64-v8a',sourceRevision:profile.sourceRevision,hap,hapSha256:hash(bytes),providers,scope:'external provider byte delivery and strip invariance; existing module-coverage gate separately verifies actual exports; no device qualification'};
 }

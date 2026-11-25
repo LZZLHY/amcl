@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <memory>
+#include <new>
 
 #include <cerrno>
 #include <cstring>
@@ -28,6 +30,7 @@
 #include "../jvm/jvm_launcher.h"
 #include "../jvm/game_process_exit.h"
 #include "../platform/graphics_observation_abi.h"
+#include "../platform/game_storage_access.h"
 #include "../platform/runtime_slot_store.h"
 #include "../platform/xcomponent.h"
 
@@ -173,12 +176,13 @@ napi_value McLaunchWithProfileV2(napi_env env, napi_callback_info info) {
     // V2与兼容入口共用同一TestHooks进程边界，不能靠另一个参数协议绕过重启要求。
     if (amcl::napi::RejectGraphicsSemanticsJvmStart(env)) return nullptr;
     mcClearGraphicsLaunchFailure();
-    size_t argc = 8;
-    napi_value argv[8];
+    size_t argc = 9;
+    napi_value argv[9];
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
 
     std::string filesDir, gameDir, jdkVer, mainClass, classpath;
     int32_t xmx = 0;
+    bool returnToLauncherOnExit = false;
     std::vector<std::string> mcArgs;
     std::vector<std::string> extraJvmArgs;
 
@@ -199,6 +203,10 @@ napi_value McLaunchWithProfileV2(napi_env env, napi_callback_info info) {
     }
     if (argc >= 8 && !amcl::napi::ReadStringArrayValue(env, argv[7], extraJvmArgs)) {
         OH_LOG_ERROR(LOG_APP, "McLaunchWithProfileV2: extraJvmArgs must be string[]");
+        return amcl::napi::MakeIntResult(env, -1);
+    }
+    if (argc >= 9 && napi_get_value_bool(env, argv[8], &returnToLauncherOnExit) != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "McLaunchWithProfileV2: returnToLauncherOnExit must be boolean");
         return amcl::napi::MakeIntResult(env, -1);
     }
 
@@ -224,7 +232,8 @@ napi_value McLaunchWithProfileV2(napi_env env, napi_callback_info info) {
         (int)mcArgv.size(),
         mcArgv.empty() ? nullptr : mcArgv.data(),
         (int)extraArgv.size(),
-        extraArgv.empty() ? nullptr : extraArgv.data()
+        extraArgv.empty() ? nullptr : extraArgv.data(),
+        returnToLauncherOnExit ? 1 : 0
     );
     return amcl::napi::MakeIntResult(env, rc);
 }
@@ -315,6 +324,59 @@ napi_value McForceExit(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// 仅用于手机同进程正常返回；系统接受重启后不释放原生等待。
+napi_value McLauncherRestartPending(napi_env env, napi_callback_info) {
+    return amcl::napi::MakeBoolResult(env, amclPhoneRestartPending());
+}
+struct LauncherRestartWork {
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+    bool ready = false;
+};
+
+/** 收尾可能等待活动 writer 或持久 I/O。工作线程封口后，UI 收到前重新确认原生等待仍有效。 */
+napi_value McPrepareLauncherRestart(napi_env env, napi_callback_info) {
+    std::unique_ptr<LauncherRestartWork> task(new (std::nothrow) LauncherRestartWork);
+    if (!task) {
+        (void)napi_throw_error(env, nullptr, "游戏正常退出收尾分配失败");
+        return nullptr;
+    }
+    napi_value promise = nullptr;
+    if (napi_create_promise(env, &task->deferred, &promise) != napi_ok) {
+        (void)napi_throw_error(env, nullptr, "游戏正常退出收尾无法创建凭据");
+        return nullptr;
+    }
+    napi_value resource = nullptr;
+    napi_status status = napi_create_string_utf8(env, "mcPrepareLauncherRestart", NAPI_AUTO_LENGTH, &resource);
+    if (status == napi_ok) {
+        status = napi_create_async_work(env, nullptr, resource,
+            [](napi_env, void* data) {
+                auto& work = *static_cast<LauncherRestartWork*>(data);
+                try { work.ready = mcPrepareLauncherRestart() != 0; }
+                catch (...) { work.ready = false; }
+            },
+            [](napi_env completeEnv, napi_status completed, void* data) {
+                std::unique_ptr<LauncherRestartWork> work(static_cast<LauncherRestartWork*>(data));
+                if (!completeEnv) return;
+                const bool ready = completed == napi_ok && work->ready && amclPhoneRestartPending();
+                (void)napi_resolve_deferred(completeEnv, work->deferred, amcl::napi::MakeBoolResult(completeEnv, ready));
+                (void)napi_delete_async_work(completeEnv, work->work);
+            }, task.get(), &task->work);
+    }
+    if (status == napi_ok) status = napi_queue_async_work(env, task->work);
+    if (status != napi_ok) {
+        if (task->work) (void)napi_delete_async_work(env, task->work);
+        (void)napi_resolve_deferred(env, task->deferred, amcl::napi::MakeBoolResult(env, false));
+    } else {
+        (void)task.release();
+    }
+    return promise;
+}
+napi_value McDeclineLauncherRestart(napi_env env, napi_callback_info) {
+    (void)amclPhoneRestartDecline();
+    return amcl::napi::MakeUndefined(env);
+}
+
 napi_value McReadLog(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2];
@@ -334,6 +396,16 @@ napi_value McGetDeviceMemoryMB(napi_env env, napi_callback_info info) {
 
 napi_value McGetRecommendedXmx(napi_env env, napi_callback_info info) {
     return amcl::napi::MakeIntResult(env, mcGetRecommendedXmx());
+}
+
+// 正式存储选择只接收布尔资格；所有产品都可用，无需调试探针或 JVM。
+napi_value VerifyGameDirectoryWritable(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value arg = nullptr;
+    std::string directory;
+    const bool ready = napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) == napi_ok && argc == 1 &&
+        amcl::napi::ReadStringValue(env, arg, directory) && amcl::storage::VerifyGameDirectoryWritable(directory);
+    return amcl::napi::MakeBoolResult(env, ready);
 }
 
 // --- 沙箱外存储可行性探针（Phase 0）---
@@ -437,9 +509,13 @@ constexpr napi_property_descriptor kMcDescriptors[] = {
     NAPI_FUNC("mcCheckFiles",          McCheckFiles),
     NAPI_FUNC("mcIsRunning",           McIsRunning),
     NAPI_FUNC("mcForceExit",           McForceExit),
+    NAPI_FUNC("mcLauncherRestartPending", McLauncherRestartPending),
+    NAPI_FUNC("mcPrepareLauncherRestart", McPrepareLauncherRestart),
+    NAPI_FUNC("mcDeclineLauncherRestart", McDeclineLauncherRestart),
     NAPI_FUNC("mcReadLog",             McReadLog),
     NAPI_FUNC("getDeviceMemoryMB",     McGetDeviceMemoryMB),
     NAPI_FUNC("getRecommendedXmx",     McGetRecommendedXmx),
+    NAPI_FUNC("verifyGameDirectoryWritable", VerifyGameDirectoryWritable),
 #ifdef MC_OHOS_BUILD_TESTS
     NAPI_FUNC("probeNativePath",       ProbeNativePath),
 #endif

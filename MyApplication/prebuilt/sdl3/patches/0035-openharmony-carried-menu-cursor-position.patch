@@ -1,0 +1,449 @@
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -113,6 +113,8 @@
+ #define AMCL_EVENT_MENU_POINTER 1008
+ #define AMCL_EVENT_INPUT_RESET  1009
+ #define AMCL_EVENT_CURSOR_POSITION 1010
++#define AMCL_EVENT_CARRIED_WARP 1018
++#define AMCL_EVENT_CARRIED_MOTION 1019
+ #define AMCL_MENU_POINTER_MOVE   0
+ #define AMCL_MENU_POINTER_DOWN   1
+ #define AMCL_MENU_POINTER_UP     2
+@@ -490,13 +492,18 @@
+     int (*TypedNextThrough)(Uint32, AMCL_BackendInputEvent *, Uint64);
+     Uint64 (*LegacyPeekOrder)(void);
+     int (*LegacyNextThrough)(int *, int *, int *, int *, int *, Uint64);
++    Uint64 (*MenuWarp)(Uint32, Uint64, double, double);
+     Uint64 pump_order_limit;
+     int pump_budget;
+     bool pump_did_read;
++    Uint64 pending_menu_warp_order;
++    SDL_WindowID pending_menu_warp_target;
+     /* 私有touch尾协议：输入发布代次与真实图形呈现代次分别交给同一neutral owner。 */
+     void (*SetInputTarget)(Uint64, Uint64, Uint64);
+     void (*NotifyFramePresentedForTarget)(Uint64, Uint64);
+ } OPENHARMONY_HostBridge;
++typedef Uint64 (*OPENHARMONY_MenuWarpRequest)(Uint32, Uint64, double, double);
++static OPENHARMONY_MenuWarpRequest OPENHARMONY_GetMenuWarpRequest(OPENHARMONY_HostBridge *bridge);
+ 
+ // Give up looking for the host after this many pumps. The bridge normally
+ // resolves on the first try, but library load order is not ours to control:
+@@ -678,6 +685,8 @@
+ static double host_last_y;
+ static bool host_last_grabbing;
+ static bool host_baseline_valid;
++static bool host_menu_warp_dispatching;
++static Uint64 host_menu_mode_epoch;
+ static bool host_capture_requested;
+ static bool host_capture_active;
+ /* Grabbed-motion flow evidence.  Monotonic within the process -- only a pid
+@@ -1858,6 +1867,44 @@
+ // ---------------------------------------------------------------------------
+ // Discrete events
+ // ---------------------------------------------------------------------------
++typedef struct OPENHARMONY_MenuMotion {
++    OPENHARMONY_HostBridge *bridge;
++    SDL_WindowID window;
++    Uint64 generation;
++    Uint64 mode_epoch;
++    double x, y;
++} OPENHARMONY_MenuMotion;
++
++static bool OPENHARMONY_MenuMotionCurrent(void *userdata)
++{
++    OPENHARMONY_MenuMotion *motion = userdata;
++    SDL_Window *window = OPENHARMONY_AMCL_GetLiveInputWindow(motion->window);
++    return window && window == SDL_GetMouseFocus() && window->internal &&
++        window->internal->amcl_generation == motion->generation && host_menu_mode_epoch == motion->mode_epoch &&
++        !motion->bridge->IsGrabbing();
++}
++
++static void OPENHARMONY_MenuMotionCached(void *userdata)
++{
++    OPENHARMONY_MenuMotion *motion = userdata;
++    host_last_x = motion->x;
++    host_last_y = motion->y;
++    host_baseline_valid = true;
++}
++
++static void OPENHARMONY_SendCarriedMotion(OPENHARMONY_HostBridge *bridge, SDL_Window *window,
++                                         double x, double y, bool warp)
++{
++    OPENHARMONY_MenuMotion motion = {bridge, window->id, window->internal->amcl_generation, host_menu_mode_epoch, x, y};
++    SDL_AMCL_InputReceipt receipt = {&motion, OPENHARMONY_MenuMotionCurrent, OPENHARMONY_MenuMotionCached, window->id};
++    if (!OPENHARMONY_MenuMotionCurrent(&motion)) return;
++    if (warp) SDL_GetMouse()->has_position = false;
++    receipt.carriedMenuMotion = true;
++    host_menu_warp_dispatching = warp;
++    SDL_SendMouseMotionWithReceipt(0, window, SDL_DEFAULT_MOUSE_ID, false, (float)x, (float)y, &receipt);
++    host_menu_warp_dispatching = false;
++}
++
+ static void OPENHARMONY_PumpHostEvents(OPENHARMONY_HostBridge *bridge)
+ {
+     if (!bridge || !bridge->NextEvent) {
+@@ -1894,14 +1941,19 @@
+             }
+             break;
+         }
++        case AMCL_EVENT_CARRIED_WARP:
++        case AMCL_EVENT_CARRIED_MOTION:
+         case AMCL_EVENT_CURSOR_POSITION: {
+-            // 记录内保留当时坐标，不读取生产者已推进到的未来位置。按位解码无精度损失。
+             const int words[4] = {i1, i2, i3, i4};
+             double x = 0.0, y = 0.0;
+             SDL_memcpy(&x, words, sizeof(x));
+             SDL_memcpy(&y, words + 2, sizeof(y));
+-            if (isfinite(x) && isfinite(y) && !bridge->IsGrabbing())
++            if (!isfinite(x) || !isfinite(y) || bridge->IsGrabbing()) break;
++            if (type == AMCL_EVENT_CURSOR_POSITION) {
+                 SDL_SendMouseMotion(0, input_window, SDL_DEFAULT_MOUSE_ID, false, (float)x, (float)y);
++            } else {
++                OPENHARMONY_SendCarriedMotion(bridge, input_window, x, y, type == AMCL_EVENT_CARRIED_WARP);
++            }
+             break;
+         }
+         case AMCL_EVENT_KEY: {
+@@ -2405,11 +2457,25 @@
+                                          SDL_WindowID presented_id)
+ {
+     /* 不准备/错误owner都不能提前领取源事件；真实线程与目标先取得统一consumer。 */
+-    if (host_control_dispatch_depth || !OPENHARMONY_ControlReady(presented_id)) return;
++    if (bridge->pump_budget || host_control_dispatch_depth || !OPENHARMONY_ControlReady(presented_id)) return;
+     const bool typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
+-        const Uint64 fence = bridge->InteractionFence();
++        const Uint64 frame_fence = bridge->InteractionFence();
++        bool finish_request = bridge->pump_order_limit != UINT64_MAX;
++        Uint64 fence = SDL_min(frame_fence, bridge->pump_order_limit);
++        unsigned followups = 0;
+         bridge->pump_budget = 1;
+-        for (int budget = 0; budget < AMCL_PUMP_BUDGET; ++budget) {
++        /* 显式设位只处理其有限序号前缀；日常轮询保持原预算。 */
++        for (unsigned budget = 0; finish_request || budget < AMCL_PUMP_BUDGET || bridge->pending_menu_warp_order; ++budget) {
++            /* watcher返回后才扩展到其请求的有限前缀。最多8次；循环应答余下留给下一次正常pump。 */
++            if (bridge->pending_menu_warp_order) {
++                if (bridge->pending_menu_warp_target == presented_id && bridge->pending_menu_warp_order > fence &&
++                    followups < 8 && !bridge->IsGrabbing()) {
++                    fence = bridge->pending_menu_warp_order;
++                    finish_request = true;
++                    ++followups;
++                }
++                bridge->pending_menu_warp_order = 0;
++            }
+             if (!OPENHARMONY_AMCL_IsPresentedActive() ||
+                 !OPENHARMONY_AMCL_GetLiveInputWindow(presented_id)) break;
+             const Uint64 legacy_order = bridge->LegacyPeekOrder();
+@@ -2473,6 +2539,7 @@
+     OPENHARMONY_AMCL_PublishTouchInputTarget(bridge, presented);
+     bool typed_relative_owner = OPENHARMONY_GetTypedNext(bridge) != NULL;
+     if (bridge->InteractionFence) {
++        if (!bridge->MenuWarp && OPENHARMONY_ControlReady(presented_id)) (void)OPENHARMONY_GetMenuWarpRequest(bridge);
+         OPENHARMONY_PumpOrderedEvents(bridge, presented_id);
+     } else {
+         // 明确缺少扩展的旧宿主保留兼容行为；现役锁定宿主始终提供有序四槽表。
+@@ -2588,6 +2655,7 @@
+     if (!active && videodata) {
+         videodata->presented_input_active = false;
+     }
++    if (host_presented_active != active) ++host_menu_mode_epoch;
+     host_presented_active = active;
+     OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
+     if (active) {
+@@ -2817,9 +2885,84 @@
+             bridge->SetGrabState(1);
+         }
+     }
++    ++host_menu_mode_epoch;
+     // Force a re-baseline: the host switches coordinate spaces on this call.
+     host_baseline_valid = false;
+     return true;
++}
++
++
++/* 程序设位在启动后的已验证neutral映像中执行。不依赖两个加载命名空间能按名称互相dlopen。 */
++static bool OPENHARMONY_VerifyMenuAddress(uintptr_t address, const char *name)
++{
++#ifdef _WIN32
++    HMODULE module = NULL;
++    return GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++        (LPCSTR)(uintptr_t)host_look_port->verifyOwner, &module) &&
++        (uintptr_t)GetProcAddress(module, name) == address && amclControlAddressInOwner(address, (uintptr_t)module);
++#else
++    Dl_info owner = {0}, symbol = {0};
++    return dladdr((const void *)host_look_port->verifyOwner, &owner) && dladdr((const void *)address, &symbol) &&
++        owner.dli_fbase == symbol.dli_fbase && (uintptr_t)symbol.dli_saddr == address && symbol.dli_sname &&
++        SDL_strcmp(symbol.dli_sname, name) == 0 && amclControlAddressInOwner(address, (uintptr_t)owner.dli_fbase);
++#endif
++}
++
++static OPENHARMONY_MenuWarpRequest OPENHARMONY_GetMenuWarpRequest(OPENHARMONY_HostBridge *bridge)
++{
++    if (bridge->MenuWarp) return bridge->MenuWarp;
++    const char *desc = SDL_getenv_unsafe("AMCL_SDL_MENU_WARP_V1");
++    const char prefix[] = "AMCLSDLW:2:";
++    if (!desc || SDL_strncmp(desc, prefix, sizeof(prefix) - 1) != 0 ||
++        !host_look_port || !host_control_port || host_look_port->ownerHost != host_control_port->ownerHost) return NULL;
++    const char *p = desc + sizeof(prefix) - 1;
++    char *end = NULL;
++    if (*p < '0' || *p > '9' || SDL_strtoull(p, &end, 10) != (Uint64)getpid() || *end != ':') return NULL;
++    p = end + 1;
++    if (*p < '0' || *p > '9') return NULL;
++    const Uint64 request = SDL_strtoull(p, &end, 10);
++    if (!request || request >= UINTPTR_MAX || *end != ':') return NULL;
++    p = end + 1;
++    if (*p < '0' || *p > '9') return NULL;
++    const Uint64 next = SDL_strtoull(p, &end, 10);
++    if (*end || !next || next >= UINTPTR_MAX ||
++        !OPENHARMONY_VerifyMenuAddress((uintptr_t)request, "inputBridge_requestCarriedMenuWarpV1") ||
++        !OPENHARMONY_VerifyMenuAddress((uintptr_t)next, "inputBridge_sdlNextCarriedThroughV1")) return NULL;
++    bridge->LegacyNextThrough = (int (*)(int *, int *, int *, int *, int *, Uint64))(uintptr_t)next;
++    bridge->MenuWarp = (OPENHARMONY_MenuWarpRequest)(uintptr_t)request;
++    return bridge->MenuWarp;
++}
++
++static bool OPENHARMONY_TryWarpMenuCursor(SDL_Window *window, float x, float y)
++{
++    const SDL_WindowID target = window->id;
++    if (window != SDL_GetMouseFocus() || !OPENHARMONY_ControlReady(target) ||
++        window != OPENHARMONY_AMCL_GetLiveInputWindow(target) || window != SDL_GetMouseFocus()) return false;
++    if (host_menu_warp_dispatching && host_control_target == window->id && host_last_x == x && host_last_y == y) return true;
++    OPENHARMONY_HostBridge *bridge = OPENHARMONY_GetHostBridge();
++    if (!bridge || !bridge->InteractionFence || bridge->IsGrabbing()) return false;
++    OPENHARMONY_MenuWarpRequest request = OPENHARMONY_GetMenuWarpRequest(bridge);
++    const Uint64 order = request ? request(AMCL_BACKEND_ID_SDL3, window->id, x, y) : 0;
++    if (!order) return false;
++    if (bridge->pump_budget || host_control_dispatch_depth) {
++        bridge->pending_menu_warp_order = order;
++        bridge->pending_menu_warp_target = target;
++    } else {
++        /* 窗口初始化返回前交付有限前缀；回调内新请求在外层交付完成后按序消费。 */
++        bridge->pump_order_limit = order;
++        OPENHARMONY_PumpOrderedEvents(bridge, target);
++        bridge->pump_order_limit = UINT64_MAX;
++    }
++    return true;
++}
++
++static bool OPENHARMONY_WarpMenuGlobal(float x, float y)
++{
++    SDL_Window *window = SDL_GetMouseFocus();
++    int origin_x, origin_y;
++    if (window && window == OPENHARMONY_AMCL_GetInputWindow() && SDL_GetWindowPosition(window, &origin_x, &origin_y) &&
++        SDL_AMCL_TryWarpMenuCursor(window, x - (float)origin_x, y - (float)origin_y)) return true;
++    return SDL_Unsupported();
+ }
+ 
+ static bool OPENHARMONY_WarpMouse(SDL_Window *window, float x, float y)
+@@ -2872,6 +3015,21 @@
+ {
+     (void)cursor;
+     return true;  // host owns whether anything is drawn.
++}
++
++static SDL_MouseButtonFlags OPENHARMONY_GlobalMouseState(float *x, float *y)
++{
++    const SDL_MouseButtonFlags buttons = SDL_GetMouseState(x, y);
++    SDL_Window *window = SDL_GetMouseFocus();
++    int origin_x = 0;
++    int origin_y = 0;
++    /* 游戏用 global - SDL_GetWindowPosition 恢复窗口内坐标。全屏的原点也是 SDL 决定的，
++       使用同一入口避免把宿主可绘区偏移或物理/逻辑缩放再算一次。 */
++    if (window && window->internal && window->internal->role == OPENHARMONY_WINDOW_PRESENTED && (x || y) && SDL_GetWindowPosition(window, &origin_x, &origin_y)) {
++        if (x) *x += (float)origin_x;
++        if (y) *y += (float)origin_y;
++    }
++    return buttons;
+ }
+ 
+ void OPENHARMONY_AMCL_InitMouse(void)
+@@ -2904,16 +3062,15 @@
+         return;
+     }
+ 
+-#ifdef SDL_AMCL_DESKTOP_HOST
+-    if (OPENHARMONY_IsDesktopDevice()) {
+-        mouse->GetGlobalMouseState = OPENHARMONY_DesktopGlobalMouseState;
+-    }
+-#endif
++    /* 游戏用global减窗口原点恢复菜单坐标，平板/手机的非零窗口原点也只换算一次。 */
++    mouse->GetGlobalMouseState = OPENHARMONY_GlobalMouseState;
+     mouse->CreateCursor = OPENHARMONY_CreateCursor;
+     mouse->CreateSystemCursor = OPENHARMONY_CreateSystemCursor;
+     mouse->ShowCursor = OPENHARMONY_ShowCursor;
+     mouse->FreeCursor = OPENHARMONY_FreeCursor;
+     mouse->WarpMouse = OPENHARMONY_WarpMouse;
++    mouse->TryWarpMenuCursor = OPENHARMONY_TryWarpMenuCursor;
++    mouse->WarpMouseGlobal = OPENHARMONY_WarpMenuGlobal;
+     mouse->SetRelativeMouseMode = OPENHARMONY_SetRelativeMouseMode;
+ 
+     SDL_SetDefaultCursor(OPENHARMONY_CreateDefaultCursor());
+diff --git a/src/video/openharmony/SDL_amcldesktop.c b/src/video/openharmony/SDL_amcldesktop.c
+--- a/src/video/openharmony/SDL_amcldesktop.c
++++ b/src/video/openharmony/SDL_amcldesktop.c
+@@ -228,21 +228,6 @@
+     return true;
+ }
+ 
+-SDL_MouseButtonFlags OPENHARMONY_DesktopGlobalMouseState(float *x, float *y)
+-{
+-    const SDL_MouseButtonFlags buttons = SDL_GetMouseState(x, y);
+-    SDL_Window *window = SDL_GetMouseFocus();
+-    int origin_x = 0;
+-    int origin_y = 0;
+-    /* 游戏用 global - SDL_GetWindowPosition 恢复窗口内坐标。全屏的原点也是 SDL 决定的，
+-       使用同一入口避免把宿主可绘区偏移或物理/逻辑缩放再算一次。 */
+-    if (Presented(window) && (x || y) && SDL_GetWindowPosition(window, &origin_x, &origin_y)) {
+-        if (x) *x += (float)origin_x;
+-        if (y) *y += (float)origin_y;
+-    }
+-    return buttons;
+-}
+-
+ static SDL_DisplayMode DisplayMode(const AmclDesktopDisplay *info)
+ {
+     SDL_DisplayMode mode; SDL_zero(mode);
+diff --git a/src/video/openharmony/SDL_amcldesktop.h b/src/video/openharmony/SDL_amcldesktop.h
+--- a/src/video/openharmony/SDL_amcldesktop.h
++++ b/src/video/openharmony/SDL_amcldesktop.h
+@@ -11,7 +11,6 @@
+ void OPENHARMONY_DesktopQuit(void);
+ bool OPENHARMONY_DesktopFullscreen(SDL_Window *window, SDL_VideoDisplay *display,
+                                   SDL_FullscreenOp operation, SDL_FullscreenResult *result);
+-SDL_MouseButtonFlags OPENHARMONY_DesktopGlobalMouseState(float *x, float *y);
+ int OPENHARMONY_DesktopCommand(SDL_Window *window, int kind, int a, int b, int c, int d, const char *text);
+ #else
+ #define OPENHARMONY_DesktopAvailable() false
+diff --git a/src/events/SDL_mouse.c b/src/events/SDL_mouse.c
+--- a/src/events/SDL_mouse.c
++++ b/src/events/SDL_mouse.c
+@@ -748,6 +748,26 @@
+             *y = (float)y_min;
+         }
+     }
++}
++
++/* 程序设位与随后实际motion共享SDK的整数模式、窗口约束和捕获政策。 */
++static void SDL_ResolveAbsoluteMousePosition(SDL_Mouse *mouse, SDL_Window *window, float *x, float *y)
++{
++    if (mouse->integer_mode_flags & 1) {
++        *x = SDL_truncf(*x);
++        *y = SDL_truncf(*y);
++    }
++    ConstrainMousePosition(mouse, window, x, y);
++}
++
++bool SDL_AMCL_TryWarpMenuCursor(SDL_Window *window, float x, float y)
++{
++    SDL_Mouse *mouse = SDL_GetMouse();
++    if (!window) window = mouse->focus;
++    if (!mouse->TryWarpMenuCursor || mouse->relative_mode || !window ||
++        (window->flags & SDL_WINDOW_MINIMIZED) || SDL_isnanf(x) || SDL_isinff(x) || SDL_isnanf(y) || SDL_isinff(y)) return false;
++    SDL_ResolveAbsoluteMousePosition(mouse, window, &x, &y);
++    return mouse->TryWarpMenuCursor(window, x, y);
+ }
+ 
+ static void SDL_PrivateSendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y, SDL_AMCL_InputReceipt *receipt)
+@@ -815,12 +835,7 @@
+         y = (mouse->last_y + yrel);
+         ConstrainMousePosition(mouse, window, &x, &y);
+     } else {
+-        if (mouse->integer_mode_flags & 1) {
+-            // Discard the fractional component from absolute coordinates
+-            x = SDL_truncf(x);
+-            y = SDL_truncf(y);
+-        }
+-        ConstrainMousePosition(mouse, window, &x, &y);
++        SDL_ResolveAbsoluteMousePosition(mouse, window, &x, &y);
+         if (mouse->has_position) {
+             xrel = x - mouse->last_x;
+             yrel = y - mouse->last_y;
+@@ -843,8 +858,13 @@
+     if (!SDL_AMCL_InputCurrent(receipt)) return;
+     // modify internal state
+     {
+-        mouse->x_accu += xrel;
+-        mouse->y_accu += yrel;
++        if (receipt && receipt->carriedMenuMotion) {
++            mouse->carried_x_accu += xrel;
++            mouse->carried_y_accu += yrel;
++        } else {
++            mouse->x_accu += xrel;
++            mouse->y_accu += yrel;
++        }
+ 
+         if (relative && mouse->has_position) {
+             mouse->x += xrel;
+@@ -1319,14 +1339,15 @@
+     SDL_Mouse *mouse = SDL_GetMouse();
+ 
+     if (x) {
+-        *x = mouse->x_accu;
++        *x = mouse->x_accu + mouse->carried_x_accu;
+     }
+     if (y) {
+-        *y = mouse->y_accu;
++        *y = mouse->y_accu + mouse->carried_y_accu;
+     }
+ #ifdef SDL_VIDEO_DRIVER_OPENHARMONY
+-    if (x || y) SDL_AMCL_ObserveLookPoll(mouse->x_accu, mouse->y_accu);
++    if (x || y) SDL_AMCL_ObserveLookPoll(mouse->x_accu + mouse->carried_x_accu, mouse->y_accu + mouse->carried_y_accu);
+ #endif
++    mouse->carried_x_accu = mouse->carried_y_accu = 0.0f;
+     mouse->x_accu = 0.0f;
+     mouse->y_accu = 0.0f;
+     return SDL_GetMouseButtonState(mouse, SDL_GLOBAL_MOUSE_ID, true);
+@@ -1446,8 +1467,9 @@
+ void SDL_WarpMouseInWindow(SDL_Window *window, float x, float y)
+ {
+     SDL_Mouse *mouse = SDL_GetMouse();
++    /* 隐藏系统光标的菜单可连续定位中心；先判定触控承接，再沿用普通warp模拟。 */
++    if (SDL_AMCL_TryWarpMenuCursor(window, x, y)) return;
+     SDL_MaybeEnableWarpEmulation(window, x, y);
+-
+     SDL_PerformWarpMouseInWindow(window, x, y, mouse->warp_emulation_active);
+ }
+ 
+@@ -1482,6 +1504,10 @@
+     }
+     if (!mouse->SetRelativeMouseMode(enabled)) {
+         return false;
++    }
++    if (enabled) {
++        /* 菜单程序设位不产生look；未读触控菜单移动也不能跨入世界，真正世界运动照常保留。 */
++        mouse->carried_x_accu = mouse->carried_y_accu = 0.0f;
+     }
+     mouse->relative_mode = enabled;
+ 
+diff --git a/src/events/SDL_mouse_c.h b/src/events/SDL_mouse_c.h
+--- a/src/events/SDL_mouse_c.h
++++ b/src/events/SDL_mouse_c.h
+@@ -121,6 +121,8 @@
+     SDL_Window *focus;
+     float x;
+     float y;
++    bool (*TryWarpMenuCursor)(SDL_Window *window, float x, float y);
++    float carried_x_accu, carried_y_accu;
+     float x_accu;
+     float y_accu;
+     float last_x, last_y; // the last reported x and y coordinates
+@@ -212,6 +214,7 @@
+ 
+ // Send a mouse button event
+ #include "SDL_inputdelivery_c.h"
++extern SDL_AMCL_INPUT_HIDDEN bool SDL_AMCL_TryWarpMenuCursor(SDL_Window *window, float x, float y);
+ /* 仅内部受控运动携 receipt，公开 SDL_SendMouseMotion 的 ABI 与原政策不变。 */
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_SendMouseMotionWithReceipt(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, bool relative, float x, float y, SDL_AMCL_InputReceipt *receipt);
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_SendMouseButtonWithReceipt(Uint64 timestamp, SDL_Window *window, SDL_MouseID mouseID, Uint8 button, bool down, SDL_AMCL_InputReceipt *receipt);
+diff --git a/src/events/SDL_inputdelivery_c.h b/src/events/SDL_inputdelivery_c.h
+--- a/src/events/SDL_inputdelivery_c.h
++++ b/src/events/SDL_inputdelivery_c.h
+@@ -29,6 +29,8 @@
+     /* 原目标已退休且无法再发事件时，仅在共享端口认可的old UP上清实际ABI缓存。 */
+     bool cacheOnly, cached, posted;
+     SDL_AMCL_TextDemand textDemand;
++    /* 真实承接菜单平移在菜单内可轮询，重新抓取时只退休尚未读取的这一部分。 */
++    bool carriedMenuMotion;
+ } SDL_AMCL_InputReceipt;
+ static bool SDL_AMCL_InputCurrent(SDL_AMCL_InputReceipt *receipt) {
+     if (!receipt) return true;

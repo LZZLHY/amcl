@@ -15,15 +15,17 @@ export interface LwjglJdkView {
   jars: LwjglViewJar[];
 }
 export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
-  { javaFeature: 17, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
-    manifestSha256: '9dc48cf61fdba03dcfcf6c459d54d215a2f84be94e2fd8808a33d79af732bdbb',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=17\npolicy=cap-future-mr-v1\nsource=8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00\nmanifest=9dc48cf61fdba03dcfcf6c459d54d215a2f84be94e2fd8808a33d79af732bdbb\n", jars: [
+  { javaFeature: 17, sourceSlotIdentity: '3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e',
+    manifestSha256: '9b8df84e7fdec528a720af935b851e5d17f96540ff13eb546a865c3d4ebe35aa',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=17\npolicy=cap-future-mr-v1\nsource=7a3064cdcf5fe2adb77ba01f64b45f2ceba0329230325d10f6aee468f0b96d74\nmanifest=9b8df84e7fdec528a720af935b851e5d17f96540ff13eb546a865c3d4ebe35aa\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
         resourcePath: 'lwjgl/lwjgl-freetype.jar' },
       { name: 'lwjgl-glfw.jar', size: 160146, sha256: 'ae954c72bf7645ebf1a6caf0643dd439a806a3c4480fe216821b87f32b5d116a',
         resourcePath: 'lwjgl/lwjgl-glfw.jar' },
+      { name: 'lwjgl-jemalloc.jar', size: 50284, sha256: '1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b',
+        resourcePath: 'lwjgl/lwjgl-jemalloc.jar' },
       { name: 'lwjgl-nanovg.jar', size: 84001, sha256: '8ae37432408e865bac3595ead3e330430280758fa19b4faf0c47715ffc165380',
         resourcePath: 'lwjgl/lwjgl-nanovg.jar' },
       { name: 'lwjgl-openal.jar', size: 155021, sha256: 'a9e6c05ce90f50074b93d9e987df2e6be693504a33adb6b5c7d6786855b5a910',
@@ -51,15 +53,17 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
       { name: 'lwjgl.jar', size: 2493536, sha256: 'b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd',
         resourcePath: 'lwjgl-jdk/b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd.jar' },
     ] },
-  { javaFeature: 21, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
-    manifestSha256: '263e21b3bd00d5c02bef4ee97e61f4d5a6d594ac14dc50caafde2857bfae5929',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=21\npolicy=cap-future-mr-v1\nsource=8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00\nmanifest=263e21b3bd00d5c02bef4ee97e61f4d5a6d594ac14dc50caafde2857bfae5929\n", jars: [
+  { javaFeature: 21, sourceSlotIdentity: '3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e',
+    manifestSha256: '887520feddc74ba9ad9d86d3919b374fac178bfbd409e1433eef54837918477b',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=21\npolicy=cap-future-mr-v1\nsource=7a3064cdcf5fe2adb77ba01f64b45f2ceba0329230325d10f6aee468f0b96d74\nmanifest=887520feddc74ba9ad9d86d3919b374fac178bfbd409e1433eef54837918477b\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
         resourcePath: 'lwjgl/lwjgl-freetype.jar' },
       { name: 'lwjgl-glfw.jar', size: 160146, sha256: 'ae954c72bf7645ebf1a6caf0643dd439a806a3c4480fe216821b87f32b5d116a',
         resourcePath: 'lwjgl/lwjgl-glfw.jar' },
+      { name: 'lwjgl-jemalloc.jar', size: 50284, sha256: '1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b',
+        resourcePath: 'lwjgl/lwjgl-jemalloc.jar' },
       { name: 'lwjgl-nanovg.jar', size: 84001, sha256: '8ae37432408e865bac3595ead3e330430280758fa19b4faf0c47715ffc165380',
         resourcePath: 'lwjgl/lwjgl-nanovg.jar' },
       { name: 'lwjgl-openal.jar', size: 155021, sha256: 'a9e6c05ce90f50074b93d9e987df2e6be693504a33adb6b5c7d6786855b5a910',
@@ -87,15 +91,17 @@ export const LWJGL_JDK_VIEWS: LwjglJdkView[] = [
       { name: 'lwjgl.jar', size: 2493536, sha256: 'b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd',
         resourcePath: 'lwjgl-jdk/b7db77c616088729df8c3a89602d57efb040991ded4771713356b8d8317700fd.jar' },
     ] },
-  { javaFeature: 25, sourceSlotIdentity: 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0',
-    manifestSha256: 'a96c41feafab57074da96de90c399aeee503bcdade22942d6c594c2183adf1f7',
-    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=25\npolicy=cap-future-mr-v1\nsource=8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00\nmanifest=a96c41feafab57074da96de90c399aeee503bcdade22942d6c594c2183adf1f7\n", jars: [
+  { javaFeature: 25, sourceSlotIdentity: '3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e',
+    manifestSha256: '8b6d12a2abf77972c6d61f1dae12c2a30b2e04f494bbb792a793daa6af55c732',
+    marker: "amcl.lwjgl.jdk-view\nversion=3.4.2\njdk=25\npolicy=cap-future-mr-v1\nsource=7a3064cdcf5fe2adb77ba01f64b45f2ceba0329230325d10f6aee468f0b96d74\nmanifest=8b6d12a2abf77972c6d61f1dae12c2a30b2e04f494bbb792a793daa6af55c732\n", jars: [
       { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d',
         resourcePath: 'lwjgl/lwjgl-egl.jar' },
       { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b',
         resourcePath: 'lwjgl/lwjgl-freetype.jar' },
       { name: 'lwjgl-glfw.jar', size: 160146, sha256: 'ae954c72bf7645ebf1a6caf0643dd439a806a3c4480fe216821b87f32b5d116a',
         resourcePath: 'lwjgl/lwjgl-glfw.jar' },
+      { name: 'lwjgl-jemalloc.jar', size: 50284, sha256: '1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b',
+        resourcePath: 'lwjgl/lwjgl-jemalloc.jar' },
       { name: 'lwjgl-nanovg.jar', size: 84001, sha256: '8ae37432408e865bac3595ead3e330430280758fa19b4faf0c47715ffc165380',
         resourcePath: 'lwjgl/lwjgl-nanovg.jar' },
       { name: 'lwjgl-openal.jar', size: 155021, sha256: 'a9e6c05ce90f50074b93d9e987df2e6be693504a33adb6b5c7d6786855b5a910',

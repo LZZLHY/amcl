@@ -327,6 +327,10 @@ void KeySink(void* context, const amcl::input::GlfwKeySinkEvent& event) {
     out.modifiers = event.modifiers;
     out.lockState = event.lockState;
     out.deviceId = event.deviceId;
+    if (event.textDemandIdentity && backendOf(channel) == AMCL_BACKEND_INPUT_SDL3) {
+        out.deviceId = event.textDemandIdentity;
+        out.resetReason = AMCL_BACKEND_SCOPED_TEXT_KEY_REASON;
+    }
     out.sequence = event.sequence;
     // ⚠️ 2026-08-24 之前这一行**不存在** ⇒ 字段恒 0，而声明写着"core 盖的时间戳"、SDL 侧
     // 三处当时间戳用。与 wheelX/wheelY 那条是同一族（声明说 A、实现做 B），只是它的表现
@@ -588,6 +592,13 @@ void SurfaceContextSink(
     EnqueueLocked(channel, amcl::input::EncodeBackendSurfaceContext(event));
 }
 
+// 仅SDL消费端解释这两个文本事件原有空槽；包token与原有队列生命周期不受影响。
+void EncodeTextDemand(BackendChannel* channel, AmclBackendInputEvent& event, uint64_t demand) {
+    if (backendOf(channel) != AMCL_BACKEND_INPUT_SDL3) return;
+    event.rawCode = static_cast<int32_t>(static_cast<uint32_t>(demand));
+    event.lockState = static_cast<uint32_t>(demand >> 32u);
+}
+
 void TextSessionSink(
         void* context,
         const amcl::input::GlfwTextSessionSinkEvent& event) {
@@ -599,6 +610,7 @@ void TextSessionSink(
     out.action = event.reason;
     out.sequence = event.sequence;
     out.monotonicTimeNs = event.monotonicTimeNs;
+    EncodeTextDemand(channel, out, event.textDemandIdentity);
     EnqueueLocked(channel, out);
 }
 
@@ -608,6 +620,7 @@ void TextCommitSink(
     auto* channel = static_cast<BackendChannel*>(context);
     AmclBackendInputEvent out = BlankEvent(
         AMCL_BACKEND_INPUT_EVENT_TEXT_COMMIT);
+    EncodeTextDemand(channel, out, event.textDemandIdentity);
     out.sequence = event.sequence;
     out.monotonicTimeNs = event.monotonicTimeNs;
     (void)EnqueueTextLocked(channel, out, event.utf8);
@@ -619,6 +632,7 @@ void TextEditingSink(
     auto* channel = static_cast<BackendChannel*>(context);
     AmclBackendInputEvent out = BlankEvent(
         AMCL_BACKEND_INPUT_EVENT_TEXT_EDITING);
+    EncodeTextDemand(channel, out, event.textDemandIdentity);
     out.action = event.selectionStart;
     out.modifiers = event.selectionLength;
     out.sequence = event.sequence;

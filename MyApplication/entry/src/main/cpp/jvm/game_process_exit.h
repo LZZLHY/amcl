@@ -1,5 +1,5 @@
 /**
- * 独立游戏进程的 JVM 退出所有权。这里只消费可信 native 持锁事实，不接受 JVM 属性授权。
+ * 游戏进程的 JVM 退出所有权。独立进程只消费可信 native 持锁事实，不接受 JVM 属性授权。
  * 退出记录表示 JVM 请求退出的代码，不表示操作系统已经完成正常退出或 Java hook 全部成功。
  */
 #ifndef AMCL_GAME_PROCESS_EXIT_H
@@ -51,5 +51,18 @@ void amclGameJvmExitHook(int code);
 
 #ifdef __cplusplus
 }
+
+// 手机同进程路线仅由已认领 JVM 创建的启动器预备；无锁授权也不冒充独立游戏。
+bool amclPhoneExitPrepare(const char* filesDir, int64_t activityId);
+bool amclPhoneExitArmed();
+bool amclPhoneExitAuthorized();
+void amclPhoneExitMarkJavaShutdown();
+void amclPhoneGameJvmExitHook(int code);
+
+// 只在退出请求已经持久化且等待仍未过期时，前台 UI 可认领一次系统重启。
+bool amclPhoneRestartPending();
+bool amclPhoneRestartClaim();
+// 拒绝/无法发起才唤醒退出线程。成功交给系统后保持等待，直到被系统终止或硬期限兜底。
+bool amclPhoneRestartDecline();
 #endif
 #endif

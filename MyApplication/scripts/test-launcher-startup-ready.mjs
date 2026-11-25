@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
+import { loadActionComponent } from './lib/unified-actions-fixture.mjs';
 
 /** 可控的真实 Promise 边缘；用于模拟本地文件完成回调，绝不重新实现页面就绪判断。 */
 function deferred() {
@@ -34,6 +35,29 @@ function fixture() {
 
 /** 给实际等待方法进入下一次事件循环的机会，不以宿主计时推断设备性能。 */
 const turn = () => new Promise(resolve => setTimeout(resolve, 1));
+
+test('先完成隐私选择和存储准备，再让首页按同一个根初始化、扫描和部署', async () => {
+  const location=deferred(), events=[];
+  const prefs={privacyAgreed:false,async recordPrivacyConsent(){this.privacyAgreed=true;return true;}};
+  const Page=loadActionComponent('entry/src/main/ets/pages/Index.ets','Index',{
+    methods:['beginLauncherPreparation_','onPrivacyAgree'],
+    dependencies:{'../runtime/LauncherStartupRuntime':{LauncherStartupRuntime:{prepare:async()=>{}}},
+      commons:{DistributionPolicy:{requiresPrivacyConsent:()=>true},AppLogger:{error(){}},LOG_DOMAIN_LAUNCH:0},
+      feature_system:{GameStorage:{async prepareStartupLocation(_ctx,_pref,_active,publish){
+        events.push('storage');const selected=await location.promise;publish(selected);return selected;
+      }}}},
+    globals:{TAG:'test'}
+  });
+  const page=new Page();
+  Object.assign(page,{startupAlive_:true,startupRouteVisible_:true,launcherInitializationComplete_:false,
+    getPrefManager_:()=>prefs,initializeLauncher_(){events.push(this.storageLocation);},onPageShow(){events.push('home');}});
+  await page.beginLauncherPreparation_();
+  assert.equal(page.showPrivacy,true);assert.deepEqual(events,[]);
+  await page.onPrivacyAgree();await turn();
+  assert.deepEqual(events,['storage']);assert.equal(page.launcherInitializationComplete_,false);
+  location.resolve('external');await turn();
+  assert.deepEqual(events,['storage','external','home']);assert.equal(page.launcherInitializationComplete_,true);
+});
 
 test('真实首页等待方法必须等本地初始化与恢复完成，不能只等页面构造', async () => {
   const { subject, homeVisibleCalls } = fixture();

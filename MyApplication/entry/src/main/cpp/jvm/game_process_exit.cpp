@@ -1,5 +1,5 @@
 /**
- * 独立游戏进程退出的 POSIX 薄适配。授权/预备发生在 JNI_CreateJavaVM 前，
+ * 游戏进程退出的 POSIX 薄适配。授权/预备发生在 JNI_CreateJavaVM 前，
  * VM Thread 的 hook 做固定容量写盘，并以单调时钟期限等候原生 ack pipe；
  * UI 未确认也会在期限后 _exit，不调用 JVM/NAPI，不依赖常驻 worker 或异步日志线程。
  * 标准 JNI hook 不覆盖 early vm_direct_exit、native 自行 exit 或真正的 abort/fatal。
@@ -61,9 +61,13 @@ bool ownsGameLock(int files, int borrowed) noexcept
 class PosixOperations final : public amcl::gameexit::Operations {
 public:
     int pid() const noexcept override { return static_cast<int>(getpid()); }
+    int openFilesDirectory(const char* filesDir) noexcept override
+    {
+        return open(filesDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    }
     int openAuthority(const char* filesDir, int lock) noexcept override
     {
-        const int files = open(filesDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        const int files = openFilesDirectory(filesDir);
         if (files < 0) return -1;
         if (!ownsGameLock(files, lock)) { close(files); return -1; }
         return files;
@@ -141,6 +145,7 @@ public:
 
 PosixOperations operations;
 amcl::gameexit::State state;
+amcl::gameexit::State phoneState;
 } // namespace
 
 extern "C" int amclGameExitAuthorize(const char* filesDir, int parentPid, int borrowedLockFd)
@@ -165,7 +170,7 @@ extern "C" bool amclGameExitAuthorizedForCurrentProcess(void)
 
 extern "C" bool amclGameExitPendingForCurrentProcess(void)
 {
-    return state.pending(operations);
+    return state.pending(operations) || phoneState.pending(operations);
 }
 
 extern "C" bool amclGameExitAcknowledgeRequested(void)
@@ -181,6 +186,54 @@ extern "C" void amclGameJvmExitHook(int code)
     // 失败/继承身份/重入均不回到已停止的 JVM；不因为记录失败把正常退出改成 abort。
     // _exit 只结束调用它的当前进程。原始 int 代码完整写入 JSON，OS 可能仅保留其低 8 位。
     if (state.emit(operations, code)) state.waitForHandoff(operations);
+    amcl::sessionlog::finish();
+    _exit(code);
+}
+
+bool amclPhoneExitPrepare(const char* filesDir, int64_t activityId)
+{
+    return phoneState.preparePhone(operations, filesDir, activityId);
+}
+
+bool amclPhoneExitArmed()
+{
+    return phoneState.armed(operations);
+}
+
+bool amclPhoneExitAuthorized()
+{
+    return phoneState.authorized(operations);
+}
+
+void amclPhoneExitMarkJavaShutdown()
+{
+    phoneState.markJavaShutdown(operations);
+}
+
+bool amclPhoneRestartPending()
+{
+    return phoneState.phonePending(operations);
+}
+
+bool amclPhoneRestartClaim()
+{
+    return phoneState.claimPhoneRestart(operations);
+}
+
+bool amclPhoneRestartDecline()
+{
+    int originalCode = 0;
+    const auto result = phoneState.acknowledge(operations, originalCode);
+    if (result == amcl::gameexit::Acknowledgement::Failed) { amcl::sessionlog::finish(); _exit(originalCode); }
+    return result == amcl::gameexit::Acknowledgement::Owned;
+}
+
+void amclPhoneGameJvmExitHook(int code)
+{
+    // 仅合格的正常退出交给 ArkTS。早退、halt、非零和未取得终态记录的常规链
+    // 留给 HotSpot 原 exit；收到系统重启请求后本线程也不抢先结束旧进程。
+    if (!phoneState.emit(operations, code)) return;
+    phoneState.waitForHandoff(operations);
     amcl::sessionlog::finish();
     _exit(code);
 }

@@ -1,0 +1,198 @@
+{
+  "schema": 1,
+  "actions": {
+    "versions.list": {
+      "args": {},
+      "read": true,
+      "data": [
+        "installed",
+        "orphans",
+        "selected"
+      ]
+    },
+    "versions.inspect": {
+      "args": {"version": "string","expectedGameVersion":"string?"},
+      "read": true,
+      "data": ["version", "gameVersion", "loader", "loaderVersion"]
+    },
+    "versions.remote": {
+      "args": {
+        "gameVersion": "string?",
+        "offset": "integer?",
+        "limit": "integer?"
+      },
+      "read": true,
+      "data": [
+        "versions",
+        "total",
+        "offset"
+      ]
+    },
+    "versions.select": {
+      "args": {
+        "version": "string", "ifSelected": "string?"
+      },
+      "read": false,
+      "data": [
+        "selected"
+      ]
+    },
+    "versions.install": {
+      "args": {
+        "gameVersion": "string",
+        "versionName": "string?",
+        "loader": "string?",
+        "loaderVersion": "string?",
+        "withFabricApi": "boolean?"
+      },
+      "read": false,
+      "data": [
+        "taskId",
+        "installRequestId",
+        "versionName",
+        "gameVersion"
+      ]
+    },
+    "tasks.list": {
+      "args": {"offset": "integer?", "limit": "integer?"},
+      "read": true,
+      "data": ["tasks", "offset", "total"]
+    },
+    "tasks.get": {
+      "args": {
+        "taskId": "string",
+        "installRequestId": "string"
+      },
+      "read": true,
+      "data": [
+        "taskId",
+        "installRequestId",
+        "versionName",
+        "gameVersion",
+        "state",
+        "activityId",
+        "bytesDone",
+        "bytesTotal"
+      ]
+    },
+    "game.launch": {
+      "args": {
+        "versionId": "string"
+      },
+      "read": false,
+      "data": [
+        "operationId"
+      ]
+    },
+    "game.observe": {
+      "args": {
+        "operationId": "string"
+      },
+      "read": true,
+      "data": [
+        "operationId",
+        "versionId",
+        "activityId",
+        "stage",
+        "processRole",
+        "precheckKey",
+        "precheckStatus",
+        "reasonCode",
+        "ledgerState",
+        "ownerPid",
+        "ownerVerified",
+        "witnessRequestId",
+        "windowId",
+        "pidAlive",
+        "presentCount",
+        "surfaceGeneration"
+      ]
+    },
+    "game.current": {
+      "args": {},
+      "read": true,
+      "data": ["state", "activityId", "versionId", "processRole", "ownerPid", "windowId"]
+    },
+    "loaders.list": {
+      "args": {},
+      "read": true,
+      "data": [
+        "loaders"
+      ]
+    },
+    "loaders.games": {
+      "args": {
+        "loader": "string",
+        "offset": "integer?",
+        "limit": "integer?"
+      },
+      "read": true,
+      "data": [
+        "versions",
+        "total",
+        "offset"
+      ]
+    },
+    "loaders.versions": {
+      "args": {
+        "loader": "string",
+        "gameVersion": "string",
+        "offset": "integer?",
+        "limit": "integer?"
+      },
+      "read": true,
+      "data": [
+        "versions",
+        "total",
+        "offset"
+      ]
+    },
+    "launcher.home": {"args": {}, "read": false, "data": ["page"]},
+    "resources.open": {"args": {"kind": "string"}, "read": false, "data": ["kind"]},
+    "accounts.open": {"args": {}, "read": false, "data": ["page"]},
+    "library.open": {"args": {"version": "string", "kind": "string"}, "read": false, "data": ["version", "kind"]},
+    "versions.rename": {"args": {"version": "string", "newName": "string"}, "read": false, "data": ["version", "previous"]},
+    "versions.delete.prepare": {"args": {"version": "string"}, "read": false, "data": ["version", "planId"]},
+    "versions.delete.confirm": {"args": {"version": "string", "planId": "string"}, "read": false, "data": ["version", "removed"]},
+    "versions.delete.cancel": {"args": {"version": "string", "planId": "string"}, "read": false, "data": ["version", "removed"]},
+    "versions.orphans.prepare": {"args": {"version": "string"}, "read": true, "data": ["version", "planId", "files"]},
+    "versions.orphans.confirm": {"args": {"version": "string", "planId": "string"}, "read": false, "data": ["version", "removed", "remaining"]},
+    "versions.orphans.cancel": {"args": {"version": "string", "planId": "string"}, "read": false, "data": ["version", "removed", "remaining"]},
+    "settings.version": {"args": {"version": "string"}, "read": true, "data": ["version", "jdk", "availableJdks", "resolutionPercent"]},
+    "settings.resolution": {"args": {"version": "string", "percent": "integer"}, "read": false, "data": ["version", "resolutionPercent"]},
+    "settings.jdk": {"args": {"version": "string", "choice": "string"}, "read": false, "data": ["version", "jdk"]},
+    "tasks.control": {"args": {"taskId": "string", "activityId": "integer", "command": "string", "taskRef": "string?"}, "read": false, "data": ["operationId", "taskId", "activityId", "command"]},
+    "tasks.controlState": {"args": {"operationId": "string"}, "read": true, "data": ["operationId", "taskId", "activityId", "command", "outcome"]},
+    "library.list": {"args": {"offset": "integer?", "limit": "integer?"}, "read": true, "data": ["version", "kind", "items", "total", "offset"]},
+    "library.close": {"args": {}, "read": false, "data": ["closed"]},
+    "library.toggle": {"args": {"ref": "string", "enabled": "boolean"}, "read": false, "data": ["ref", "enabled"]},
+    "library.delete.prepare": {"args": {"ref": "string"}, "read": false, "data": ["planId", "ref", "filename"]},
+    "library.delete.confirm": {"args": {"ref": "string", "planId": "string"}, "read": false, "data": ["ref", "removed"]},
+    "library.delete.cancel": {"args": {"ref": "string", "planId": "string"}, "read": false, "data": ["ref", "removed"]},
+    "accounts.list": {"args": {}, "read": true, "data": ["accounts", "total"]},
+    "accounts.select": {"args": {"accountRef": "string"}, "read": false, "data": ["accountRef", "selected"]},
+    "accounts.addOffline": {"args": {"name": "string"}, "read": false, "data": ["accountRef", "selected"]},
+    "accounts.login": {"args": {"provider": "string"}, "read": false, "data": ["provider"]},
+    "accounts.check": {"args": {"accountRef": "string"}, "read": true, "data": ["accountRef", "state"]},
+    "accounts.prepareRemove": {"args": {"accountRef": "string"}, "read": false, "data": ["accountRef", "confirmation"]},
+    "accounts.remove": {"args": {"accountRef": "string", "confirmation": "string"}, "read": false, "data": ["removed"]},
+    "accounts.cancelRemove": {"args": {"accountRef": "string", "confirmation": "string"}, "read": false, "data": ["cancelled"]},
+    "accounts.close": {"args": {}, "read": false, "data": ["closed"]},
+    "resources.status": {"args": {"kind": "string"}, "read": true, "data": ["kind", "ready", "detailOpen", "detailOwned", "localDetailOpen"]},
+    "resources.search": {"args": {"kind": "string", "query": "string", "loader": "string?", "gameVersion": "string?", "sort": "string?"}, "read": true, "data": ["searchId", "kind", "query", "loader", "gameVersion", "sort", "projects", "total", "hasMore", "errorKind", "errorSource", "httpStatus"]},
+    "resources.next": {"args": {"searchId": "string"}, "read": true, "data": ["searchId", "kind", "query", "loader", "gameVersion", "sort", "projects", "total", "hasMore", "errorKind", "errorSource", "httpStatus"]},
+    "resources.versions": {"args": {"searchId": "string", "source": "string", "projectId": "string", "offset": "integer?", "limit": "integer?"}, "read": true, "data": ["source", "projectId", "versions", "total", "offset"]},
+    "resources.plan": {"args": {"searchId": "string", "source": "string", "projectId": "string", "versionId": "string", "versionName": "string?"}, "read": false, "data": ["planId", "source", "projectId", "versionId", "kind", "target", "filename", "dependencies"]},
+    "resources.option": {"args": {"planId": "string", "key": "string", "selected": "boolean"}, "read": false, "data": ["planId", "source", "projectId", "versionId", "kind", "target", "filename", "dependencies"]},
+    "resources.install": {"args": {"planId": "string"}, "read": false, "data": ["operationId", "taskId", "state", "activityId"]},
+    "resources.task": {"args": {"operationId": "string"}, "read": true, "data": ["operationId", "taskId", "state", "activityId"]},
+    "resources.dismiss": {"args": {"searchId": "string"}, "read": false, "data": ["dismissed"]},
+    "modpacks.options": {"args": {"operationId": "string", "offset": "integer?", "limit": "integer?"}, "read": true, "data": ["operationId", "choiceId", "name", "packages", "optional", "total", "offset"]},
+    "modpacks.choose": {"args": {"operationId": "string", "choiceId": "string", "key": "string", "selected": "boolean?"}, "read": false, "data": ["operationId", "choiceId", "name", "packages", "optional", "total", "offset"]},
+    "modpacks.confirm": {"args": {"operationId": "string", "choiceId": "string"}, "read": false, "data": ["operationId", "taskId", "state", "activityId"]},
+    "modpacks.importLocal": {"args": {}, "read": false, "data": ["operationId", "state", "name"]},
+    "modpacks.importStatus": {"args": {"operationId": "string"}, "read": true, "data": ["operationId", "state", "name"]},
+    "modpacks.localPlan": {"args": {"operationId": "string", "versionName": "string?"}, "read": false, "data": ["operationId", "planId", "name"]},
+    "modpacks.installLocal": {"args": {"operationId": "string", "planId": "string"}, "read": false, "data": ["operationId", "taskId", "state", "activityId"]}
+  }
+}

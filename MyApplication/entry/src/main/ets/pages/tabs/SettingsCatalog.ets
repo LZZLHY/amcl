@@ -14,8 +14,9 @@ export interface SettingsCapabilities {
   touch: boolean;
   chooseInteraction: boolean;
   tabletProcess: boolean;
-  pc: boolean;
+  nativeGamepad: boolean;
   developer: boolean;
+  fixedRefreshRate: boolean;
 }
 
 /** 分区只承载导航信息；about 与 ledger 是既有独立页面，不建立第二套路由栈。 */
@@ -94,6 +95,8 @@ export function settingsItems(c: SettingsCapabilities): SettingsItem[] {
     items.push({ id: 'jvm', section: 'performance', title: '自定义 JVM 参数', description: '编辑全局启动参数', keywords: 'jvm java 参数 启动 自定义' });
     items.push({ id: 'mod-audio', section: 'performance', title: '模组麦克风', description: '前台语音聊天与 AI 交互', keywords: '麦克风 录音 语音 verity ai voice' });
     items.push({ id: 'frame-rate', section: 'controls', title: '系统调度帧率上限', description: '调整 HarmonyOS 渲染调度提示', keywords: '显示 帧率 刷新 hz fps 自动' });
+    if (c.fixedRefreshRate) items.push({ id: 'fixed-refresh-rate', section: 'controls', title: '游戏屏幕刷新率',
+      description: '为前台游戏请求指定的显示档位', keywords: '屏幕 刷新率 固定 高刷 hz ltpo' });
     items.push({ id: 'language', section: 'controls', title: '游戏语言', description: 'Minecraft 界面的默认语言', keywords: '语言 中文 english lang' });
     items.push({ id: 'graphics', section: 'controls', title: '图形后端', description: '按设备、游戏与运行库检查可用性', keywords: '渲染 mobilegl mobileglues vulkan opengl gl4es zink' });
     // 与分辨率组件使用同一运行能力门；管理态不暴露游戏缩放入口，搜索只导航不写设置。
@@ -107,7 +110,7 @@ export function settingsItems(c: SettingsCapabilities): SettingsItem[] {
       items.push({ id: 'touch-help', section: 'controls', title: '触控操作帮助', description: '进入游戏世界后学习真实控件', keywords: '触控 帮助 教学 引导 操作' });
     }
     if (c.chooseInteraction) items.push({ id: 'interaction', section: 'controls', title: '电脑游戏交互', description: '自动、触屏或键鼠', keywords: '电脑 交互 鼠标 键盘 触屏 重启' });
-    if (c.pc) items.push({ id: 'gamepad', section: 'controls', title: '由游戏处理手柄', description: '游戏控制器模组与启动器映射', keywords: '电脑 手柄 控制器 模组 映射' });
+    if (c.nativeGamepad) items.push({ id: 'gamepad', section: 'controls', title: '由游戏处理手柄', description: '游戏控制器模组与启动器映射', keywords: '手柄 控制器 模组 原生 映射' });
     if (!c.tabletProcess) items.push({ id: 'window', section: 'controls', title: '游戏窗口', description: '当前设备的实际游戏窗口模式', keywords: '窗口 桌面 独立 全屏' });
     if (c.developer) items.push({ id: 'developer', section: 'controls', title: '开发者工具', description: '当前诊断构建提供的工具', keywords: '开发 调试 诊断 测试' });
   }

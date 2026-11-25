@@ -139,10 +139,10 @@ fork_release_tag_commit  = 8b69f7fee6c11a46d325731f29ef6b5008da2878
 [mobilegl]
 upstream        = https://github.com/MobileGL-Dev/MobileGL.git
 repo            = https://github.com/LZZLHY/MobileGL.git
-branch          = amcl/ohos
-commit          = 234a95b88e8f1a5a91ae542a37b566d9631434af
+branch          = amcl/ohos-hwc
+commit          = b8139cdd1240143e9a50410184d69635dc263d24
 base_commit     = 0d2fceab0eb0776b8e9c10903b50572579de8cc3
-source_tree     = ebf0f46a91cd53084d0021cf6f26a145dca16012
+source_tree     = 892decea68e4a75f9779e6af931e9ed9f5d1c633
 # fork 提交栈（base..commit）：Phase 1（sstream 显式包含 / OHOS Vulkan
 # 平台分支 / 聚合体显式构造（P0960R3 绕行）/ 结构化绑定拷贝（P1091R3 绕行）/ tl::expected
 # 分流 / CMake OHOS 平台支持 / libc++experimental 链接 / --exclude-libs 符号面收敛）
@@ -156,9 +156,9 @@ spirv_headers_commit = 2a611a970fdbc41ac2e3e328802aed9985352dca
 # Windows autocrlf 会把工作区转成 CRLF）:
 tl_expected_tag      = v1.3.1
 tl_expected_sha256   = 0788f7d544a2fdec1dd7a794e1e9863ad4cc6a8817982b6fd93fd98724b9fa19
-# 本地实验候选：NULL/TexStorage延迟CPU清零；正常OHOS构建，尚未获得整合包/发布资格。
-libmobilegl_stripped_sha256 = 97aa55fbb70f4164bd14c911dfca4901cce4ab291d28cdb15c7541af37fe88fc
-libmobilegl_unstripped_sha256 = 5fcddd5616e31327bd9e145aafab49dac1c3a2941311e7da7cb00fd0fb188981
+# MobileGL PR #1 预旋转与 OHOS 窗口方向修正。锁定 DSO，由 HAP 门禁核对实际载荷。
+libmobilegl_stripped_sha256 = c9560e3cf59dcede87828dba8cf50f6fe320c188c5c4ae56feea44466f202661
+libmobilegl_unstripped_sha256 = 3ff36a411902b1a0cb32b905e1bc4774461c8f56d73695bc28e47124181b18db
 
 # -----------------------------------------------------------------------------
 # [openal-soft] — 3D 音频库（OHAudio backend 通过 prebuilt/openal-soft/patches/ 注入）
@@ -179,23 +179,14 @@ commit   = dc7d7054a5b4f3bec1dc23a42fd616a0847af948
 [lwjgl-jars]
 version    = 3.4.2
 maven_base = https://repo1.maven.org/maven2/org/lwjgl
-modules    = lwjgl,lwjgl-glfw,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd,lwjgl-nanovg,lwjgl-openal,lwjgl-vulkan,lwjgl-egl,lwjgl-opengles,lwjgl-freetype,lwjgl-shaderc,lwjgl-spvc,lwjgl-vma,lwjgl-sdl,lwjgl-spng
+modules    = lwjgl,lwjgl-glfw,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd,lwjgl-nanovg,lwjgl-openal,lwjgl-vulkan,lwjgl-egl,lwjgl-opengles,lwjgl-freetype,lwjgl-shaderc,lwjgl-spvc,lwjgl-vma,lwjgl-sdl,lwjgl-spng,lwjgl-jemalloc
 # 各 jar 的 SHA-256（2026-08-01 升级 3.4.2 时重新计算；运行 setup_deps.sh 时校验）。
 # 这些是 Maven Central 上游原始包的 hash；AMCL 后处理产物由独立 manifest 锁定。
 # MC 26.3 要求 LWJGL 3.4.2 的 SDL 绑定；现代槽位整体替换，不与 3.4.1 混装。
 # 注：lwjgl-glfw.jar 用上游原版 lwjgl-glfw-3.4.2.jar 作 baseline（方案 B：保留上游 GLFW.class，
 #     仅由 build-prebuilt-jars.mjs 注入我们的 CallbackBridge/GLFWWindowProperties 桥接类）。
-# ⚠️ 不要把 lwjgl-jemalloc 加回来（2026-08-02 移除）。它与已完整交付 native 的
-#     shaderc/spvc/vma 不同：只补 allocator 的 Java JAR 会破坏既有安全回退。
-#     LWJGL 的 MemoryManage 会在启动时【主动】按 mimalloc→rpmalloc→jemalloc 探测 allocator。
-#     3.4.2 起实现类从顶层 JEmallocAllocator 变成嵌套 JEmalloc$Allocator（上游 2ea89788c），
-#     旧类的 static{ JEmalloc.getLibrary(); } 会让 Class.forName 当场失败并被 catch 回退，
-#     新嵌套类却能实例化成功，缺 libjemalloc.so 要等第一次 malloc 才炸，且 ExceptionInInitializerError
-#     不可恢复 → MC 在 NativeLibrariesBootstrap 阶段崩（Loading library STB/OpenGL）。
-#     我们没有 OHOS 版 libjemalloc.so（LWJGL 的 jemalloc 模块 0 个 .c，需外部源码；官方靠
-#     natives-linux 分类器 jar，那是 glibc 产物）。缺这个 jar 时 LWJGL 会静默回退 StdlibAllocator，
-#     也就是 3.4.1 时代一直在跑的分配器。若要更好的分配性能，改为补 lwjgl-rpmalloc
-#     （它自带单文件 rpmalloc.c，且探测顺序在 jemalloc 之前）。
+# 现代槽使用同版本 jemalloc Java 模块和 HAP 内带 je_ 前缀的独立 OHOS 分配器。
+# 上游原始 JAR、后处理模块和 native 制品分别锁定，旧 3.2.3 槽独立取值。
 # FreeType、shaderc、SPVC、VMA 均已提供真实 OHOS native；早期“只补 Java”方案
 # 已被启动期实测推翻。模块实际提供方与完整必需接口由 module-coverage.policy.json
 # 和对应门禁验证，不能仅凭渲染后端或 JAR 存在性判断无需 native。
@@ -214,10 +205,23 @@ lwjgl-shaderc_sha256  = aa66fba33fe8a9cef4aea46c515cbcfc1974acf3017506d5b9d840ca
 lwjgl-spvc_sha256     = cd408d04011beadb6edc4e435438021b05f74f0fbc7be31b244d1e5666c5f3db
 lwjgl-vma_sha256      = 8b10a8eb44daba950b453e75388473d4a72f6e5a59a8cfbb2746d777945a7d78
 lwjgl-sdl_sha256      = 4acb736e7b2ab0d1b84b651ebac7a5405e25ce7252e830edc647c846bf4eb775
+lwjgl-jemalloc_sha256 = c5d535f251e5960070c2b9dc0cf8e373c8c2f14046c211f5c0a51fa6c970a164
 lwjgl-spng_sha256     = 9382bda2026fbfe4ddc5246abab6aa0d3d5e7fc59a196bb98e936aa2f9186633
 # 仅供 scripts/check-sdl3-layout.mjs 在宿主 JVM 反射 LWJGL 布局；不属于设备运行时槽位。
 lwjgl-host-natives-windows_sha256 = 8e48cf335d308a84d7e782f001a5a89fdc9a30766e82a9056f30300bdff70d01
 lwjgl-host-natives-linux_sha256   = eb88f7341461174ec2084c41c0e1bfeeed957158e59ed55d9c34a13efcbe2665
+
+# LWJGL 专用分配器。由已锁定上游源码交叉编译，HAP 内保留同一已 strip 制品。
+[jemalloc-native]
+repo       = https://github.com/jemalloc/jemalloc.git
+tag        = 5.3.1
+commit     = 81034ce1f1373e37dc865038e1bc8eeecf559ce8
+source_sha256 = 3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92
+recipe     = prebuilt/jemalloc/build-ohos.sh
+size       = 322072
+sha256     = 12026c1f4170e46db2234639ee695dfd2d49fee3e1ec385d07af6755af1ec21c
+hap_size   = 322072
+hap_sha256 = 12026c1f4170e46db2234639ee695dfd2d49fee3e1ec385d07af6755af1ec21c
 
 # -----------------------------------------------------------------------------
 # [lwjgl-natives] — 现代 LWJGL 3.4.2 官方 release tag（OHOS aarch64 musl native build）
@@ -581,11 +585,11 @@ base_commit    = de51952c2ea538241909789926f4d01845ad1bb0   # icculus 分支的 
 abi_base       = f87239e71e42da91ca317a12eefb82cfbf3393eb   # release-3.4.12 = LWJGL 3.4.2 绑定所对齐的上游 release（当前最新稳定版）
 vendor_ref     = 03b7fb95b4069cc7798f5554ef12239d983bc7bf   # OpenMinecraft-Dev/SDL —— 已不是当前基线的来源；保留作 fallback 分支的 cherry-pick 出处与 MetsukiMio 署名依据（见 prebuilt/sdl3/README.md §署名）
 version_string = SDL-3.5.0-release-3.4.0-983-ge293db30d
-patchset_sha256 = da5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9
-size            = 2257888
-sha256          = 853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064
-hap_size        = 1861448
-hap_sha256      = 7c2a09fa6d4e4172a147fd105cfa203e433b2e11049734e7622bd845892d6c29
+patchset_sha256 = d93acd64e6f581e31b5b04f1fb36f176eaba9f31b3bc2cfa9acd60f2e3895e15
+size            = 2276192
+sha256          = fb11b0f89187d18212f7003a5c0c82ac292e4547d4bf1081fd39f2590c619678
+hap_size        = 1876096
+hap_sha256      = d48d772c9cb9f1b2d34a415c2646b2b9ead601ffd4043a5bd5459eb53b3a7bf8
 #
 #   2026-09-02 Gate D typed TextInputSession（commit 仍是 e293db30d，新增 0006）：
 #     SDL 保持 64B/version=1 backend envelope；文本 session/commit/editing/candidates/

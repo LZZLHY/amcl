@@ -23,6 +23,66 @@ function fixture() {
 }
 
 {
+  // 一次确认后的心跳只观察域变化，不能把相同报告反复交给 UI。独立异步进度仍须送达。
+  const f=fixture(), reports=[];
+  f.nativePort.setControlNativeSink({applyLookConfiguration:()=>true});
+  const runtime=new f.InputConfigurationRuntime();runtime.start(f.store,42);
+  let waiting=false;
+  f.store.addInputConfigurationListener(()=>true,'async-progress',scratch=>{
+    const value=scratch ?? {};
+    value.stage=waiting?'Waiting':'Applied';value.reason=waiting?'ResourceUnavailable':'';
+    return value;
+  });
+  f.store.addInputPolicyStatusListener(value=>reports.push(value));
+  runtime.reconcile();reports.length=0;
+  for(let i=0;i<40;i++) runtime.reconcile();
+  assert.equal(reports.length,0,'unchanged UI was notified');
+  waiting=true;runtime.reconcile();
+  assert.equal(reports.at(-1).domains.find(domain=>domain.name==='async-progress').reason,'ResourceUnavailable');
+  assert.equal(reports.length,1);
+  waiting=false;runtime.reconcile();assert.equal(reports.length,2);
+  assert.equal(reports.at(-1).domains.find(domain=>domain.name==='async-progress').stage,'Applied');
+  // 第二观察者挂接时立即收到 B，下一维护拍之前异步恢复 A 也必须交还给两个仍存活的页面。
+  const later=[];
+  waiting=true;
+  f.store.addInputPolicyStatusListener(value=>later.push(value));
+  assert.equal(later.at(-1).domains.find(domain=>domain.name==='async-progress').stage,'Waiting');
+  waiting=false;runtime.reconcile();
+  for (const sink of [later,reports]) {
+    assert.equal(sink.at(-1).domains.find(domain=>domain.name==='async-progress').stage,'Applied');
+  }
+  let recoverDuringPublish=false, loseOnce=false;
+  f.store.addInputPolicyStatusListener(()=>{
+    if (recoverDuringPublish && waiting) {
+      recoverDuringPublish=false;waiting=false;runtime.reconcile();
+    }
+  });
+  const final=[];
+  f.store.addInputPolicyStatusListener(value=>{
+    if (loseOnce) { loseOnce=false;throw Error('temporary observer failure'); }
+    final.push(value.domains.find(domain=>domain.name==='async-progress').stage);
+  });
+  waiting=true;recoverDuringPublish=true;runtime.reconcile();
+  assert.equal(final.at(-1),'Applied','an older publication must not overwrite a nested recovery');
+  const healthy=reports.length;
+  waiting=true;loseOnce=true;runtime.reconcile();runtime.reconcile();
+  assert.equal(reports.length,healthy+1,'retry only the observer that missed the update');
+  assert.equal(final.at(-1),'Waiting');
+  let retry=false;
+  f.store.addInputConfigurationListener(()=>{
+    if (!retry) return false;
+    f.store.reconcileInputConfiguration();
+    return true;
+  },'reentrant');
+  reports.length=0;retry=true;
+  runtime.reconcile();runtime.reconcile();
+  assert.deepEqual(reports.map(s=>s.domains.find(domain=>domain.name==='reentrant')?.stage),['Applied'],
+    'nested retry must not consume an acknowledgement before the outer listener returns');
+  runtime.stop();
+  console.log('PASS 40 unchanged configuration heartbeats emit zero UI reports; asynchronous waiting and recovery each notify once');
+}
+
+{
   const f=fixture(),observed=[],look=[];
   f.nativePort.setControlNativeSink({applyLookConfiguration:c=>{look.push({...c});return true;}});
   const runtime=new f.InputConfigurationRuntime();runtime.start(f.store);

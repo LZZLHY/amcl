@@ -49,9 +49,9 @@ export interface McSuggestion {
   /**
    * 关联的应用内操作。McErrorSheet 主按钮根据第一个 recommended 的 actionKey 决定 label + 跳转。
    *   - 'open_versions'    → 关闭 sheet + 跳到 DownloadTab 版本列表
-   *   - 'open_jdk_manager' → 关闭 sheet + 跳到设置 → JDK 管理
+   *   - 'open_jdk_manager' → 打开下载页的 JDK 管理
    *   - 'open_mod_list'    → 关闭 sheet + 跳到模组管理
-   *   - 'redownload'       → 关闭 sheet + 触发重新下载
+   *   - 'redownload'       → 打开原实例的版本管理，由玩家校验或修复文件
    *   - null               → 无主操作，仅文字建议
    */
   actionKey: string | null;
@@ -126,7 +126,8 @@ export function classifyMcError(summary: string, logTail: string, mcVersion: str
 
   // 顺序敏感：先匹配更具体的，避免被宽泛规则吃掉
   if (matchJdkVersion(summary, logTail)) {
-    return buildJdkVersionDiagnosis(logTail, mcVersion);
+    // 游戏日志已轮转时，活动摘要仍可能保留完整的 class/runtime 版本对。
+    return buildJdkVersionDiagnosis(cleanText, mcVersion);
   }
   // IPv6 地址族不可用要早判，理由不是"和别的规则抢"，而是**它自己太容易被吞**：
   //   三种形态里有两种的异常 message 是 null（见 matchIpv6Unsupported），
@@ -140,7 +141,7 @@ export function classifyMcError(summary: string, logTail: string, mcVersion: str
   // Fabric 把 "需要更高 Java 版本" 报成 mod resolution 失败（FormattedException: Some of your
   //   mods are incompatible）。必须在 matchModConflict 之前判，否则会被误归"模组冲突"。
   if (matchFabricJavaReq(combined)) {
-    return buildFabricJavaReqDiagnosis(logTail, mcVersion);
+    return buildFabricJavaReqDiagnosis(cleanText, mcVersion);
   }
   // Fabric 定位不到游戏本体。排在 lwjgl_module_missing / missing_file / mod_conflict 之前是
   //   **防御性**的，不是因为实测被抢过：2026-08-29 的真机样本（mc_output.log 全文 2317 字节）
@@ -176,13 +177,13 @@ export function classifyMcError(summary: string, logTail: string, mcVersion: str
   //   - 它的 NoSuchMethodError 信号会被 jdk_runtime 的"nosuchmethoderror+unsafe"放过（无 unsafe），
   //     但若不前置，Sodium 硬校验 System.exit→SIGABRT 会被 native_crash 抢走，给错建议。
   if (matchLwjglVersion(combined)) {
-    return buildLwjglVersionDiagnosis(logTail, mcVersion);
+    return buildLwjglVersionDiagnosis(cleanText, mcVersion);
   }
   if (matchOom(combined)) {
-    return buildOomDiagnosis();
+    return buildOomDiagnosis(cleanText);
   }
   if (matchModConflict(combined)) {
-    return buildModConflictDiagnosis(summary);
+    return buildModConflictDiagnosis(summary, cleanTail);
   }
   if (matchMixinFail(combined)) {
     return buildMixinDiagnosis(summary);
@@ -551,7 +552,7 @@ function buildJdkVersionDiagnosis(logTail: string, mcVersion: string): McDiagnos
     + '是用 Java ' + (neededJava > 0 ? neededJava.toString() : '更新版本')
     + ' 编译的，但本次启动用的是 Java ' + (currentJava > 0 ? currentJava.toString() : '较旧版本')
     + '。旧版 Java 无法读取新版 Java 编译的程序文件，因此游戏启动时崩溃。'
-    + '请在"设置 / JDK 管理"里切换到匹配的 Java 版本后重试。';
+    + '可在「下载 → JDK」安装所需运行时，再到「版本详情 → Java 运行时」核对这个实例的选择。';
 
   // 按 MC 实际需要的 Java 版本推荐对应 JDK（AMCL 已上线 17 / 21 / 25）。
   let neededJdkLabel = neededJava >= 25 ? '25'
@@ -561,7 +562,7 @@ function buildJdkVersionDiagnosis(logTail: string, mcVersion: string): McDiagnos
   let recTitle = '切换到 JDK ' + neededJdkLabel + '（推荐）';
   let recDesc = 'Minecraft ' + extractShortVersion(mcVersion) + ' 需要 Java '
     + (neededJava > 0 ? neededJava.toString() : neededJdkLabel)
-    + '。到"设置 → JDK 管理"选择并安装 JDK ' + neededJdkLabel
+    + '。到「下载 → JDK」安装 JDK ' + neededJdkLabel
     + '（MC 26.1+ 用 25，1.20.5–1.21.x 用 21，1.20.4 及以下用 17），再启动。';
 
   return {
@@ -637,7 +638,7 @@ function buildFabricJavaReqDiagnosis(logTail: string, mcVersion: string): McDiag
     suggestions: [
       {
         title: '切换到 JDK ' + recVer + '（推荐）',
-        desc: '到"设置 → JDK 管理"安装并切换到 JDK ' + recVer + '；'
+        desc: '到「下载 → JDK」安装 JDK ' + recVer + '。'
           + '若是在「版本详情 → Java 运行时」为该版本强制指定了更低的 JDK，请改回"自动"。',
         recommended: true,
         actionKey: 'open_jdk_manager',
@@ -809,17 +810,21 @@ function buildLwjglVersionDiagnosis(logTail: string, mcVersion: string): McDiagn
 
 // ----------- 内存不足 -----------
 
-function buildOomDiagnosis(): McDiagnosis {
+function buildOomDiagnosis(evidence: string): McDiagnosis {
+  // 保留本局实际报告的 OOM 类型；直接内存和线程耗尽时不能笼统断言 Java 堆已满。
+  const match = evidence.match(/(?:java\.lang\.)?OutOfMemoryError:[^\r\n]+|Java heap space|GC overhead limit exceeded/i);
+  const detail = match ? match[0].trim() : 'OutOfMemoryError';
+  const heap = /Java heap space|GC overhead limit exceeded/i.test(detail);
   return {
     category: 'oom',
     title: '内存不足',
-    description: '游戏运行时申请的内存超过了 JVM 分配的最大堆。常见原因是模组数量过多、'
-      + '世界数据过大或者启动时分配的内存不够。',
-    techDetail: 'java.lang.OutOfMemoryError: Java heap space',
+    description: heap ? '游戏需要的 Java 堆内存超过了可用容量。大型模组或世界可能增加内存需求。'
+      : 'Java 运行时无法分配所需的内存或线程，请结合技术详情和本次日志核对耗尽的资源。',
+    techDetail: detail,
     errorKind: 'OutOfMemoryError',
-    primaryActionLabel: '打开内存设置',
-    primaryActionKey: 'open_memory_settings',
-    suggestions: [
+    primaryActionLabel: heap ? '打开内存设置' : '上传日志',
+    primaryActionKey: heap ? 'open_memory_settings' : 'copy_log',
+    suggestions: heap ? [
       {
         title: '增大游戏内存上限（推荐）',
         desc: '到"设置 → 启动配置 → 最大内存"调高到 2048 MB 或 3072 MB，重启游戏。',
@@ -838,19 +843,22 @@ function buildOomDiagnosis(): McDiagnosis {
         recommended: false,
         actionKey: null,
       },
-    ],
+    ] : [],
   };
 }
 
 // ----------- Mod 冲突 -----------
 
-function buildModConflictDiagnosis(summary: string): McDiagnosis {
+function buildModConflictDiagnosis(summary: string, logTail: string): McDiagnosis {
+  // Fabric 将模组名、版本要求和缺失依赖单列在异常末尾，活动摘要往往只有 JVM 退出码。
+  // 只提取关系说明；旧加载器没有这行时，保留本局原有摘要。
+  const dependency = logTail.match(/^[ \t]*(?:-\s*)?(Mod ['"][^\r\n]+?\s(?:requires|depends on|is incompatible with|breaks)\s[^\r\n<]+)/im);
   return {
     category: 'mod_conflict',
     title: '模组冲突或缺失依赖',
     description: 'Fabric / Forge 检测到模组之间存在不兼容依赖，或者某个模组要求的版本范围与游戏版本冲突，'
       + '因此拒绝启动以保护存档。',
-    techDetail: summary.length > 0 ? summary : 'Mod resolution failed',
+    techDetail: dependency ? dependency[1].trim() : (summary.length > 0 ? summary : 'Mod resolution failed'),
     errorKind: 'ModResolutionException',
     primaryActionLabel: '打开模组管理',
     primaryActionKey: 'open_mod_list',
@@ -932,11 +940,11 @@ function buildJdkRuntimeDiagnosis(mcVersion: string): McDiagnosis {
 
   let description = 'Java 运行时与该版本不兼容：游戏用到的某些接口在当前 Java 版本里不存在或已被移除。'
     + '常见于自动选择的 JDK 与版本不匹配——尤其旧版 MC 配了过新的 Java（反之亦然）。'
-    + recPhrase + '到"设置 → JDK 管理"切换匹配的 Java 版本后重试。';
+    + recPhrase + '可在「下载 → JDK」安装运行时，在「版本详情 → Java 运行时」调整该实例的选择。';
 
   let recDesc = (rec.length > 0
-      ? '到"设置 → JDK 管理"安装并切换到 JDK ' + rec + '，再启动。'
-      : '到"设置 → JDK 管理"按版本规则切换 JDK 后再启动。')
+      ? '到「下载 → JDK」安装 JDK ' + rec + '，在版本详情中选择后再启动。'
+      : '到版本详情选择匹配的 Java 运行时后再启动。')
     + '注意：较旧的 MC（如 1.16 及更早）在过新的 JDK 上可能跑不起来，要选更低版本的 Java。';
 
   return {
@@ -981,12 +989,12 @@ function buildMissingFileDiagnosis(summary: string): McDiagnosis {
       + '存储空间不足或文件被意外删除。',
     techDetail: summary.length > 0 ? summary : 'NoSuchFileException',
     errorKind: 'NoSuchFileException',
-    primaryActionLabel: '重新下载该版本',
+    primaryActionLabel: '打开版本管理',
     primaryActionKey: 'redownload',
     suggestions: [
       {
-        title: '重新下载该版本（推荐）',
-        desc: '到版本管理里删除该版本，然后从版本列表重新下载，下载引擎会自动补齐所有缺失文件。',
+        title: '校验并修复文件',
+        desc: '在该实例的版本详情中校验文件完整性。若目录已被列为残缺实例，可在版本管理中选择修复。',
         recommended: true,
         actionKey: 'redownload',
       },
@@ -1252,9 +1260,8 @@ function buildNotDiagnosableDiagnosis(): McDiagnosis {
   return {
     category: 'not_diagnosable',
     title: '上次游戏已结束',
-    description: '日志里没有发现崩溃或错误。这通常意味着游戏被正常关闭，或者进程被系统 / '
-      + '从多任务列表结束（此时不会留下关闭记录）。如果你确实遇到了问题，可以展开下方'
-      + '「技术详情」查看完整日志，或上传日志请开发者协助。',
+    // 中性结果只描述本局已有证据，不将日志缺失推定为正常退出或具体故障。
+    description: '本次记录里没有找到能解释退出原因的错误。点「分析日志」可以查看这次游戏留下的记录。',
     techDetail: '未在日志中发现错误信号',
     errorKind: 'None',
     primaryActionLabel: '知道了',
@@ -1268,9 +1275,9 @@ function buildNotDiagnosableDiagnosis(): McDiagnosis {
       },
       {
         title: '仍然觉得有问题？',
-        desc: '点下方「上传日志」把完整日志发给开发者，或用「分析日志」看看第三方工具的判断。',
+        desc: '点「分析日志」查看本次游戏的本地排查结果和原始日志。',
         recommended: false,
-        actionKey: 'copy_log',
+        actionKey: null,
       },
     ],
   };
@@ -1282,16 +1289,16 @@ function buildUnknownDiagnosis(summary: string): McDiagnosis {
   return {
     category: 'unknown',
     title: '游戏意外退出',
-    description: '从日志中没有识别出特定错误模式。展开下方"技术详情"看完整堆栈，'
-      + '复制日志后向开发者反馈可加快问题定位。',
+    // 已有错误记录但没有规则命中时保留原始异常摘要，完整线索由同一活动的阅读器提供。
+    description: '这次游戏留下了错误记录，但还无法确定具体原因。可先查看技术详情，再点「分析日志」定位相关日志。',
     techDetail: summary.length > 0 ? summary : '未知错误',
     errorKind: 'Unknown',
-    primaryActionLabel: '复制日志',
+    primaryActionLabel: '上传日志',
     primaryActionKey: 'copy_log',
     suggestions: [
       {
-        title: '复制日志反馈',
-        desc: '点击下方"复制"按钮，把日志贴到开发者群或 issue。',
+        title: '向开发者反馈',
+        desc: '通过「上传日志」选择本次游戏的日志，在脱敏预览中确认提交。',
         recommended: true,
         actionKey: 'copy_log',
       },

@@ -21,7 +21,7 @@ export function textInputKeyTapResultFromNative(value: number): TextInputKeyTapR
 
 /** Unicode-scalar indexed text-session command sink supplied by the host. */
 export interface TextInputSessionSink {
-  begin(owner: string, generation: number): boolean
+  begin(owner: string, generation: number, demandIdentity?: string): boolean
   end(owner: string, generation: number, reason: string): boolean
   abort(owner: string, generation: number, reason: string): void
   commit(owner: string, generation: number, text: string): boolean
@@ -57,11 +57,14 @@ export interface TextInputSessionSink {
 export class TextInputSessionLease {
   owner: string = ''
   generation: number = 0
+  /** SDL需求的原始全宽身份；空值保留非桌面SDL合同。 */
+  demandIdentity: string = ''
 
   copy(): TextInputSessionLease {
     const value = new TextInputSessionLease()
     value.owner = this.owner
     value.generation = this.generation
+    value.demandIdentity = this.demandIdentity
     return value
   }
 }
@@ -101,7 +104,7 @@ export class TextInputSessionCoordinator {
     return this.tryBegin(owner).lease
   }
 
-  tryBegin(owner: string): TextInputBeginResult {
+  tryBegin(owner: string, demandIdentity: string = ''): TextInputBeginResult {
     const result = new TextInputBeginResult()
     if (owner.length === 0) return result
     const active: TextInputSessionLease | undefined = this.activeLease
@@ -111,12 +114,13 @@ export class TextInputSessionCoordinator {
     }
     const lease = new TextInputSessionLease()
     lease.owner = owner
+    lease.demandIdentity = demandIdentity
     lease.generation = this.takeGeneration()
     if (lease.generation === 0) {
       result.status = TextInputBeginStatus.HostRejected
       return result
     }
-    if (!this.sink.begin(lease.owner, lease.generation)) {
+    if (!this.sink.begin(lease.owner, lease.generation, lease.demandIdentity)) {
       result.status = TextInputBeginStatus.HostRejected
       return result
     }
@@ -229,7 +233,11 @@ export class TextInputSessionCoordinator {
     glfwKey: number): TextInputKeyTapResult {
     if (!this.matches(lease)) return TextInputKeyTapResult.Rejected
     const generation: number = this.ensureHostSession(lease) ? this.hostGeneration : 0
-    return this.sink.keyTap(lease.owner, generation, ohosKeyCode, glfwKey)
+    if (generation === 0 && lease.demandIdentity.length > 0) return TextInputKeyTapResult.Rejected
+    const result: TextInputKeyTapResult = this.sink.keyTap(lease.owner, generation, ohosKeyCode, glfwKey)
+    // 桌面SDL需求不能降级到未携带身份的普通legacy编辑键。
+    return lease.demandIdentity.length > 0 && result === TextInputKeyTapResult.NotTypedRoute
+      ? TextInputKeyTapResult.Rejected : result
   }
 
   /**
@@ -247,7 +255,7 @@ export class TextInputSessionCoordinator {
     if (!this.matches(lease)) return false
     if (this.hostGeneration !== 0) return true
     const generation: number = this.takeGeneration()
-    if (generation === 0 || !this.sink.begin(lease.owner, generation)) return false
+    if (generation === 0 || !this.sink.begin(lease.owner, generation, lease.demandIdentity)) return false
     this.hostGeneration = generation
     return true
   }
@@ -263,7 +271,7 @@ export class TextInputSessionCoordinator {
   private matches(lease: TextInputSessionLease): boolean {
     const active: TextInputSessionLease | undefined = this.activeLease
     return active !== undefined && active.owner === lease.owner &&
-      active.generation === lease.generation
+      active.generation === lease.generation && active.demandIdentity === lease.demandIdentity
   }
 
   private takeGeneration(): number {

@@ -20,7 +20,7 @@ output.mkdir(parents=True, exist_ok=True)
 fixture = runpy.run_path(str(root / 'scripts/test-touch-production.py'),
     init_globals={'AMCL_TOUCH_RECIPE_ONLY': True})
 template = (root / 'entry/src/main/cpp/tests/host/touch_terminal_samples.cpp.in').read_text(encoding='utf-8')
-visual = fixture['definition']('extern "C" void ohos_touch_interaction_visual(')
+visual = fixture['definition']('static void readTouchVisualLocked(') + '\n' + fixture['definition']('extern "C" void ohos_touch_interaction_visual(')
 production = fixture['production']
 source = output / 'terminal.cpp'
 binary = output / 'terminal.exe'

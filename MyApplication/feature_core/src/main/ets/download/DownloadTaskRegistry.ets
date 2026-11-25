@@ -259,13 +259,13 @@ export class DownloadTaskRegistry {
     if (ids.length > 0) this.notify();
   }
 
-  cancel(id: string, cleanupFiles: boolean = false): Promise<void> {
+  cancel(id: string, cleanupFiles: boolean = false, onStarted?: (owner: UnifiedDownloadAdapter) => void): Promise<void> {
     // 排队取消先拒绝原 enqueue Promise，再异步清理；独立预约覆盖取消真正收口，
     // 防止列表已显示 Aborted 时共享游戏插入并在退出时终止文件清理。
     let release: (() => void) | undefined = undefined;
     try {
       release = ProcessActivityCoordinator.instance().acquireFileTask('文件任务清理');
-      return this.cancelInternal_(id, cleanupFiles).finally(release);
+      return this.cancelInternal_(id, cleanupFiles, onStarted).finally(release);
     } catch (error) {
       if (release !== undefined) release();
       return Promise.reject(error as Error);
@@ -273,12 +273,12 @@ export class DownloadTaskRegistry {
   }
 
   /** 原取消算法；外层只管理进程生存期预约，不改变任务归属与错误处理。 */
-  private cancelInternal_(id: string, cleanupFiles: boolean = false): Promise<void> {
+  private cancelInternal_(id: string, cleanupFiles: boolean, onStarted?: (owner: UnifiedDownloadAdapter) => void): Promise<void> {
     if (this.replacementHeld_) return Promise.reject(new Error('应用正在更新，暂不可修改文件任务'));
     let cancelling = this.queuedCancellations_.get(id);
     if (cancelling !== undefined) return cancelling;
     const ownerId = this.attachedOwners_.get(id);
-    if (ownerId !== undefined) return this.cancel(ownerId, cleanupFiles);
+    if (ownerId !== undefined) return this.cancel(ownerId, cleanupFiles,onStarted);
     let a = this.adapters_.get(id);
     if (!a) {
       AppLogger.warn(TAG, `cancel: id=${id} not found`, null, LOG_DOMAIN_DOWNLOAD);
@@ -286,6 +286,7 @@ export class DownloadTaskRegistry {
     }
     if (this.openingIds_.has(id)) {
       // 此时producer尚未执行，只登记取消意图；开账完成后由同一执行finally封ABORTED。
+      if (onStarted) onStarted(a);
       this.cancelledOpenings_.add(id);
       a.view.canCancel = false;
       return Promise.resolve();
@@ -308,6 +309,8 @@ export class DownloadTaskRegistry {
       let adapter: UnifiedDownloadAdapter = a;
       // 先登记取消 owner，再调用可能同步通知的 adapter，避免重入启动下一轮。
       if (pending?.newAttempt === true || adapter.view.startedAtMs <= 0) adapter.view.startedAtMs = this.reserveActivityId();
+      // 等候中的重试现在已有单独的取消活动号，回执不得借用父活动。
+      if (onStarted) onStarted(adapter);
       let completion = (async (): Promise<void> => {
         // 排队取消仍是一条真实用户结果。先建立身份，再等待适配器清理，最后持久封账。
         try { await getTaskActivityOwner().beginTask(adapter.view); }
@@ -329,6 +332,7 @@ export class DownloadTaskRegistry {
       this.drainQueue_();
       return completion;
     }
+    if (onStarted) onStarted(a);
     return a.cancel(cleanupFiles).then(() => this.notify());
   }
 
@@ -338,17 +342,21 @@ export class DownloadTaskRegistry {
     return a.pause().then(() => this.notify());
   }
 
-  resume(id: string): Promise<void> {
+  resume(id: string, onStarted?: (owner: UnifiedDownloadAdapter) => void): Promise<void> {
     let a = this.adapters_.get(id);
     if (!a || !a.view.canResume) return Promise.resolve();
     let adapter: UnifiedDownloadAdapter = a;
     return this.scheduleAction_(id, UnifiedTaskState.PREPARING,
-      (): Promise<void> => adapter.resume());
+      (): Promise<void> => {
+        // 出队、正式活动建立后才报告属于本次请求的执行者；等待槽位不冒充已经运行。
+        if (onStarted) onStarted(adapter);
+        return adapter.resume();
+      });
   }
 
-  retry(id: string): Promise<void> {
+  retry(id: string, onStarted?: (owner: UnifiedDownloadAdapter) => void): Promise<void> {
     const ownerId = this.attachedOwners_.get(id);
-    if (ownerId !== undefined) return this.retry(ownerId);
+    if (ownerId !== undefined) return this.retry(ownerId,onStarted);
     let a = this.adapters_.get(id);
     // 诊断（2026-07-29）：重试点了没反应且**零日志**，说明被这里的静默 return 吞掉了。
     // 把每次 retry 入口的关键状态打出来，定位到底是 adapter 丢了还是 canRetry 为 false。
@@ -382,7 +390,11 @@ export class DownloadTaskRegistry {
     adapter.view.parentActivityId = adapter.view.startedAtMs;
     adapter.view.activityRelation = 'retry';
     return this.scheduleAction_(id, UnifiedTaskState.PREPARING,
-      (): Promise<void> => { invoked = true; return adapter.retry(); }, true).catch((e: Error) => {
+      (): Promise<void> => {
+        invoked = true;
+        if (onStarted) onStarted(adapter);
+        return adapter.retry();
+      }, true).catch((e: Error) => {
       AppLogger.warn(TAG, `retry id=${id} threw`, e, LOG_DOMAIN_DOWNLOAD);
       // Sheet 不等待 retry Promise。尚未入队/执行的准入拒绝必须投影到原卡片，而不能
       // 只写日志；保留原 state/canRetry，不把“游戏正在运行”伪装成新下载尝试失败。

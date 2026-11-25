@@ -26,8 +26,9 @@ import { ModLoaderType, ModLoaderVersion } from 'feature_core';
 import { ModLoaderManager } from 'feature_core';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { promptAction } from '@kit.ArkUI';
-import { isVersionInstalled } from 'commons';
+import { versionInstallNameError } from 'feature_core';
 import { requiredJdkMajorForMc, pickInstalledJdkMajor } from 'commons';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
 import { DOCS_NO_JIT_URL, DOCS_NO_JIT_FALLBACK_URL } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
@@ -44,27 +45,22 @@ import { fetchVersionMeta, VersionMetaResult } from 'feature_core';
 import { getVulkanStatusForVersion, VulkanStatusHint, VulkanFeasibilityState } from 'feature_system';
 // 2026-05-23：Fabric API 伴随下载——选 Fabric loader 后可勾选同时装 Fabric API mod。
 // 元数据走 Modrinth（slug=fabric-api），不走 CurseForge 兑底（与计划一致）。
-import { ModrinthRepository } from 'mods';
-import { ModrinthSourceMode } from 'mods';
-import { getMetadataCacheStore } from 'feature_core';
 import { DownloadManager } from 'feature_core';
-import { RemoteVersion, RemoteFile, RemoteProject, pickPrimaryFile } from 'mods';
-import { pickBestVersion } from 'mods';
-import { resolveModrinthSourcePreference, getModrinthSourceMode } from 'mods';
-import { getRelayClient } from 'feature_core';
+import { RemoteVersion, RemoteFile } from 'mods';
 import { formatBytes } from 'commons';
+
+import { VERSION_LOADER_KEYS, fabricApiRepository, FabricApiSelection, installerJdkMajor,
+  loaderAtChoice, loadFabricApiIcon, loadFabricApiSelection, suggestedVersionName } from './VersionInstallOptions';
 
 const TAG = 'VersionConfigPanel';
 
-const INVALID_NAME_CHARS = '/\\:*?"<>|';
-const MAX_NAME_LENGTH = 64;
 
 
 // loaderChoice 数字含义：0=Vanilla / 1=Fabric / 2=Forge / 3=NeoForge(占位) / 4=Quilt(占位)
 // 表本身只存最小信息（idx 即数组下标，所以只剩 LoaderKey）。displayName / description /
 // iconName / accentColor / blockMedia / supported 全部走 LoaderCatalog.getLoaderInfo()，
 // 单一事实源避免与 VersionManagerSheet / FabricApiCard 的颜色矩阵分歧。
-const LOADER_KEYS: LoaderKey[] = ['vanilla', 'fabric', 'forge', 'neoforge', 'quilt']
+const LOADER_KEYS: LoaderKey[] = VERSION_LOADER_KEYS
 
 /** loaderChoice 数字 → LoaderInfo 的方便包装（带越界保护） */
 function loaderInfoForChoice(idx: number): LoaderInfo {
@@ -152,7 +148,7 @@ export struct VersionConfigPanel {
   /** 防 loader 版本列表的旧请求（慢的 Forge metadata）覆盖新请求（NeoForge）的 epoch */
   private loaderVersionsEpoch_: number = 0
 
-  private modLoaderManager: ModLoaderManager = new ModLoaderManager()
+  modLoaderManager: ModLoaderManager = new ModLoaderManager()
 
   /**
    * 开始下载回调。
@@ -174,7 +170,24 @@ export struct VersionConfigPanel {
   // 由上层（持 libentry.so 的产品层）注入 testNapi.checkJitAvailable 包装。默认 true 不拦。
   checkJitAvailable: () => boolean = () => true
 
+  aboutToDisappear():void { LauncherSkillBus.unbind('versionInstall',this) }
+
+  /** 来自当前用户看到的 Wiki、JDK 门槛与设备 Vulkan 探测，未加载和无说明分别呈现。 */
+  private async versionSkill_(method:string,args:Record<string,Object>):Promise<Record<string,Object>> {
+    if (method!=='getGameVersionRequirements' || args['gameVersion']!==this.gameVersion) return {'state':'failed','reason':'targetChanged'}
+    const options:Record<string,Object>[]=[]
+    for (let idx=0;idx<5;idx++) {
+      const item=loaderInfoForChoice(idx);
+      options.push({'type':item.key,'supported':this.isLoaderSupported(idx),'installerJdk':this.requiredJdkForLoader(idx),'runtimeJdk':this.runtimeJdkForLoader(idx)})
+    }
+    return {'state':this.versionDescLoaded?'ready':'initializing','gameVersion':this.gameVersion,'category':this.resolveVanillaCategory_(),
+      'description':this.versionDesc,'descriptionLoaded':this.versionDescLoaded,'runtimeJdk':requiredJdkMajorForMc(this.gameVersion),'installedJdk':this.installedJdkMajors,
+      'loaders':options,'jitAvailable':this.checkJitAvailable(),'vulkan':this.vulkanHint?.message ?? '','vulkanStatus':this.vulkanHint?.status ?? 'notApplicable'}
+  }
+
   aboutToAppear(): void {
+    LauncherSkillBus.bind('versionInstall',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>this.versionSkill_(method,args),
+      ():boolean=>AppStorage.get<boolean>('appInForeground')===true)
     this._lastAutoName = this.gameVersion
     this.versionName = this.gameVersion
     this.loaderChoice = 0
@@ -1056,8 +1069,7 @@ export struct VersionConfigPanel {
    * ≤1.20.4→17 / 1.20.5+→21 / 26.1+→25），不再固定 17。引擎再从设备已装集挑 ≥required 的最低。
    */
   private requiredJdkForLoader(idx: number): number {
-    if (idx === 2 || idx === 3) return requiredJdkMajorForMc(this.gameVersion)
-    return 0
+    return installerJdkMajor(this.gameVersion, loaderAtChoice(idx))
   }
 
   /** 该 loader 选择对应版本的**游戏运行时**所需最低 JDK（仅用于横幅信息展示，不 gate 安装）。 */
@@ -1154,10 +1166,7 @@ export struct VersionConfigPanel {
   }
 
   private getLoaderType(): ModLoaderType | null {
-    if (this.loaderChoice === 1) return ModLoaderType.FABRIC
-    if (this.loaderChoice === 2) return ModLoaderType.FORGE
-    if (this.loaderChoice === 3) return ModLoaderType.NEOFORGE
-    return null
+    return loaderAtChoice(this.loaderChoice)
   }
 
   private loadLoaderVersions(): void {
@@ -1201,38 +1210,14 @@ export struct VersionConfigPanel {
 
   private updateAutoName(): void {
     if (this.isNameEdited) return
-    let name = this.gameVersion
-    if (this.loaderChoice === 1 && this.selectedLoaderVersion) {
-      name = 'fabric-loader-' + this.selectedLoaderVersion + '-' + this.gameVersion
-    } else if (this.loaderChoice === 2 && this.selectedLoaderVersion) {
-      name = this.gameVersion + '-forge-' + this.selectedLoaderVersion
-    } else if (this.loaderChoice === 3 && this.selectedLoaderVersion) {
-      name = this.gameVersion + '-neoforge-' + this.selectedLoaderVersion
-    }
+    const name = suggestedVersionName(this.gameVersion, this.getLoaderType(), this.selectedLoaderVersion)
     this._lastAutoName = name
     this.versionName = name
     this.validateName()
   }
 
   private validateName(): void {
-    this.nameError = ''
-    if (this.versionName.length === 0) {
-      this.nameError = '版本名称不能为空'
-      return
-    }
-    if (this.versionName.length > MAX_NAME_LENGTH) {
-      this.nameError = '版本名称不能超过 ' + MAX_NAME_LENGTH + ' 个字符'
-      return
-    }
-    for (let i = 0; i < this.versionName.length; i++) {
-      if (INVALID_NAME_CHARS.indexOf(this.versionName[i]) >= 0) {
-        this.nameError = '不能包含字符: ' + this.versionName[i]
-        return
-      }
-    }
-    if (isVersionInstalled(this.mcDir, this.versionName)) {
-      this.nameError = '版本 ' + this.versionName + ' 已存在'
-    }
+    this.nameError = versionInstallNameError(this.mcDir, this.versionName);
   }
 
   private disabledReason(): string {
@@ -1254,6 +1239,9 @@ export struct VersionConfigPanel {
     if (this.loaderChoice > 0 && !this.isLoaderSupported(this.loaderChoice)) return false
     if (this.loaderChoice > 0 && !this.selectedLoaderVersion) return false
     if (this.loaderChoice > 0 && this.loaderVersionsLoading) return false
+    // 玩家仍勾选 Fabric API 时，不能把一个未完成的伴随项静默变成纯 Fabric。
+    if (this.loaderChoice === 1 && this.withFabricApi
+      && (this.fabricApiLoading || this.fabricApiVersion === null || this.fabricApiPrimary === null)) return false
     return true
   }
 
@@ -1265,8 +1253,7 @@ export struct VersionConfigPanel {
       this.promptJitUnavailableForForge()
       return
     }
-    // 仅在 Fabric loader + 用户勾选 + 元数据拉到 三个条件全部满足时才伴随下载。
-    // 拉取失败 / loading 中 / 未勾选：传 null，让 Index 跳过。
+    // 已明确取消随装时才按纯 Fabric 提交。勾选时 canStart 已核对真实版本和主文件。
     let api: RemoteVersion | null = null
     if (this.loaderChoice === 1 && this.withFabricApi
         && this.fabricApiVersion !== null && this.fabricApiPrimary !== null) {
@@ -1345,52 +1332,22 @@ export struct VersionConfigPanel {
       this.fabricApiError = '网络未就绪，上拉页面重试'
       return
     }
-    let modrinth = new ModrinthRepository(
-      dm,
-      getMetadataCacheStore(),
-      () => resolveModrinthSourcePreference(this.modSource, getModrinthSourceMode(), getRelayClient().isEnabled()),
-      'AMCL/1.0.0 (https://github.com/axecraft/amcl)',
-      () => this.cacheRemoteMeta,
-    )
-    modrinth.getVersions('fabric-api', ['fabric'], [this.gameVersion])
-      .then((versions: RemoteVersion[]) => {
-        if (myEpoch !== this.fabricApiEpoch_) return  // 被后来请求赶上
-        if (versions.length === 0) {
+    const modrinth = fabricApiRepository(() => this.modSource, () => this.cacheRemoteMeta)
+    loadFabricApiSelection(modrinth, this.gameVersion)
+      .then((selection: FabricApiSelection) => {
+        if (myEpoch !== this.fabricApiEpoch_) return
+        this.fabricApiVersion = selection.version
+        this.fabricApiPrimary = selection.primary
+        if (selection.error) {
           this.fabricApiLoading = false
-          this.fabricApiError = '该 MC 版本无可用的 Fabric API'
+          this.fabricApiError = selection.error
           return
         }
-        // ⚠️ 2026-06-06 修复：Modrinth getVersions 不保证按发布日期降序返回（原样返回 API
-        //   顺序），旧代码直接取 versions[0] 会拿到非最新版（实测装 26.1.1 时拿到 0.144.4
-        //   而非最新 0.145.x → Sodium 0.8.9 要求 fabric-api ≥0.145.1 → loader 拒绝启动）。
-        //   改用 pickBestVersion（release 优先 + datePublished 降序 + 严格匹配 loader/gameVersion），
-        //   稳定选到最新兼容的 release。
-        let v = pickBestVersion(versions, 'fabric', this.gameVersion)
-        if (v === null) {
-          this.fabricApiLoading = false
-          this.fabricApiError = '该 MC 版本无可用的 Fabric API'
-          return
-        }
-        let f = pickPrimaryFile(v.files)
-        if (f === null || f.url.length === 0) {
-          this.fabricApiLoading = false
-          this.fabricApiError = 'Fabric API 主文件不可下载'
-          return
-        }
-        this.fabricApiVersion = v
-        this.fabricApiPrimary = f
         this.fabricApiLoading = false
         // 取项目图标供伴随下载卡片显示（best-effort，失败不影响下载）。
-        modrinth.getProjectsByIds(['fabric-api'])
-          .then((ps: RemoteProject[]) => {
-            if (myEpoch !== this.fabricApiEpoch_) return
-            if (ps.length > 0 && ps[0].iconUrl.length > 0) {
-              this.fabricApiIconUrl = ps[0].iconUrl
-            }
-          })
-          .catch((e: Error) => {
-            hilog.warn(0x0000, TAG, 'fabric-api icon fetch failed: %{public}s', e.message)
-          })
+        loadFabricApiIcon(modrinth).then((icon: string) => {
+          if (myEpoch === this.fabricApiEpoch_) this.fabricApiIconUrl = icon
+        })
       })
       .catch((e: Error) => {
         if (myEpoch !== this.fabricApiEpoch_) return

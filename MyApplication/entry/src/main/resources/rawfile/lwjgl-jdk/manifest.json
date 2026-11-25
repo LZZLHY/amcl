@@ -6,8 +6,8 @@
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00",
-      "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
+      "sourceManifestSha256": "7a3064cdcf5fe2adb77ba01f64b45f2ceba0329230325d10f6aee468f0b96d74",
+      "sourceSlotIdentity": "3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e",
       "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 17,
       "policy": "cap-future-mr-v1",
@@ -43,6 +43,16 @@
           "maxClassMajor": 61
         },
         {
+          "name": "lwjgl-jemalloc.jar",
+          "size": 50284,
+          "sha256": "1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b",
+          "resourcePath": "lwjgl/lwjgl-jemalloc.jar",
+          "mrLayers": [
+            11
+          ],
+          "maxClassMajor": 55
+        },
+        {
           "name": "lwjgl-nanovg.jar",
           "size": 84001,
           "sha256": "8ae37432408e865bac3595ead3e330430280758fa19b4faf0c47715ffc165380",
@@ -173,14 +183,14 @@
           "maxClassMajor": 55
         }
       ],
-      "manifestSha256": "9dc48cf61fdba03dcfcf6c459d54d215a2f84be94e2fd8808a33d79af732bdbb"
+      "manifestSha256": "9b8df84e7fdec528a720af935b851e5d17f96540ff13eb546a865c3d4ebe35aa"
     },
     {
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00",
-      "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
+      "sourceManifestSha256": "7a3064cdcf5fe2adb77ba01f64b45f2ceba0329230325d10f6aee468f0b96d74",
+      "sourceSlotIdentity": "3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e",
       "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 21,
       "policy": "cap-future-mr-v1",
@@ -216,6 +226,16 @@
           "maxClassMajor": 61
         },
         {
+          "name": "lwjgl-jemalloc.jar",
+          "size": 50284,
+          "sha256": "1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b",
+          "resourcePath": "lwjgl/lwjgl-jemalloc.jar",
+          "mrLayers": [
+            11
+          ],
+          "maxClassMajor": 55
+        },
+        {
           "name": "lwjgl-nanovg.jar",
           "size": 84001,
           "sha256": "8ae37432408e865bac3595ead3e330430280758fa19b4faf0c47715ffc165380",
@@ -346,14 +366,14 @@
           "maxClassMajor": 55
         }
       ],
-      "manifestSha256": "263e21b3bd00d5c02bef4ee97e61f4d5a6d594ac14dc50caafde2857bfae5929"
+      "manifestSha256": "887520feddc74ba9ad9d86d3919b374fac178bfbd409e1433eef54837918477b"
     },
     {
       "schema": 1,
       "slot": "modern",
       "version": "3.4.2",
-      "sourceManifestSha256": "8f4e5d1fd5268d19524588cf0f16f35b1a0718fad00b6ff8c5622066ee197b00",
-      "sourceSlotIdentity": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
+      "sourceManifestSha256": "7a3064cdcf5fe2adb77ba01f64b45f2ceba0329230325d10f6aee468f0b96d74",
+      "sourceSlotIdentity": "3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e",
       "nativesSha256": "bfe331999e85caa12e27635cad89cb5a159b8a8b2ea8f7e8e926f9217b5f6246",
       "javaFeature": 25,
       "policy": "cap-future-mr-v1",
@@ -387,6 +407,16 @@
             11
           ],
           "maxClassMajor": 61
+        },
+        {
+          "name": "lwjgl-jemalloc.jar",
+          "size": 50284,
+          "sha256": "1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b",
+          "resourcePath": "lwjgl/lwjgl-jemalloc.jar",
+          "mrLayers": [
+            11
+          ],
+          "maxClassMajor": 55
         },
         {
           "name": "lwjgl-nanovg.jar",
@@ -520,7 +550,7 @@
           "maxClassMajor": 69
         }
       ],
-      "manifestSha256": "a96c41feafab57074da96de90c399aeee503bcdade22942d6c594c2183adf1f7"
+      "manifestSha256": "8b6d12a2abf77972c6d61f1dae12c2a30b2e04f494bbb792a793daa6af55c732"
     }
   ]
 }

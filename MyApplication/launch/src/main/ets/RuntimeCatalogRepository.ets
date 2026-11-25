@@ -94,6 +94,9 @@ export function runtimeCatalogUrls(channel: string, source: string, webEnabled: 
 }
 
 export class RuntimeCatalogRepository {
+  // 记录本配置代次真正完成的刷新。缓存可展示、本机槽存在与本次成功收到可信目录分别表示。
+  private refreshSerial: number = 0;
+  private refreshOutcome: string = 'notRequested';
   private static shared: RuntimeCatalogRepository | null = null;
   private context: Context;
   private builtin: RuntimeCatalog;
@@ -135,6 +138,19 @@ export class RuntimeCatalogRepository {
   }
 
   snapshot(): RuntimeCatalog { return JSON.parse(JSON.stringify(this.current)) as RuntimeCatalog; }
+
+  /** 只发布目录元数据，HTTP 错误原文、签名材料和本机缓存路径留在应用。 */
+  observation(channel: string, source: string, webEnabled: boolean): RuntimeCatalogObservation {
+    const matches = this.configured && this.channel === channel && this.source === source && this.webEnabled === webEnabled;
+    const loading = this.configuration !== null;
+    const refreshing = this.inFlight !== null && this.inFlightGeneration === this.generation;
+    const phase = !matches ? 'configurationMismatch' : loading ? 'loadingCache' : refreshing ? 'refreshing' : this.refreshOutcome;
+    const origin = this.current === this.builtin ? 'builtin' : phase === 'updated' ? 'network' : 'verifiedSnapshot';
+    return { phase:phase, origin:origin, serial:this.refreshSerial, generation:this.generation,
+      requestedChannel:channel, selection:JSON.stringify([channel,source,webEnabled]),
+      catalogChannel:this.current.channel, revision:this.current.catalogRevision,
+      usable:matches && this.recommendationUnavailableReason().length === 0 };
+  }
 
   /**
    * 返回可展示的槽位。缓存过期、切换通道或代次落后只暂停新下载，不能把整个列表清空。
@@ -249,6 +265,7 @@ export class RuntimeCatalogRepository {
       return this.configuration !== null ? this.configuration : Promise.resolve();
     }
     this.configured = true; this.channel = normalized; this.source = source; this.webEnabled = webEnabled;
+    this.refreshOutcome = 'notRequested';
     this.generation++; const generation = this.generation;
     // 同通道换源必须保留已接受的推荐代次，即使磁盘缓存暂不可读也不能接受推荐倒退。
     // highest 恰属目标通道时可恢复同一份已验证快照；否则内置槽位仅供占位展示。
@@ -354,7 +371,14 @@ export class RuntimeCatalogRepository {
   refresh(): Promise<RuntimeRefreshResult> {
     const generation = this.generation;
     if (this.inFlight !== null && this.inFlightGeneration === generation) return this.inFlight;
-    const task = this.refreshConfigured(generation);
+    this.refreshSerial++;
+    const task = this.refreshConfigured(generation).then((result: RuntimeRefreshResult): RuntimeRefreshResult => {
+      if (this.generation === generation) this.refreshOutcome = result.ok ? 'updated' : 'failed';
+      return result;
+    }, (failure: Error): RuntimeRefreshResult => {
+      if (this.generation === generation) this.refreshOutcome = 'failed';
+      throw failure;
+    });
     this.inFlight = task; this.inFlightGeneration = generation;
     return task.finally((): void => {
       // 新通道可立即创建自己的请求；旧请求结束不能清掉新请求的去重句柄。
@@ -441,4 +465,16 @@ export class RuntimeCatalogRepository {
     }
     return { ok:false,error:error,catalog:this.snapshot() };
   }
+}
+
+export interface RuntimeCatalogObservation {
+  phase: string;
+  origin: string;
+  serial: number;
+  generation: number;
+  catalogChannel: string;
+  revision: number;
+  usable: boolean;
+  requestedChannel: string;
+  selection: string;
 }

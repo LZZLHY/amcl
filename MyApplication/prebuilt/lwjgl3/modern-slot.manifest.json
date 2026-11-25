@@ -7,7 +7,7 @@
   "sourceCommit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
   "deploymentDirectory": "lwjgl-ohos",
   "nativeSuffix": "",
-  "manifestEntrySha256": "ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0",
+  "manifestEntrySha256": "3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e",
   "postprocess": [
     "root-module-info",
     "complete-module-packages",
@@ -32,6 +32,11 @@
       "name": "lwjgl-glfw.jar",
       "size": 160146,
       "sha256": "ae954c72bf7645ebf1a6caf0643dd439a806a3c4480fe216821b87f32b5d116a"
+    },
+    {
+      "name": "lwjgl-jemalloc.jar",
+      "size": 50284,
+      "sha256": "1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b"
     },
     {
       "name": "lwjgl-nanovg.jar",

@@ -736,13 +736,24 @@ export class JdkManager {
     return decision.jdk
   }
 
-  deleteVersion(version: string): boolean {
+  /** 确认窗口只接受同一物理槽；同版本号、同标签的重新导入仍可能已换成另一目录。 */
+  installedSlotIdentity(version: string): string {
+    if (!isJdkSlotVersion(version)) return '';
+    try {
+      const stat = fs.lstatSync(this.getJdkDir(version));
+      return stat.isDirectory() && !stat.isSymbolicLink() ?
+        [String(stat.ino), String(stat.ctime), String(stat.mtime)].join(':') : '';
+    } catch (_) { return ''; }
+  }
+
+  deleteVersion(version: string, expectedIdentity?: string): boolean {
     let dir = this.getJdkDir(version)
     let writerLease: JdkDirectoryLease | null = null
     let useLease: JdkDirectoryLease | null = null
     try {
       writerLease = JdkDirectoryLease.writer(this.context.filesDir, version)
       useLease = JdkDirectoryLease.publication(this.context.filesDir, version)
+      if (expectedIdentity !== undefined && (!expectedIdentity || expectedIdentity !== this.installedSlotIdentity(version))) return false;
       JdkInstallStorage.delete(this.context.filesDir, version, writerLease, useLease)
       AppLogger.info(TAG, `Deleted JDK ${version} at ${dir}`, LOG_DOMAIN_LAUNCH)
       return true

@@ -4,9 +4,20 @@
 #include "@CPP@/tests/host/stubs/amcl_log_stub.cpp"
 #include "@CPP@/platform/cursor_lock.h"
 #include "@CPP@/platform/cursor_capture_context.h"
+#include "@CPP@/platform/desktop_host_api.h"
+#include "@CPP@/platform/desktop_gamepad_mapping.h"
+#include "@CPP@/platform/gamepad_topology.h"
+#include "@CPP@/platform/gamepad_change_query.h"
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <optional>
+#include <chrono>
+#include <thread>
+#include <future>
+#include <map>
+#include <string>
+#include <vector>
 #include <cstdlib>
 #define CHECK(x) do {if(!(x)){std::fprintf(stderr,"SLIM BOUNDARY FAIL %d: %s\n",__LINE__,#x);std::exit(1);}}while(false)
 #undef OH_LOG_WARN
@@ -41,12 +52,219 @@ void check(){
 }
 }
 namespace gamepad_fixture {
-std::mutex mutex;bool nativeMode=false,started=false,attempted=false;int starts=0;
-struct Pad{};std::array<Pad,1> pads;std::array<unsigned char,1> digitalHats;
-void Neutral(Pad&){}bool Start(){return ++starts>1;}
+using namespace amcl::desktop;
+std::mutex mutex, modeMutex;
+bool nativeMode = false, started = false;
+std::atomic<bool> readable{false}, focused{false};
+std::atomic<uint64_t> topologyRevision{1};
+std::map<std::string, uint64_t> changed;
+uint64_t deviceEpoch = 0;
+std::array<AmclDesktopGamepad, 2> pads{};
+std::atomic<uint64_t> stateRevision{1};
+std::array<uint64_t, 2> slotRevision{};
+std::array<unsigned char, 2> digitalHats{}, triggerAxisMasks{};
+int starts = 0, wakes = 0;
+bool Start() { return ++starts > 1; }
+void amclDesktopNotifyHostEvent() {
+    // 平台等待者从另一线程读手柄锁。若仍在发布者锁内发通知，此处会直接失败。
+    std::thread observer([] { CHECK(mutex.try_lock()); mutex.unlock(); });
+    observer.join();
+    ++wakes;
+}
 @GAMEPAD@
-void check(){CHECK(!SetNativeGamepadMode(true));CHECK(SetNativeGamepadMode(false));
- CHECK(SetNativeGamepadMode(true)&&starts==2);CHECK(SetNativeGamepadMode(true)&&starts==2);}
+void check() {
+    AmclDesktopGamepad out{};
+    CHECK(!UpdateGamepadConnection("pad", nullptr, true, true, false, 0));
+    CHECK(!SetNativeGamepadMode(true));
+    CHECK(SetNativeGamepadMode(false));
+    CHECK(SetNativeGamepadMode(true) && starts == 2);
+    CHECK(amclGamepadRead(0, &out) < 0 && ReadGamepad(0, &out) == 0);
+    CHECK(ReadGamepad(-1, nullptr) == 0);
+    CHECK(amclGamepadRead(-1, nullptr) < 0);
+    SetGamepadFocus(false, std::nullopt);  // 仅有窗口失焦通知不能激活尚未获准的原生路由。
+    CHECK(amclGamepadRead(-1, nullptr) < 0);
+    SetGamepadFocus(true, true);
+    CHECK(amclGamepadRead(-1, nullptr) == 1);
+    // 窗口宿主旧布尔入口不授予私有查询操作；它仍拒绝该负设备号并清零输出。
+    out.connected = 1;
+    CHECK(ReadGamepad(GamepadTopologyQuery, &out) == 0 && !out.connected);
+    CHECK(ReadGamepad(-1, nullptr) == 1 && ReadGamepad(AMCL_GAMEPAD_QUERY_CHANGES, &out) == 0);
+    CHECK(UpdateGamepadConnection("second", nullptr, true, true, false, 0));
+    CHECK(amclGamepadRead(-1, nullptr) == 3);
+    CHECK(UpdateGamepadConnection("second", nullptr, true, false, false, 0));
+    CHECK(amclGamepadRead(1, &out) == 0 && amclGamepadRead(0, &out) == 1);
+    const auto generation = out.generation;
+    pads[0].buttons[16] = 1;
+    digitalHats[0] = 8;
+    CHECK(amclGamepadRead(0, &out) == 1 && out.axes[4] == 1 && out.axes[5] == -1 && out.buttons[14] == 1);
+    triggerAxisMasks[0] = 1;
+    pads[0].axes[4] = 0.35f;
+    CHECK(SetNativeGamepadMode(true) && starts == 2);
+    SetGamepadFocus(true, true);
+    CHECK(amclGamepadRead(0, &out) == 1 && out.axes[4] == 0.35f && out.generation == generation);
+    SetGamepadFocus(false, true);
+    const uint64_t focusReset = UINT64_C(1) << 32;
+    CHECK(amclGamepadRead(0, &out) == 1 && out.generation == generation && out.events == focusReset &&
+        out.axes[4] == -1 && out.buttons[16] == 0 && out.hats[0] == 0);
+    SetGamepadFocus(false, true);
+    CHECK(amclGamepadRead(0, &out) == 1 && out.events == focusReset);
+    SetGamepadFocus(false, false);
+    CHECK(amclGamepadRead(0, &out) < 0);
+    SetGamepadFocus(true, true);
+    CHECK(amclGamepadRead(0, &out) == 1 && out.generation > generation);
+    CHECK(SetNativeGamepadMode(false) && amclGamepadRead(0, &out) < 0);
+    SetGamepadFocus(true, true);
+    CHECK(amclGamepadRead(0, &out) < 0);
+}
+void checkSamples() {
+    AmclDesktopGamepad out{};
+    CHECK(SetNativeGamepadMode(true));
+    SetGamepadFocus(true, true);
+    const auto baseline = pads[0].events;
+    AmclDesktopGamepad change{}, otherConsumer{};
+    const auto poll = [](AmclDesktopGamepad& value) {
+        CHECK(amclGamepadRead(AMCL_GAMEPAD_QUERY_CHANGES,&value) == AMCL_GAMEPAD_CHANGES_SUPPORTED);
+        return value.connected;
+    };
+    CHECK(poll(change) == 1 && poll(change) == 0 && poll(otherConsumer) == 1);
+    {
+        // 生产者仍持有手柄锁时，已经同步且无变化的查询应可立即返回；慢路径误加锁会使本项超时。
+        const std::lock_guard<std::mutex> held(mutex);
+        auto idle = std::async(std::launch::async, [&] { return poll(change); });
+        CHECK(idle.wait_for(std::chrono::seconds(3)) == std::future_status::ready && idle.get() == 0);
+    }
+    int before = wakes;
+    ApplyGamepadAxis("pad", 0, 0.4, 0.2);
+    for (int i = 0; i < 100; ++i) ApplyGamepadAxis("pad", 0, 0.4, 0.2);
+    CHECK(wakes == before + 1 && amclGamepadRead(0, &out) == 1 && out.events == baseline + 1);
+    CHECK(poll(change) == 1 && poll(change) == 0 && poll(otherConsumer) == 1);
+    ApplyGamepadAxis("pad", 0, 0.4, 0.2);
+    CHECK(poll(change) == 0);
+    ApplyGamepadAxis("pad", 0, 0.4, 0.2001);
+    CHECK(wakes == before + 2);
+    ApplyGamepadButton("pad", 0, true);
+    ApplyGamepadButton("pad", 0, true);
+    ApplyGamepadButton("pad", 0, false);
+    CHECK(wakes == before + 4);
+    // 同方向被模拟与数字同时持有，必须记住两份贡献，末次释放才发 UP。
+    ApplyGamepadAxis("pad", -1, 0, -1);
+    ApplyGamepadButton("pad", 11, true);
+    ApplyGamepadAxis("pad", -1, 0, 0);
+    CHECK(wakes == before + 5 && amclGamepadRead(0, &out) == 1 && out.hats[0] == 1 && out.buttons[11]);
+    ApplyGamepadButton("pad", 11, false);
+    CHECK(wakes == before + 6 && amclGamepadRead(0, &out) == 1 && !out.buttons[11]);
+    // 另一扳机从纯数字切至模拟，第一次最大行程仍须记账，以后释放数字键不抹掉轴。
+    ApplyGamepadButton("pad", 17, true);
+    ApplyGamepadAxis("pad", 5, 1, 0);
+    ApplyGamepadButton("pad", 17, false);
+    CHECK(wakes == before + 8 && amclGamepadRead(0, &out) == 1 && out.axes[5] == 1 && !out.buttons[17]);
+    ApplyGamepadAxis("pad", 5, 0.75, 0);
+    ApplyGamepadAxis("pad", 5, 0.75, 0);
+    CHECK(wakes == before + 9 && amclGamepadRead(0, &out) == 1 && out.axes[5] == 0.5f);
+    const auto activeEvents = out.events;
+    const auto activeGeneration = out.generation;
+    SetGamepadFocus(false, true);
+    before = wakes;
+    ApplyGamepadAxis("pad", 0, 1, 1);
+    ApplyGamepadButton("pad", 0, true);
+    CHECK(wakes == before && amclGamepadRead(0, &out) == 1 && out.axes[0] == 0 && !out.buttons[0]);
+    CHECK(out.events == activeEvents + (UINT64_C(1) << 32) && out.generation == activeGeneration);
+    CHECK(poll(change) == 1);
+    SetGamepadFocus(true, true);
+    CHECK(poll(change) == 0);
+    SetGamepadFocus(false, false);
+    CHECK(poll(change) < 0);
+    SetGamepadFocus(true, true);
+    CHECK(poll(change) == 1 && poll(change) == 0);
+}
+}
+namespace reader_fixture {
+using pid_t = int;
+using AmclGamepadReadFn = int (*)(int, AmclDesktopGamepad*);
+static int pid = 11, opens = 0;
+static bool published = false;
+int getpid() { return pid; }
+const char* OH_GetDeviceType() { return "phone"; }
+int OH_GetSdkApiVersion() { return 21; }
+bool legacy = false;
+int queries = 0, masks = 0, snapshots = 0;
+int read(int slot, AmclDesktopGamepad* out) {
+    if (slot == amcl::desktop::GamepadTopologyQuery) {
+        ++queries;
+        if (legacy) return gamepad_fixture::readable.load() ? 0 : -1;
+    } else if (slot == -1) ++masks;
+    else ++snapshots;
+    return gamepad_fixture::amclGamepadRead(slot, out);
+}
+AmclGamepadReadFn amclResolveGamepadReader() { ++opens; return published ? read : nullptr; }
+@GAMEPAD_READER@
+using GLFWjoystickfun = void (*)(int,int);
+constexpr int GLFW_CONNECTED = 1, GLFW_DISCONNECTED = 2;
+GLFWjoystickfun g_gamepadCallback = nullptr;
+int g_connectedPadMask = 0;
+uint64_t g_padGenerations[16]{};
+void* g_joystickUserPointers[16]{};
+@GAMEPAD_POLL@
+std::vector<std::pair<int,int>> edges;
+void observe(int slot, int edge) { edges.emplace_back(slot,edge); }
+void check() {
+    CHECK(!gamepadReader());
+    published = true;
+    for (int i = 0; i < 100; ++i) CHECK(!gamepadReader());
+    CHECK(opens == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+    CHECK(gamepadReader() == read && opens == 2);
+    CHECK(gamepadReader() == read && opens == 2);
+    ++pid;
+    published = false;
+    CHECK(!gamepadReader() && opens == 3);
+}
+void checkTopology() {
+    using namespace gamepad_fixture;
+    ++pid;
+    published = true;
+    g_gamepadCallback = observe;
+    int tag = 0;
+    g_joystickUserPointers[0] = &tag;
+    glfwOHOS_PollGamepads();
+    CHECK(queries == 1 && !masks && !snapshots && edges.size() == 1 && edges[0] == std::make_pair(0, GLFW_CONNECTED));
+    CHECK(g_joystickUserPointers[0] == &tag);
+    ApplyGamepadAxis("pad", 2, 0.5, 0.5);
+    SetGamepadFocus(false, true);
+    // 保持生产者状态锁，确定稳定的 GLFW 拓扑查询无需等待该锁或读取轴快照。
+    std::unique_lock<std::mutex> held(mutex);
+    auto polling = std::async(std::launch::async, [] { for (int i=0;i<100;++i) glfwOHOS_PollGamepads(); });
+    const bool ready = polling.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+    held.unlock();
+    polling.get();
+    CHECK(ready && edges.size() == 1 && queries == 101 && !masks && !snapshots);
+    // 同槽替换并穿插过时的枚举，最终只交付一对边沿并清旧设备的 user pointer。
+    CHECK(UpdateGamepadConnection("pad", nullptr, true, false, false, 0));
+    CHECK(!UpdateGamepadConnection("pad", nullptr, true, true, true, 0));
+    CHECK(UpdateGamepadConnection("other", nullptr, true, true, false, 0));
+    CHECK(!UpdateGamepadConnection("other", nullptr, true, true, false, 0));
+    glfwOHOS_PollGamepads();
+    CHECK(edges.size() == 3 && edges[1] == std::make_pair(0, GLFW_DISCONNECTED) &&
+          edges[2] == std::make_pair(0, GLFW_CONNECTED) && !g_joystickUserPointers[0] && !snapshots);
+    SetGamepadFocus(false, false);
+    glfwOHOS_PollGamepads();
+    CHECK(edges.size() == 4 && edges.back().second == GLFW_DISCONNECTED && !masks);
+    SetGamepadFocus(true, true);
+    glfwOHOS_PollGamepads();
+    CHECK(edges.size() == 5 && edges.back().second == GLFW_CONNECTED);
+    // 新 PID 初次读必须重新解析；无扩展的旧 reader 对新操作拒绝时仍从原位图/快照取代次。
+    ++pid;
+    legacy = true;
+    glfwOHOS_PollGamepads();
+    CHECK(edges.size() == 6 && edges.back().second == GLFW_CONNECTED && masks == 1 && snapshots == 1);
+    CHECK(UpdateGamepadConnection("other", nullptr, true, false, false, 0));
+    CHECK(UpdateGamepadConnection("pad", nullptr, true, true, false, 0));
+    glfwOHOS_PollGamepads();
+    CHECK(edges.size() == 8 && edges[6].second == GLFW_DISCONNECTED && edges[7].second == GLFW_CONNECTED);
+    SetGamepadFocus(false, false);
+    glfwOHOS_PollGamepads();
+    CHECK(edges.size() == 9 && edges.back().second == GLFW_DISCONNECTED && masks == 3 && snapshots == 2);
+}
 }
 int main(){
  using amcl::input::SchemaWasdLatch;SchemaWasdLatch latch;int calls=0;bool accept=false;
@@ -63,15 +281,15 @@ int main(){
  latch.Apply(on,3000000000,emit);latch.Apply(off,3010000000,emit);latch.Apply(on,3015000000,emit);
  CHECK(!latch.held(0));latch.PollDue(3040000000,true,emit);CHECK(latch.held(0));
  // 拔除后旧首选通道不永久压住下一连接；已有兄弟的DOWN仍由原通道完成UP。
- CHECK(amcl_input_policy_button_begin(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,11,1));
- CHECK(amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,11,1));
+ CHECK(amcl_input_policy_button_begin(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,11,1,0,false));
+ CHECK(amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,11,1,0));
  amcl_input_policy_note_wheel_channel(AMCL_INPUT_CHANNEL_NATIVE_AXIS);
  amcl_input_policy_release_pointer_device(11,true,nullptr,nullptr);
- CHECK(amcl_input_policy_button_begin(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,0,1));
- amcl_input_policy_retire_channels();CHECK(!amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,0,1));
- CHECK(amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,0,1));
+ CHECK(amcl_input_policy_button_begin(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,0,1,0,false));
+ amcl_input_policy_retire_channels();CHECK(!amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_ARKUI_MOUSE,0,1,0));
+ CHECK(amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,0,1,0));
  amcl_input_policy_note_wheel_channel(AMCL_INPUT_CHANNEL_AXIS_PAN);
  CHECK(amcl_input_policy_wheel_accepts(AMCL_INPUT_CHANNEL_AXIS_PAN));
- capture_fixture::check();gamepad_fixture::check();
- std::puts("SLIM BOUNDARY PASS: rejected DOWN/UP, stationary retry, ended intent, debounce, channel lifetime, unlock target, explicit gamepad retry");
+ capture_fixture::check();gamepad_fixture::check();gamepad_fixture::checkSamples();reader_fixture::check();reader_fixture::checkTopology();
+ std::puts("SLIM BOUNDARY PASS: input lifetime, gamepad effective edges, focus reset, unlocked wake, topology cache and legacy reader");
 }

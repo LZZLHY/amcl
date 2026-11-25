@@ -52,6 +52,20 @@ export class ModAudioRuntime {
   /** 当前确认的用户意图可来自原 owner 或独立游戏只读快照。 */
   static enabled(): boolean { return ModAudioRuntime.preferences?.modMicrophoneEnabled ?? false; }
 
+  /** Skill 回读单独报告无法读取；Native 的采集拒绝仍沿用原来的保守检查。 */
+  static strictAccess(): Record<string,Object> {
+    const ctx=ModAudioRuntime.context, manager=ModAudioRuntime.manager, prefs=ModAudioRuntime.preferences;
+    if (!ctx || !manager || !prefs) return {'state':'unknown','reason':'audioOwnerUnavailable'};
+    try {
+      const enabled=prefs.strictLauncherField('modMicrophoneEnabled');
+      const permission=manager.checkAccessTokenSync(ctx.applicationInfo.accessTokenId,MICROPHONE);
+      if (permission!==abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED && permission!==abilityAccessCtrl.GrantStatus.PERMISSION_DENIED) {
+        return {'state':'unknown','reason':'permissionUnknown'};
+      }
+      return {'state':'ready','enabled':enabled,'permissionGranted':permission===abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED};
+    } catch (_) { return {'state':'unknown','reason':'audioStateUnreadable'}; }
+  }
+
   /** 把最新事实交给 Native；同步原子拒绝先发生，设备收敛通过 Promise 离开 UI 线程。 */
   static refresh(): void {
     // 旧视图已授权的持久事务可在新Ability挂接后完成。只有没有在途关闭意图时，当前
@@ -81,7 +95,7 @@ export class ModAudioRuntime {
    * 仅显式设置操作可以请求权限。权限响应绑定当前 Ability 代次，页面销毁后的旧回包不启用。
    * 偏好保存确认后才发布开启；关闭则立即撤销，避免等待 flush 期间继续使用麦克风。
    */
-  static async setEnabled(enabled: boolean): Promise<void> {
+  static async setEnabled(enabled: boolean, beforePermission?: () => void): Promise<void> {
     const context: common.UIAbilityContext | undefined = ModAudioRuntime.context;
     const preferences: PreferenceManager | undefined = ModAudioRuntime.preferences;
     if (context === undefined || preferences === undefined) throw new Error('无法取得当前应用上下文，请重试');
@@ -100,6 +114,7 @@ export class ModAudioRuntime {
       }
       if (enabled && !ModAudioRuntime.permissionGranted()) {
         const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+        if (beforePermission) beforePermission();
         const result = await manager.requestPermissionsFromUser(context, [MICROPHONE]);
         if (result.authResults.length !== 1 || result.authResults[0] !== 0) {
           throw new Error('系统未授予麦克风权限，请在系统设置中允许后重试');

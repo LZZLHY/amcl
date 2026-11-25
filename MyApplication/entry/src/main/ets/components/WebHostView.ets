@@ -22,6 +22,7 @@ import { ThemeColors, DistributionPolicy } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 
 const TAG = 'WebHostView'
 
@@ -49,9 +50,43 @@ export struct WebHostView {
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
   private webController: webview.WebviewController = new webview.WebviewController()
 
-  private openInBrowser() {
+  /** 只报告本机可观察的网页/选图状态。网页表单提交与付款结果由页面服务提供。 */
+  @Prop albumResult: string = '';
+  @Prop hostPage: string = '';
+  @Prop @Watch('skillVisibility_') hostVisible: boolean = false;
+  private photoSelection_: string = 'idle';
+  private photoCount_: number = 0;
+  private photoGeneration_: number = 0;
+
+  aboutToAppear(): void { this.skillVisibility_(); }
+  private skillVisibility_(): void {
+    if (!this.hostVisible || !this.hostPage) { LauncherSkillBus.unbind('supportWeb',this); return; }
+    LauncherSkillBus.bind('supportWeb', this, (method: string, args: SkillFields): Promise<SkillFields> =>
+      this.skillWeb_(method,args), (): boolean => {
+        const page = this.getUIContext().getRouter().getState().name;
+        return !DistributionPolicy.isStore() && this.hostVisible && (page === this.hostPage || page === 'pages/' + this.hostPage);
+      });
+  }
+  aboutToDisappear(): void {
+    this.photoGeneration_++;
+    if (this.photoSelection_ === 'waiting') this.photoSelection_ = 'unknown';
+    LauncherSkillBus.unbind('supportWeb',this);
+  }
+
+  private async skillWeb_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (method === 'retrySupportPage') this.retry();
+    else if (method === 'viewSupportInBrowser') {
+      const opened = await this.openInBrowser();
+      return { 'state': opened ? 'needsUser' : 'failed', 'surface': 'browser' };
+    } else if (method !== 'readSupportPage') return { 'state':'failed', 'reason':'unknownOperation' };
+    return { 'state':this.loadFailed ? 'failed' : (this.loading ? 'initializing' : 'ready'), 'title':this.title,
+      'photoSelection':this.photoSelection_, 'selectedImages':this.photoCount_, 'album':this.albumResult,
+      'remoteReceipt':'notProvidedByPage' };
+  }
+
+  private async openInBrowser(): Promise<boolean> {
     // 商店渠道不执行一般网页及其浏览器兜底；微软授权使用独立组件，不经过此宿主。
-    if (DistributionPolicy.isStore()) return
+    if (DistributionPolicy.isStore()) return false
     let url = this.fallbackBrowserUrl.length > 0 ? this.fallbackBrowserUrl : this.src
     let want: Want = {
       action: 'ohos.want.action.viewData',
@@ -59,10 +94,12 @@ export struct WebHostView {
       uri: url,
     }
     try {
-      this.context.startAbility(want)
+      await this.context.startAbility(want)
+      return true
     } catch (e) {
       hilog.error(0x0000, TAG, 'open browser failed: %{public}s', (e as BusinessError).message)
       try { this.getUIContext().getPromptAction().showToast({ message: '无法打开浏览器', duration: 2000 }) } catch (_) { /* */ }
+      return false
     }
   }
 
@@ -71,7 +108,7 @@ export struct WebHostView {
     if (DistributionPolicy.isStore()) return
     this.loadFailed = false
     this.loading = true
-    try { this.webController.refresh() } catch (e) { /* controller 未 attach */ }
+    try { this.webController.refresh() } catch (_) { this.loadFailed = true; this.loading = false; }
   }
 
   /**
@@ -81,20 +118,30 @@ export struct WebHostView {
   private handleFileSelect_(result: FileSelectorResult) {
     // 宿主在商店不挂载 Web；防御晚到的文件选择回调继续拉起网页上传流程。
     if (DistributionPolicy.isStore()) { result.handleFileList([]); return }
+    const generation = ++this.photoGeneration_;
     try {
+      this.photoSelection_ = 'waiting'; this.photoCount_ = 0;
       let picker = new photoAccessHelper.PhotoViewPicker()
       let opts: photoAccessHelper.PhotoSelectOptions = {
         MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE,
         maxSelectNumber: 9,
       }
       picker.select(opts).then((res: photoAccessHelper.PhotoSelectResult) => {
+        // 文件选择器返回时原网页可能已经重载、离开或发起下一次选择。旧页面不得取得新 URI。
+        if (this.photoGeneration_ !== generation) { result.handleFileList([]); return }
         let uris = res.photoUris && res.photoUris.length > 0 ? res.photoUris : []
         result.handleFileList(uris)
-      }).catch((e: BusinessError) => {
+        this.photoCount_ = uris.length; this.photoSelection_ = uris.length ? 'selected' : 'cancelled';
+      }, (e: BusinessError) => {
+        if (this.photoGeneration_ !== generation) { result.handleFileList([]); return }
+        this.photoSelection_ = 'failed';
         hilog.warn(0x0000, TAG, 'photo pick failed: %{public}s', e.message)
         result.handleFileList([])
+      }).catch((): void => {
+        if (this.photoGeneration_ === generation) { this.photoCount_ = 0; this.photoSelection_ = 'failed'; }
       })
     } catch (e) {
+      this.photoSelection_ = 'failed';
       hilog.warn(0x0000, TAG, 'photo picker init failed: %{public}s', (e as BusinessError).message)
       result.handleFileList([])
     }
@@ -136,6 +183,10 @@ export struct WebHostView {
               if (!this.enableFileUpload) return false   // 不接管 → 用默认行为
               this.handleFileSelect_(event.result)
               return true
+            })
+            .onPageBegin(() => {
+              this.photoGeneration_++; this.photoCount_ = 0; this.photoSelection_ = 'idle';
+              this.loading = true; this.loadFailed = false;
             })
             .onPageEnd(() => { this.loading = false })
             .onErrorReceive((event) => {

@@ -43,6 +43,8 @@ AMCL_GRAPHICS_OBSERVATION_PUBLIC void amclGraphicsForegroundV1(int visible);
 AMCL_GRAPHICS_OBSERVATION_PUBLIC const char* amclGraphicsRuntimeJsonV1(void);
 AMCL_GRAPHICS_OBSERVATION_PUBLIC const char* amclGraphicsFailureJsonV1(void);
 AMCL_GRAPHICS_OBSERVATION_PUBLIC int amclGraphicsObservationEnabledV1(void);
+// 正常关闭前查询本进程实际 owner 的呈现与致命故障事实；无需 JSON、图形锁或 current context。
+AMCL_GRAPHICS_OBSERVATION_PUBLIC int amclGraphicsHasUsablePresentationV1(void);
 AMCL_GRAPHICS_OBSERVATION_PUBLIC const char* amclGraphicsBoundProfileV1(void);
 AMCL_GRAPHICS_OBSERVATION_PUBLIC const char* amclGraphicsBoundApiV1(void);
 #ifdef __cplusplus

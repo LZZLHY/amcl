@@ -2,6 +2,8 @@
  * 蓝牙MIDI的显式系统授权入口，沿用麦克风设置的状态机和离页失效规则。
  * 组件出现只查询当前权限，只有用户点击才申请；不扫描、配对、连接或自动授予设备权限。
  */
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { settingFailure, settingKeys, settingText, SettingsSkillData } from '../launcherskill/SettingsSkillValues';
 import { abilityAccessCtrl, common, PermissionRequestResult } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { AppLogger, ThemeColors } from 'commons';
@@ -16,15 +18,31 @@ export struct BluetoothMidiPermissionSettings {
 
   /** 页面生命周期仅同步读取系统状态，不在启动或枚举MIDI时请求授权。 */
   aboutToAppear(): void {
+    LauncherSkillBus.bind('settingsMidi',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.skillAction_(method,args), (): boolean => AppStorage.get<boolean>('appInForeground') === true && AppStorage.get<boolean>('amclSettingsTabVisible') === true);
+
     this.generation++;
     this.busy = false;
     this.refresh();
   }
 
   /** 旧页面请求完成后不得回写新视图，也不得继续打开第二个系统授权弹窗。 */
-  aboutToDisappear(): void { this.generation++; }
+  aboutToDisappear(): void {
+    LauncherSkillBus.unbind('settingsMidi',this);
+    this.generation++;
+  }
 
   /** getSelfPermissionStatus自API20可用，恰为产品最低版本；未知状态不等于已拒绝。 */
+  /** 只通过系统授权 API 申请，返回真正的系统权限状态，与硬件连通性分开。 */
+  private async skillAction_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (method !== 'bluetoothMidiAccess' || !settingKeys(args,['operation']) || this.busy) return settingFailure('notAvailable');
+    const operation = settingText(args,'operation');
+    if (operation === 'request') await this.request(true);
+    else if (operation !== 'inspect') return settingFailure('invalidArguments');
+    this.refresh();
+    return this.status===abilityAccessCtrl.PermissionStatus.INVALID ? {'state':'unknown','reason':'permissionUnknown'} : {'state':'ready','permission':this.status};
+  }
+
   private refresh(): void {
     try {
       this.status = abilityAccessCtrl.createAtManager().getSelfPermissionStatus('ohos.permission.ACCESS_BLUETOOTH');
@@ -47,7 +65,7 @@ export struct BluetoothMidiPermissionSettings {
    * 才在标准申请确认拒绝状态后调用API12二次设置接口，不依赖API22新入口。
    * 完成结果重新查系统，不把Promise返回或本地布尔变量当作真实授权。
    */
-  private async request(): Promise<void> {
+  private async request(fromSkill: boolean = false): Promise<void> {
     if (this.busy) return;
     this.refresh();
     const previous: abilityAccessCtrl.PermissionStatus = this.status;
@@ -62,6 +80,7 @@ export struct BluetoothMidiPermissionSettings {
     const epoch: number = this.generation;
     try {
       const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+      if (fromSkill) LauncherSkillBus.awaitingUser('bluetoothMidiAccess');
       const result: PermissionRequestResult = await manager.requestPermissionsFromUser(context,
         ['ohos.permission.ACCESS_BLUETOOTH']);
       if (epoch !== this.generation) return;

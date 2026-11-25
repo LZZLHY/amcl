@@ -227,8 +227,8 @@ export function loadPatchSeries(seriesPath) {
     .filter((line) => line && !line.startsWith('#'));
   if (names.length === 0) throw new Error(`SDL patch series has no patches: ${full}`);
 
-  // SDK core现同时承载宿主线程和输入协议。使用既有完整、逐字冻结的pin输入作为这两个
-  // 文件的原始正文，避免大context在稀疏行号中错位；摘要/pin变化必须由已有fixture门拒绝。
+  // 从锁定的 SDL core、事件及窗口源原文重放。窗口补丁可在多行注释中间结束，
+  // 真实基线保留注释结束符，避免后续创建标志函数被稀疏空洞误判为注释。
   // 其他窗口文件仍保留未知行，不能为通过门禁捏造缺失上游源码。
   const lockText = fs.readFileSync(path.join(root, 'deps.lock'), 'utf8').replaceAll('\r\n', '\n');
   const section = /(?:^|\n)\[sdl3-native\]\n([\s\S]*?)(?=\n\[|$)/.exec(lockText);

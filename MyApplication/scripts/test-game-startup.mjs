@@ -29,7 +29,7 @@ function load(file, dependencies, storage) {
 }
 
 /** 每例创建全新模块状态；通知保持pending，用于证明terminateSelf未抢先结束进程。 */
-function scenario(failure = '', observation = false, pendingLedger = false) {
+function scenario(failure = '', pendingLedger = false) {
   const events = [], disk = [], notices = [], values = new Map();
   let persistent = false, monitors = 0, loads = 0, resolveReport, rejectReport;
   const report = new Promise((resolve, reject) => { resolveReport = resolve; rejectReport = reject; });
@@ -38,7 +38,7 @@ function scenario(failure = '', observation = false, pendingLedger = false) {
   const loadCallbacks = [];
   const record = (...args) => { if (persistent) disk.push(args.map(String).join(' ')); };
   const logger = { info: record, error: record, warn: (...args) => {
-    events.push('warn'); if (failure === 'diagnostic-log') throw Error('controlled logger failure'); record(...args);
+    events.push('warn'); record(...args);
   }, debug: record,
     flush: () => events.push('flush'), setNativeLogSink: () => { persistent = true; } };
   const storage = { setOrCreate: (key, value) => values.set(key, value), get: key => values.get(key) };
@@ -51,9 +51,7 @@ function scenario(failure = '', observation = false, pendingLedger = false) {
     return failure === 'isolation' ? -2 : 1;
   }, desktopProcessId: () => 200, amclLogInit: () => {
     events.push('log-init'); if (failure === 'log') throw new Error('disk unavailable');
-  }, getDiagnosticCapabilities: () => {
-    if (failure.startsWith('diagnostic')) throw Error('controlled diagnostic boundary failure'); return 0;
-  }, amclLedgerSetLaunchActivity: noop,
+  }, getDiagnosticCapabilities: () => 0, amclLedgerSetLaunchActivity: noop,
     desktopSetGamepadNativeMode: () => true, desktopGamepadFocus: noop, cancelAllInput: noop,
     setOhosFrameRateForeground: noop, mcForceExit: () => events.push('exit') };
   const monitor = { ensureStarted: () => {
@@ -81,6 +79,8 @@ function scenario(failure = '', observation = false, pendingLedger = false) {
   const dependencies = { 'libentry.so': { default: native }, 'commons': commons, 'feature_core': core,
     'gamecontrol': gamecontrol, '@kit.AbilityKit': { UIAbility }, '@kit.ArkUI': {}, '@kit.CoreFileKit': {},
     'entry/ProductBuildProfile': { ProductBuildProfile: {} }, 'entry/ProductLauncherWindowChrome': {},
+    // 普通启动没有测试会话，实际空适配器也不会绑定局内观测。
+    'entry/ProductQaGame': makePureEtsLoader()('entry/src/main/ets/runtime/UnavailableQaGame.ets'),
     'entry/ProductInputProfile': { ProductInputProfile: { initialize: () => {
       if (failure === 'runtime') throw new Error('runtime setup failed');
     } } }, 'launch': { setLaunchNativeBridge: noop, setRuntimeSlotNativeOps: noop,
@@ -98,11 +98,8 @@ function scenario(failure = '', observation = false, pendingLedger = false) {
     setForeground: active => events.push('audio-foreground-' + active) } };
   const runtime = load(before ? `${archive}/ProcessRuntime-before.txt` : 'entry/src/main/ets/runtime/ProcessRuntime.ets', dependencies, storage);
   Object.assign(dependencies, { '../runtime/ProcessRuntime': runtime,
-    // Want分类/回执运输是独立边缘。普通启动禁止进入诊断；冷诊断只确认不可用回执的原参数。
-    '../components/InputObservationTestWant': { isInputObservationTestWant: () => observation,
-      runInputObservationTestWant: (actualContext, _want, ready) => {
-        assert.equal(observation, true); assert.equal(actualContext, context); assert.equal(ready, false); events.push('observation');
-      } },
+    // 页面退出会同步解绑游戏对话框，使用真实运行时并沿用本用例的 Native 边界。
+    '../runtime/GameDialogRuntime': load('entry/src/main/ets/runtime/GameDialogRuntime.ets', dependencies, storage),
     // 本测试验证Ability准备失败的因果链；已装配宿主的真实停止协议由完整宿主测试执行。
     '../runtime/GameSessionHost': { stopGameSession: () => false,
       requestExistingGameSessionExit: () => { events.push('exit-request'); return undefined; } },
@@ -145,15 +142,6 @@ if (before) {
   assert.ok(!normal.disk.join('\n').includes('private-credential'));
   assert.ok(!normal.events.includes('report') && !normal.events.includes('terminate'));
 
-  // 真实冷分支中Native失败、日志再次失败都须终止Ability，不触碰正常快照/Host/来源初始化。
-  for (const failure of ['', 'diagnostic', 'diagnostic-log']) {
-    const cold = scenario(failure, true); cold.ability.onCreate(cold.want, {}); await settle();
-    assert.equal(cold.events.filter(event => event === 'terminate').length, 1);
-    assert.ok(!cold.events.some(event => ['snapshot', 'input', 'log-init', 'ledger', 'watcher'].includes(event)));
-    assert.equal(cold.events.includes('observation'), failure === '');
-    assert.equal(cold.events.includes('warn'), failure !== '');
-  }
-
   for (const failure of ['snapshot', 'runtime', 'page-params', 'load-throw', 'load-callback']) {
     const test = scenario(failure); test.ability.onCreate(test.want, {});
     test.ability.onWindowStageCreate(test.stage);
@@ -193,7 +181,7 @@ if (before) {
     assert.ok(degraded.events.includes('ca') && degraded.events.includes('audio-attach'));
   }
   // 真正的begin保持pending时，窗口不能加载，CA/音频/输入等producer装配也不能抢跑。
-  const pending = scenario('', false, true); pending.ability.onCreate(pending.want, {});
+  const pending = scenario('', true); pending.ability.onCreate(pending.want, {});
   pending.ability.onWindowStageCreate(pending.stage); await settle();
   assert.equal(pending.loads, 0);
   assert.ok(!pending.events.some(event => ['input', 'ca', 'audio-attach'].includes(event)));
@@ -203,7 +191,7 @@ if (before) {
 
   // attach内部会重置音频前台事实；开账期间到达的真实foreground必须在attach后补发，后台则不能复活。
   for (const background of [false, true]) {
-    const foreground = scenario('', false, true); foreground.ability.onCreate(foreground.want, {});
+    const foreground = scenario('', true); foreground.ability.onCreate(foreground.want, {});
     foreground.ability.onForeground(); if (background) foreground.ability.onBackground();
     foreground.resolveLedger(true); await settle();
     const attachIndex = foreground.events.indexOf('audio-attach');
@@ -214,7 +202,7 @@ if (before) {
 
   // 销毁Ability后迟到的开账结果只保留磁盘事实，不允许复活运行时、页面或错误回传。
   for (const outcome of ['true', 'false', 'reject']) {
-    const retired = scenario('', false, true); retired.ability.onCreate(retired.want, {});
+    const retired = scenario('', true); retired.ability.onCreate(retired.want, {});
     retired.ability.onWindowStageCreate(retired.stage); retired.ability.onDestroy();
     if (outcome === 'reject') retired.rejectLedger(Error('late cancelled IO')); else retired.resolveLedger(outcome === 'true');
     await settle(); assert.equal(retired.loads, 0); assert.equal(retired.notices.length, 0);
@@ -224,7 +212,7 @@ if (before) {
   }
 
   // WindowStage替换只退休旧窗口续体，新窗口仍可等待同一初始化任务，不重复开账。
-  const replaced = scenario('', false, true); replaced.ability.onCreate(replaced.want, {});
+  const replaced = scenario('', true); replaced.ability.onCreate(replaced.want, {});
   replaced.ability.onWindowStageCreate(replaced.stage); replaced.ability.onWindowStageDestroy();
   let replacementLoads = 0;
   replaced.ability.onWindowStageCreate({ loadContent: (_page, callback) => { replacementLoads++; callback({ code: 0 }); } });

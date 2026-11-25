@@ -1,6 +1,6 @@
 """校验桌面回归生成器的精确 hunk 偏移及真实 SDL 补丁链，所有输出位于系统临时目录。
 
-默认从现役 series 重放稀疏源并生成/执行三个 SDL 宿主目标；--repo 显式提供只读 SDL
+默认从现役 series 重放稀疏源并生成/执行四个 SDL 宿主目标；--repo 显式提供只读 SDL
 仓库时，再从 deps.lock pin 导出被补丁引用的原始文件，以真正的 git apply 逐个重放，
 逐已知行核对生成器结果。此测试不修改 SDL checkout、patch 或 pin，也不构建 HAP。
 """
@@ -11,6 +11,7 @@ import argparse
 import re
 import runpy
 import subprocess
+import sys
 import tempfile
 from lib.host_cpp import compile_cpp
 
@@ -53,10 +54,10 @@ def replay_pinned(repo, output):
     folder = root / 'prebuilt/sdl3/patches'
     series = [line.strip() for line in (folder / 'series').read_text(encoding='utf-8').splitlines()
               if line.strip() and not line.lstrip().startswith('#')]
-    paths = sorted(set(name for patch in series for name in re.findall(
-        r'^--- a/(.+)$', (folder / patch).read_text(encoding='utf-8'), re.M)))
+    paths = sorted(set(generator['SDL_REVIEW_UNCHANGED_SOURCES']) | {name for patch in series for name in re.findall(
+        r'^--- a/(.+)$', (folder / patch).read_text(encoding='utf-8'), re.M)})
     output.mkdir()
-    copied = 0
+    originals = {}
     for name in paths:
         target = (output / name).resolve()
         assert target.is_relative_to(output.resolve()), 'patch source path escapes temporary directory'
@@ -66,12 +67,14 @@ def replay_pinned(repo, output):
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content.stdout)
-        copied += 1
-    assert copied > 0, 'no pinned original files loaded'
+        if Path(name).name in generator['SDL_DESKTOP_REVIEW_SOURCES']:
+            originals[name] = content.stdout.decode('utf-8').splitlines()
+    assert originals, 'no pinned original files loaded'
     for patch in series:
         subprocess.run(['git', 'apply', '--check', str(folder / patch)], cwd=output, check=True)
         subprocess.run(['git', 'apply', str(folder / patch)], cwd=output, check=True)
-    print(f'PASS pinned SDL replay: commit={pin} originals={copied} patches={len(series)}')
+    print(f'PASS pinned SDL replay: commit={pin} checkedOriginals={len(originals)} patches={len(series)}')
+    return originals
 
 
 parser = argparse.ArgumentParser()
@@ -81,12 +84,21 @@ verify_offsets()
 with workspace_temporary_directory(prefix='amcl-desktop-generator-') as directory:
     temporary = Path(directory)
     applied = None
+    originals = None
     if args.repo:
         applied = temporary / 'sdl'
-        replay_pinned(args.repo.resolve(), applied)
+        originals = replay_pinned(args.repo.resolve(), applied)
     generated = temporary / 'generated'
-    generator['generate'](generated, applied)
-    for unit in ['sdl_profile', 'sdl_owner', 'sdl_hide']:
+    generator['generate'](generated, applied, originals=originals)
+    if applied is not None:
+        # 独立 CLI 只收到普通打补丁源码目录，也必须为同一真实源生成完全相同的宿主单元。
+        standalone = temporary / 'standalone'
+        subprocess.run([sys.executable, str(root / 'scripts/generate-desktop-review-tests.py'),
+                        '--out', str(standalone), '--sdl-repo', str(applied)], check=True)
+        for file in generated.iterdir():
+            assert file.read_bytes() == (standalone / file.name).read_bytes(), file.name
+        print('PASS standalone --sdl-repo verified against pinned --repo generated sources')
+    for unit in ['sdl_profile', 'sdl_owner', 'sdl_hide', 'sdl_fullscreen']:
         binary = temporary / (unit + '.exe')
         compile_cpp(generated / (unit + '.cpp'), binary, defines=['AMCL_NATIVE_DESKTOP_ONLY=0'])
         subprocess.run([str(binary)], check=True, timeout=20)

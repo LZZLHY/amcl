@@ -118,7 +118,7 @@ endif()
     # 每次只变异外置生产正文；必须编译成功且由真实运行CHECK拒绝，编译失败不算反控。
     for label,before,after in [
         ('callback return report missing','g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_CALLBACK_RETURNED);','/* negative: callback returned but not recorded */'),
-        ('actual poll report missing','g_sourcePlaneAggregate.ObservePoll(kind,code,held);','/* negative: actual poll not recorded */'),
+        ('actual poll report missing','g_sourcePlaneAggregate.ObserveTargetPoll(window->windowId,kind,code,held);','/* negative: actual poll not recorded */'),
         ('callback completion reported early','win->keyCb(win, event.key, scanCode,','g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_CALLBACK_RETURNED);\n        win->keyCb(win, event.key, scanCode,'),
         ('void sink failure falsely reports cache','g_sourcePlaneAggregate.Complete(event.receipt, AMCL_CONTROL_DISCARDED);','/* negative: no actual cache written, but facade still finalizes */'),
         ('actual target identity guard removed','event.receipt.target != win->windowId ||','/* negative: actual window identity not checked */'),

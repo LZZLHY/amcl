@@ -1,0 +1,593 @@
+[
+  {
+    "name": "getExportPlan",
+    "description": "打开或读取原版游戏包导出计划、共享范围、格式、依赖及分层内容树。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      },
+      {
+        "name": "group",
+        "type": "string",
+        "required": false,
+        "description": "上一级返回的分组 id，省略表示根"
+      },
+      {
+        "name": "offset",
+        "type": "integer",
+        "description": "条目起始位置",
+        "required": false
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "instance": {
+        "type": "string"
+      },
+      "shared": {
+        "type": "boolean"
+      },
+      "format": {
+        "type": "string"
+      },
+      "launcher": {
+        "type": "string"
+      },
+      "supportsPcl": {
+        "type": "boolean"
+      },
+      "nodes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ]
+        }
+      },
+      "total": {
+        "type": "integer"
+      },
+      "dirty": {
+        "type": "boolean"
+      },
+      "checked": {
+        "type": "boolean"
+      },
+      "issues": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "recipient": {
+        "type": "string"
+      },
+      "planSummary": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "format",
+        "nodes"
+      ]
+    },
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "configureExport",
+    "description": "在原导出器选择完整包、Modrinth 或 CurseForge 格式及适用的接收启动器。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      },
+      {
+        "name": "format",
+        "type": "string",
+        "required": true,
+        "description": "导出格式",
+        "enum": [
+          "full",
+          "modrinth",
+          "curseforge"
+        ]
+      },
+      {
+        "name": "launcher",
+        "type": "string",
+        "required": true,
+        "description": "接收启动器",
+        "enum": [
+          "hmcl",
+          "pcl"
+        ]
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "format": {
+        "type": "string"
+      },
+      "launcher": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "format",
+        "launcher"
+      ]
+    },
+    "inputExamples": [
+      {
+        "instance": "示例实例",
+        "format": "full",
+        "launcher": "hmcl"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "format": "full",
+        "launcher": "hmcl"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "format",
+          "launcher"
+        ],
+        "echoArgs": {
+          "format": "format",
+          "launcher": "launcher"
+        },
+        "example": {
+          "format": "full",
+          "launcher": "hmcl"
+        }
+      }
+    ]
+  },
+  {
+    "name": "selectExportContent",
+    "description": "按真实盘点的分组或条目选择是否包含目录、文件或世界。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      },
+      {
+        "name": "node",
+        "type": "string",
+        "required": true,
+        "description": "getExportPlan 返回的节点 id"
+      },
+      {
+        "name": "selected",
+        "description": "是否纳入导出",
+        "required": true,
+        "type": "boolean"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "node": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "node"
+      ]
+    },
+    "echoArgs": {
+      "node": "node"
+    }
+  },
+  {
+    "name": "resetExportContent",
+    "description": "将当前格式的内容恢复为产品默认选择。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "selectedCount": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "selectedCount"
+      ]
+    }
+  },
+  {
+    "name": "saveExportDraft",
+    "description": "将本次导出选择保存到原产品草稿。打开同一实例时按产品规则恢复。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {}
+  },
+  {
+    "name": "discardExportEdits",
+    "description": "请求离开，存在未保存修改时由用户在原确认对话框中选择保存、放弃或继续。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable",
+      "needsUser"
+    ],
+    "output": {
+      "unsaved": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "unsaved"
+      ],
+      "needsUser": [
+        "unsaved"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "unsaved": true
+      }
+    }
+  },
+  {
+    "name": "retryExport",
+    "description": "从导出结果返回配置并放弃旧预览，重试前需要重新核对方案。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "checked": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "checked"
+      ]
+    }
+  },
+  {
+    "name": "checkExportPlan",
+    "description": "对当前导出选择运行真实计划检查，返回一次性预览引用与预估。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "plan": {
+        "type": "string",
+        "minLength": 1
+      },
+      "files": {
+        "type": "integer"
+      },
+      "bytes": {
+        "type": "integer"
+      },
+      "downloads": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "plan",
+        "files",
+        "bytes",
+        "downloads"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "plan": "fc769f4f-65bd-4287-984d-124d1056465c",
+        "files": 8,
+        "bytes": 4096,
+        "downloads": 1
+      },
+      "failed": {
+        "reason": "planUnavailable"
+      }
+    },
+    "inputExamples": [
+      {
+        "instance": "示例实例"
+      }
+    ]
+  },
+  {
+    "name": "startExport",
+    "description": "持本次检查的预览引用，打开系统另存，按原选择生成导出包。可用 getExportTask 核对结果。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      },
+      {
+        "name": "plan",
+        "type": "string",
+        "required": true,
+        "description": "checkExportPlan 返回的当前预览引用"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "busy",
+      "initializing",
+      "unavailable",
+      "needsUser"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "savePicker"
+      },
+      "failed": {
+        "reason": "planChanged"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "inputExamples": [
+      {
+        "instance": "示例实例",
+        "plan": "fc769f4f-65bd-4287-984d-124d1056465c"
+      }
+    ]
+  },
+  {
+    "name": "getExportTask",
+    "description": "读取导出任务的实际阶段、文件数、最终回读状态、大小及摘要。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      },
+      {
+        "name": "taskId",
+        "type": "string",
+        "required": false,
+        "description": "已知原任务身份，省略时读取当前导出面板对应任务"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "ready",
+      "busy",
+      "unavailable"
+    ],
+    "output": {
+      "taskId": {
+        "type": "string"
+      },
+      "taskState": {
+        "type": "string"
+      },
+      "phase": {
+        "type": "string"
+      },
+      "verified": {
+        "type": "boolean"
+      },
+      "digest": {
+        "type": "string"
+      },
+      "size": {
+        "type": "integer"
+      },
+      "picker": {
+        "type": "string"
+      },
+      "platform": {
+        "type": "string"
+      },
+      "recipientGuide": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "taskId",
+        "phase",
+        "taskState",
+        "verified"
+      ]
+    },
+    "examples": {
+      "unavailable": {
+        "reason": "noMatchingTask",
+        "picker": "waiting"
+      },
+      "ready": {
+        "taskId": "1795456400000-20156704-92b4-4089-8e65-08acc41d36f8",
+        "phase": "准备导出",
+        "taskState": "running",
+        "verified": false
+      }
+    },
+    "echoArgs": {
+      "taskId": "taskId"
+    },
+    "inputExamples": [
+      {
+        "instance": "示例实例",
+        "taskId": "1795456400000-20156704-92b4-4089-8e65-08acc41d36f8"
+      },
+      {
+        "instance": "示例实例"
+      }
+    ]
+  },
+  {
+    "name": "cancelExportTask",
+    "description": "请求取消正在执行的指定原任务，然后读取原任务直到自然终态。",
+    "args": [
+      {
+        "name": "instance",
+        "type": "string",
+        "required": true,
+        "description": "原安装清单中的准确实例名"
+      },
+      {
+        "name": "taskId",
+        "type": "string",
+        "required": true,
+        "description": "当前导出任务身份"
+      }
+    ],
+    "domain": "gameExport",
+    "results": [
+      "busy",
+      "unavailable",
+      "accepted"
+    ],
+    "output": {
+      "taskId": {
+        "type": "string"
+      },
+      "taskState": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "taskId",
+        "taskState"
+      ]
+    },
+    "echoArgs": {
+      "taskId": "taskId"
+    },
+    "inputExamples": [
+      {
+        "instance": "示例实例",
+        "taskId": "1795456400000-20156704-92b4-4089-8e65-08acc41d36f8"
+      }
+    ],
+    "examples": {
+      "accepted": {
+        "taskId": "1795456400000-20156704-92b4-4089-8e65-08acc41d36f8",
+        "taskState": "cancelling"
+      }
+    }
+  }
+]

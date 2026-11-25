@@ -1,0 +1,466 @@
+diff --git a/src/events/SDL_inputdelivery_c.h b/src/events/SDL_inputdelivery_c.h
+--- a/src/events/SDL_inputdelivery_c.h
++++ b/src/events/SDL_inputdelivery_c.h
+@@ -10,9 +10,17 @@
+ /* 真实状态getter观测入口，仅计ABI读事实，不声明最终游戏处理。 */
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveKeyboardPoll(const bool *states, int count);
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveMousePoll(SDL_MouseButtonFlags state);
+-extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveLookPoll(double x, double y);
+ #endif
+ #endif
++/* 仅scoped实体IME的不可变需求；回读为宿主原子读取，不在SDL队列锁内调用系统服务。 */
++typedef struct SDL_AMCL_TextDemand {
++    Uint64 identity;
++    Uint64 (*peek)(void);
++} SDL_AMCL_TextDemand;
++static inline bool SDL_AMCL_TextDemandCurrent(const SDL_AMCL_TextDemand *demand)
++{
++    return !demand->identity || (demand->peek && demand->peek() == demand->identity);
++}
+ typedef struct SDL_AMCL_InputReceipt {
+     void *context;
+     bool (*current)(void *context);
+@@ -20,9 +28,13 @@
+     SDL_WindowID target;
+     /* 原目标已退休且无法再发事件时，仅在共享端口认可的old UP上清实际ABI缓存。 */
+     bool cacheOnly, cached, posted;
++    SDL_AMCL_TextDemand textDemand;
+ } SDL_AMCL_InputReceipt;
+ static bool SDL_AMCL_InputCurrent(SDL_AMCL_InputReceipt *receipt) {
+-    return !receipt || (receipt->target && receipt->current && receipt->cacheApplied && receipt->current(receipt->context));
++    if (!receipt) return true;
++    if (!receipt->target || !SDL_AMCL_TextDemandCurrent(&receipt->textDemand)) return false;
++    if (receipt->current && receipt->cacheApplied) return receipt->current(receipt->context);
++    return receipt->textDemand.identity && !receipt->current && !receipt->cacheApplied;
+ }
+ static void SDL_AMCL_InputCacheApplied(SDL_AMCL_InputReceipt *receipt) {
+     if (receipt) { receipt->cached = true; receipt->cacheApplied(receipt->context); }
+@@ -32,5 +44,6 @@
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveKeyboardPoll(const bool *states, int count);
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveMousePoll(SDL_MouseButtonFlags state);
+ extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveLookPoll(double x, double y);
++extern SDL_AMCL_INPUT_HIDDEN void SDL_AMCL_ObserveLookPoll(double x, double y);
+ #endif
+ #endif
+diff --git a/src/events/SDL_events.c b/src/events/SDL_events.c
+--- a/src/events/SDL_events.c
++++ b/src/events/SDL_events.c
+@@ -148,6 +148,7 @@
+ typedef struct SDL_EventEntry
+ {
+     SDL_Event event;
++    SDL_AMCL_TextDemand textDemand;
+     SDL_TemporaryMemory *memory;
+     struct SDL_EventEntry *prev;
+     struct SDL_EventEntry *next;
+@@ -1068,7 +1069,7 @@
+ }
+ 
+ // Add an event to the event queue -- called with the queue locked
+-static int SDL_AddEvent(SDL_Event *event)
++static int SDL_AddEvent(SDL_Event *event, const SDL_AMCL_InputReceipt *receipt)
+ {
+     SDL_EventEntry *entry;
+     const int initial_count = SDL_GetAtomicInt(&SDL_EventQ.count);
+@@ -1094,6 +1095,9 @@
+     }
+ 
+     SDL_copyp(&entry->event, event);
++    /* free-list结点复用时，普通事件也必须显式清除任何旧IME标记。 */
++    SDL_zero(entry->textDemand);
++    if (receipt) entry->textDemand = receipt->textDemand;
+     if (event->type == SDL_EVENT_POLL_SENTINEL) {
+         SDL_AddAtomicInt(&SDL_sentinel_pending, 1);
+     }
+@@ -1173,8 +1177,9 @@
+ }
+ 
+ // Lock the event queue, take a peep at it, and unlock it
+-static int SDL_PeepEventsInternal(SDL_Event *events, int numevents, SDL_EventAction action,
+-                                  Uint32 minType, Uint32 maxType, bool include_sentinel)
++static int SDL_PeepEventsInternalWithReceipt(SDL_Event *events, int numevents, SDL_EventAction action,
++                                             Uint32 minType, Uint32 maxType, bool include_sentinel,
++                                             SDL_AMCL_InputReceipt *receipt)
+ {
+     int i, used, sentinels_expected = 0;
+ 
+@@ -1199,7 +1204,7 @@
+                 return -1;
+             }
+             for (i = 0; i < numevents; ++i) {
+-                used += SDL_AddEvent(&events[i]);
++                if (!receipt || SDL_AMCL_TextDemandCurrent(&receipt->textDemand)) used += SDL_AddEvent(&events[i], receipt);
+             }
+         } else {
+             SDL_EventEntry *entry, *next;
+@@ -1207,6 +1212,11 @@
+ 
+             for (entry = SDL_EventQ.head; entry && (events == NULL || used < numevents); entry = next) {
+                 next = entry->next;
++                /* 在SDK队列最终读/peek处再核原文本需求，旧记录只走原内存清理路径。 */
++                if (!SDL_AMCL_TextDemandCurrent(&entry->textDemand)) {
++                    SDL_CutEvent(entry);
++                    continue;
++                }
+                 type = entry->event.type;
+                 if (minType <= type && type <= maxType) {
+                     if (events) {
+@@ -1243,6 +1253,12 @@
+ 
+     return used;
+ }
++static int SDL_PeepEventsInternal(SDL_Event *events, int numevents, SDL_EventAction action,
++                                  Uint32 minType, Uint32 maxType, bool include_sentinel)
++{
++    return SDL_PeepEventsInternalWithReceipt(events, numevents, action, minType, maxType, include_sentinel, NULL);
++}
++
+ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_EventAction action,
+                    Uint32 minType, Uint32 maxType)
+ {
+@@ -1856,7 +1872,7 @@
+ 
+     /* filter/watchers在队列ADD之前同步执行，旧ticket/target可在此边缘失效。 */
+     if (!SDL_AMCL_InputCurrent(receipt)) return false;
+-    if (SDL_PeepEvents(event, 1, SDL_ADDEVENT, 0, 0) <= 0) {
++    if (SDL_PeepEventsInternalWithReceipt(event, 1, SDL_ADDEVENT, 0, 0, false, receipt) <= 0) {
+         return false;
+     }
+ 
+diff --git a/src/events/SDL_keyboard.c b/src/events/SDL_keyboard.c
+--- a/src/events/SDL_keyboard.c
++++ b/src/events/SDL_keyboard.c
+@@ -797,13 +797,12 @@
+     return keyboard->hardware_timestamp ? true : false;
+ }
+ 
+-void SDL_SendKeyboardText(const char *text)
+-{
+-    SDL_Keyboard *keyboard = &SDL_keyboard;
+-
+-    if (!keyboard->focus || !SDL_TextInputActive(keyboard->focus)) {
+-        return;
+-    }
++void SDL_SendKeyboardTextWithReceipt(const char *text, SDL_AMCL_InputReceipt *receipt)
++{
++    SDL_Keyboard *keyboard = &SDL_keyboard;
++
++    if (!keyboard->focus || !SDL_TextInputActive(keyboard->focus) ||
++        (receipt && receipt->target != keyboard->focus->id) || !SDL_AMCL_InputCurrent(receipt)) return;
+ 
+     if (!text || !*text) {
+         return;
+@@ -824,17 +823,21 @@
+         if (!event.text.text) {
+             return;
+         }
+-        SDL_PushEvent(&event);
+-    }
+-}
+-
+-void SDL_SendEditingText(const char *text, int start, int length)
+-{
+-    SDL_Keyboard *keyboard = &SDL_keyboard;
+-
+-    if (!keyboard->focus || !SDL_TextInputActive(keyboard->focus)) {
+-        return;
+-    }
++        (void)SDL_PushEventWithReceipt(&event, receipt);
++    }
++}
++
++void SDL_SendKeyboardText(const char *text)
++{
++    SDL_SendKeyboardTextWithReceipt(text, NULL);
++}
++
++void SDL_SendEditingTextWithReceipt(const char *text, int start, int length, SDL_AMCL_InputReceipt *receipt)
++{
++    SDL_Keyboard *keyboard = &SDL_keyboard;
++
++    if (!keyboard->focus || !SDL_TextInputActive(keyboard->focus) ||
++        (receipt && receipt->target != keyboard->focus->id) || !SDL_AMCL_InputCurrent(receipt)) return;
+ 
+     if (!text) {
+         return;
+@@ -853,8 +856,13 @@
+         if (!event.edit.text) {
+             return;
+         }
+-        SDL_PushEvent(&event);
+-    }
++        (void)SDL_PushEventWithReceipt(&event, receipt);
++    }
++}
++
++void SDL_SendEditingText(const char *text, int start, int length)
++{
++    SDL_SendEditingTextWithReceipt(text, start, length, NULL);
+ }
+ 
+ static const char * const *CreateCandidatesForEvent(char **candidates, int num_candidates)
+diff --git a/src/events/SDL_keyboard_c.h b/src/events/SDL_keyboard_c.h
+--- a/src/events/SDL_keyboard_c.h
++++ b/src/events/SDL_keyboard_c.h
+@@ -76,6 +76,8 @@
+ 
+ // Send editing text for selected range from start to end
+ extern void SDL_SendEditingText(const char *text, int start, int length);
++extern SDL_AMCL_INPUT_HIDDEN void SDL_SendKeyboardTextWithReceipt(const char *text, SDL_AMCL_InputReceipt *receipt);
++extern SDL_AMCL_INPUT_HIDDEN void SDL_SendEditingTextWithReceipt(const char *text, int start, int length, SDL_AMCL_InputReceipt *receipt);
+ 
+ // Send editing text candidates, which will be copied into the event
+ extern void SDL_SendEditingTextCandidates(char **candidates, int num_candidates, int selected_candidate, bool horizontal);
+diff --git a/src/video/openharmony/SDL_amclpresentation.h b/src/video/openharmony/SDL_amclpresentation.h
+--- a/src/video/openharmony/SDL_amclpresentation.h
++++ b/src/video/openharmony/SDL_amclpresentation.h
+@@ -46,6 +46,10 @@
+     void (*observeDrawable)(void *, uint64_t, uint64_t, int, int, uint32_t);
+     /* 仅镜像新增只读身份尾部；SDL视频仍按各自所需前缀判断旧宿主，不扩大必需长度。 */
+     int (*matchesPresentationIdentity)(void *, uint64_t, uint64_t, uint64_t);
++    /* 按呈现窗口发布SDL真实文本需求。旧宿主无此可选尾部，继续原行为。 */
++    int (*setTextInputDemand)(void *, uint64_t, uint32_t, uint32_t);
++    uint32_t (*peekTextInputDemand)(void);
++    uint64_t (*textInputDemandIdentity)(void);
+ } AMCL_NativeWindowLeaseBrokerV2;
+ #define AMCL_INPUT_FOREGROUND_BROKER_SIZE \
+     ((uint32_t)(offsetof(AMCL_NativeWindowLeaseBrokerV2, peekInputForeground) + \
+diff --git a/src/video/openharmony/SDL_openharmonywindow.h b/src/video/openharmony/SDL_openharmonywindow.h
+--- a/src/video/openharmony/SDL_openharmonywindow.h
++++ b/src/video/openharmony/SDL_openharmonywindow.h
+@@ -121,6 +121,9 @@
+     const void *native_window_lease_broker;
+     bool native_window_lease_owned;
+     Uint64 native_window_lease_generation;
++    /* 避免在每次事件泵重复写入同一文本请求，换发布代自动重投影。 */
++    Uint64 amcl_text_input_generation;
++    bool amcl_text_input_wanted;
+     /* Logical presented GL session. Lease copies never own or release this token. */
+     AMCL_PresentationOwner presentation;
+     void *amcl_pending_native_window;
+diff --git a/src/video/openharmony/SDL_openharmonyvideo.c b/src/video/openharmony/SDL_openharmonyvideo.c
+--- a/src/video/openharmony/SDL_openharmonyvideo.c
++++ b/src/video/openharmony/SDL_openharmonyvideo.c
+@@ -462,6 +462,55 @@
+     return true;
+ }
+ 
++/* 只向宿主投影当前呈现窗口的文本需求；独立窗口、辅助pbuffer不接管系统IME。 */
++static void OPENHARMONY_PublishTextInputDemand(SDL_Window *window, bool wanted)
++{
++    SDL_WindowData *data = window ? window->internal : NULL;
++    if (!data || data->role != OPENHARMONY_WINDOW_PRESENTED || !data->native_window_lease_generation) {
++        return;
++    }
++    const AMCL_NativeWindowLeaseBrokerV2 *broker =
++        (const AMCL_NativeWindowLeaseBrokerV2 *)data->native_window_lease_broker;
++    if (!broker ||
++        broker->structSize < offsetof(AMCL_NativeWindowLeaseBrokerV2, setTextInputDemand) + sizeof(broker->setTextInputDemand) ||
++        !broker->setTextInputDemand ||
++        (data->amcl_text_input_generation == data->native_window_lease_generation &&
++         data->amcl_text_input_wanted == wanted)) {
++        return;
++    }
++    if (broker->setTextInputDemand(data->native_window, data->native_window_lease_generation, window->id, wanted)) {
++        data->amcl_text_input_generation = data->native_window_lease_generation;
++        data->amcl_text_input_wanted = wanted;
++    }
++}
++
++static bool OPENHARMONY_StartHostTextInput(SDL_VideoDevice *device, SDL_Window *window, SDL_PropertiesID props)
++{
++    (void)device;
++    (void)props;
++    if (SDL_GetKeyboardFocus() == window) {
++        OPENHARMONY_PublishTextInputDemand(window, true);
++    }
++    return true;
++}
++
++static bool OPENHARMONY_StopHostTextInput(SDL_VideoDevice *device, SDL_Window *window)
++{
++    (void)device;
++    OPENHARMONY_PublishTextInputDemand(window, false);
++    return true;
++}
++
++static void OPENHARMONY_PumpEventsWithHostTextInput(SDL_VideoDevice *device)
++{
++    OPENHARMONY_PumpEvents(device);
++    /* 跨窗口重配置后按SDL焦点与真实文本位补投影，不重放文本或借辅助窗口接管。 */
++    SDL_Window *focus = SDL_GetKeyboardFocus();
++    if (focus) {
++        OPENHARMONY_PublishTextInputDemand(focus, SDL_TextInputActive(focus));
++    }
++}
++
+ static SDL_VideoDevice *OPENHARMONY_CreateDevice(void)
+ {
+     SDL_VideoDevice *device;
+@@ -537,7 +586,9 @@
+     device->SuspendScreenSaver = OPENHARMONY_SuspendScreenSaver;
+ #endif
+ 
+-    device->PumpEvents = OPENHARMONY_PumpEvents;
++    device->PumpEvents = OPENHARMONY_PumpEventsWithHostTextInput;
++    device->StartTextInput = OPENHARMONY_StartHostTextInput;
++    device->StopTextInput = OPENHARMONY_StopHostTextInput;
+ 
+ #if 0  // !!! FIXME
+     // Screen keyboard
+diff --git a/src/video/openharmony/SDL_openharmonyamcl.c b/src/video/openharmony/SDL_openharmonyamcl.c
+--- a/src/video/openharmony/SDL_openharmonyamcl.c
++++ b/src/video/openharmony/SDL_openharmonyamcl.c
+@@ -1657,16 +1657,21 @@
+ 
+ /* claim仅表示进入SDK围栏；缓存写点先phase0，真实SDL_PushEvent返回true才phase2。
+  * filter拒绝/事件disabled仍可能改变真实缓存，因此以STATE_FINAL完成，绝不称游戏已读取。 */
+-static void OPENHARMONY_DeliverControl(const AmclControlEmissionV1 *emission, Uint64 time, bool teardown)
++static void OPENHARMONY_DeliverControlScoped(const AmclControlEmissionV1 *emission, Uint64 time, bool teardown,
++                                               const SDL_AMCL_InputReceipt *textScope)
+ {
+     if (!host_control_port || !emission) return;
+     SDL_Window *input = OPENHARMONY_AMCL_GetInputWindow();
++    /* 已接纳的旧IME DOWN可能写过SDL缓存。对应UP只清缓存，不交付给新的文本需求。 */
++    const bool stale_text = textScope && !SDL_AMCL_TextDemandCurrent(&textScope->textDemand);
+     const bool cache_only = emission->action == AMCL_CONTROL_UP &&
+-        (!input || input->id != emission->target || !OPENHARMONY_AMCL_GetLiveInputWindowForTeardown((SDL_WindowID)emission->target));
++        (stale_text || !input || input->id != emission->target ||
++         !OPENHARMONY_AMCL_GetLiveInputWindowForTeardown((SDL_WindowID)emission->target));
+     OPENHARMONY_ControlContext context = { host_control_port, *emission, teardown || cache_only, cache_only };
+     if (!OPENHARMONY_ControlCurrent(&context) || context.port->claim(emission) != AMCL_CONTROL_EDGE) return;
+     SDL_AMCL_InputReceipt receipt = { &context, OPENHARMONY_ControlCurrent,
+-        OPENHARMONY_ControlCacheApplied, (SDL_WindowID)emission->target, cache_only, false, false };
++        OPENHARMONY_ControlCacheApplied, (SDL_WindowID)emission->target, cache_only, false, false, { 0, NULL } };
++    if (textScope && !cache_only) receipt.textDemand = textScope->textDemand;
+     /* SDK的filter/watchers可以读cache与Poll；原始来源pull不能在当前交接未结束时嵌套。 */
+     ++host_control_dispatch_depth;
+     if (emission->kind == AMCL_CONTROL_KEY) {
+@@ -1683,19 +1688,30 @@
+         (receipt.cached ? AMCL_CONTROL_STATE_FINAL : AMCL_CONTROL_DISCARDED));
+ }
+ 
++static void OPENHARMONY_DeliverControl(const AmclControlEmissionV1 *emission, Uint64 time, bool teardown)
++{
++    OPENHARMONY_DeliverControlScoped(emission, time, teardown, NULL);
++}
++
+ /* 仅翻译上游来源身份与SDL码值，不保存plane集合。键盘typed已是Core汇总，按钮保留设备owner。 */
+-static void OPENHARMONY_SendKeyFromPlane(Uint8 plane, Uint64 time, int raw, SDL_Scancode key, int action)
++static void OPENHARMONY_SendKeyFromPlaneScoped(Uint8 plane, Uint64 time, int raw, SDL_Scancode key, int action,
++                                               const SDL_AMCL_InputReceipt *textScope)
+ {
+     SDL_Window *window = OPENHARMONY_AMCL_GetInputWindow();
+     if ((plane != 1 && plane != 2) || key <= SDL_SCANCODE_UNKNOWN || key >= SDL_SCANCODE_COUNT ||
+-        !window || !OPENHARMONY_ControlReady(window->id)) return;
++        !window || !OPENHARMONY_ControlReady(window->id) ||
++        (textScope && action != AMCL_CONTROL_UP && !SDL_AMCL_TextDemandCurrent(&textScope->textDemand))) return;
+     AmclControlEmissionV1 emission;
+     const int status = host_control_port->apply(host_control_consumer, plane == 1 ? AMCL_CONTROL_LEGACY : AMCL_CONTROL_TYPED,
+         0, AMCL_CONTROL_KEY, key, raw, action, &emission);
+     if (status == AMCL_CONTROL_PRESSURE) SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "openharmony: control key pressure consumer=%llu", (unsigned long long)host_control_consumer);
+     if (status == AMCL_CONTROL_EDGE) {
+-        OPENHARMONY_DeliverControl(&emission, time, false);
+-    }
++        OPENHARMONY_DeliverControlScoped(&emission, time, false, textScope);
++    }
++}
++static void OPENHARMONY_SendKeyFromPlane(Uint8 plane, Uint64 time, int raw, SDL_Scancode key, int action)
++{
++    OPENHARMONY_SendKeyFromPlaneScoped(plane, time, raw, key, action, NULL);
+ }
+ static void OPENHARMONY_SendButtonFromPlane(Uint8 plane, Uint64 device, Uint64 time,
+     SDL_Window *window, Uint8 button, bool down)
+@@ -2105,6 +2121,39 @@
+     SDL_free(encoded);
+ }
+ 
++/* 64字节事件布局保持。普通键不使用标记，文本事件的原闲置rawCode/lockState承载序号。 */
++#define AMCL_BACKEND_SCOPED_TEXT_KEY_REASON 0x494d4501u
++static Uint64 OPENHARMONY_TypedTextDemand(const AMCL_BackendInputEvent *event)
++{
++    switch (event->eventType) {
++    case AMCL_BACKEND_EVENT_KEY:
++        return event->resetReason == AMCL_BACKEND_SCOPED_TEXT_KEY_REASON ? event->deviceId : 0;
++    case AMCL_BACKEND_EVENT_TEXT_SESSION:
++    case AMCL_BACKEND_EVENT_TEXT_COMMIT:
++    case AMCL_BACKEND_EVENT_TEXT_EDITING:
++        return ((Uint64)event->lockState << 32u) | (Uint32)event->rawCode;
++    default:
++        return 0;
++    }
++}
++
++static SDL_AMCL_InputReceipt *OPENHARMONY_InitTextReceipt(SDL_Window *window, Uint64 demand,
++                                                           SDL_AMCL_InputReceipt *receipt)
++{
++    if (!demand) return NULL;
++    SDL_zero(*receipt);
++    receipt->target = window->id;
++    receipt->textDemand.identity = demand;
++    const SDL_WindowData *data = window->internal;
++    const AMCL_NativeWindowLeaseBrokerV2 *broker = data
++        ? (const AMCL_NativeWindowLeaseBrokerV2 *)data->native_window_lease_broker : NULL;
++    if (broker && broker->structSize >= offsetof(AMCL_NativeWindowLeaseBrokerV2, textInputDemandIdentity) +
++            sizeof(broker->textInputDemandIdentity)) {
++        receipt->textDemand.peek = broker->textInputDemandIdentity;
++    }
++    return receipt;
++}
++
+ static void OPENHARMONY_PumpTypedEvents(OPENHARMONY_HostBridge *bridge)
+ {
+     OPENHARMONY_TypedNextFn typed_next = OPENHARMONY_GetTypedNext(bridge);
+@@ -2180,15 +2229,18 @@
+             }
+             return;
+         }
++        SDL_AMCL_InputReceipt text_receipt;
++        SDL_AMCL_InputReceipt *scope = OPENHARMONY_InitTextReceipt(input_window,
++            OPENHARMONY_TypedTextDemand(&event), &text_receipt);
+         switch (event.eventType) {
+         case AMCL_BACKEND_EVENT_KEY:
+             // `rawCode` is the platform hardware scan code when the platform
+             // reported one. The legacy path could only ever pass the GLFW key
+             // back as its own raw code, because the first translation dropped it.
+-            OPENHARMONY_SendKeyFromPlane(2, event.monotonicTimeNs, event.rawCode,
+-                                        (SDL_Scancode)event.code,
+-                                        event.action == AMCL_BACKEND_ACTION_UP ? 0 :
+-                                        (event.action == AMCL_BACKEND_ACTION_REPEAT ? 2 : 1));
++            OPENHARMONY_SendKeyFromPlaneScoped(2, event.monotonicTimeNs, event.rawCode,
++                                              (SDL_Scancode)event.code,
++                                              event.action == AMCL_BACKEND_ACTION_UP ? 0 :
++                                              (event.action == AMCL_BACKEND_ACTION_REPEAT ? 2 : 1), scope);
+             break;
+ 
+         case AMCL_BACKEND_EVENT_BUTTON:
+@@ -2287,7 +2339,7 @@
+                 event.code == (Sint32)AMCL_TEXT_SESSION_ABORTED) {
+                 // SDL has no independent session token. Clearing the active
+                 // composition is the only portable end/abort operation.
+-                SDL_SendEditingText("", 0, 0);
++                SDL_SendEditingTextWithReceipt("", 0, 0, scope);
+             }
+             break;
+ 
+@@ -2304,7 +2356,7 @@
+                 OPENHARMONY_RecordTextDegradation(
+                     "commit-invalid", &amcl_typed_text_degraded_editing);
+             } else {
+-                SDL_SendKeyboardText((const char *)text);
++                SDL_SendKeyboardTextWithReceipt((const char *)text, scope);
+             }
+             SDL_free(text);
+             break;
+@@ -2323,9 +2375,9 @@
+                 OPENHARMONY_RecordTextDegradation(
+                     "editing-invalid", &amcl_typed_text_degraded_editing);
+             } else {
+-                SDL_SendEditingText(
++                SDL_SendEditingTextWithReceipt(
+                     (const char *)text, (int)event.action,
+-                    (int)event.modifiers);
++                    (int)event.modifiers, scope);
+             }
+             SDL_free(text);
+             break;

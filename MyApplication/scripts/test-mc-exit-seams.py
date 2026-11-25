@@ -36,15 +36,20 @@ PREFIX = r'''
 // 桩只替代外部模块与系统副作用；所有判断顺序来自下面原样插入的生产函数。
 static std::atomic<bool> g_mcRunning{true};
 static std::string g_markerPath = "/synthetic/window-destroy.flag";
-static bool authorized, pending, marker, rendererMarker, ack;
-static int statReads, rendererReads, taints, acknowledgements, exits, exitCode;
+static bool authorized, pending, marker, rendererMarker, ack, phoneAuthorized, phoneDecline, phonePending;
+static int statReads, rendererReads, taints, acknowledgements, declines, claims, exits, exitCode;
 // 会话日志仅替换模块边界，原 ACK/授权判定仍来自生产函数；计数用来验证强制退出不伪封账。
 static int ledgerEnds, rawFinishes;
 static long long amclLedgerGetLaunchActivity() { return 101; }
 static void amclLedgerEnd(long long) { ++ledgerEnds; }
+static int amclLedgerEndChecked(long long) { ++ledgerEnds; return 1; }
 namespace amcl::sessionlog { static void finish() { ++rawFinishes; } }
 static bool amclGameExitAuthorizedForCurrentProcess() { return authorized; }
 static bool amclGameExitPendingForCurrentProcess() { return pending; }
+static bool amclPhoneExitAuthorized() { return phoneAuthorized; }
+static bool amclPhoneRestartDecline() { ++declines; return phoneDecline; }
+static bool amclPhoneRestartPending() { return phonePending; }
+static bool amclPhoneRestartClaim() { return ++claims == 1 && phonePending; }
 static bool rendererRestartMarkerPresent() { ++rendererReads; return rendererMarker; }
 static void markRendererProcessTainted(const char*) { ++taints; }
 static bool amclGameExitAcknowledgeRequested() { ++acknowledgements; return ack; }
@@ -54,6 +59,7 @@ static void stub_exit(int code) { ++exits; exitCode = code; }
 #define stat stub_stat
 #define _exit stub_exit
 #define AMCL_LOG_I(...) ((void)0)
+#define AMCL_LOG_W(...) ((void)0)
 '''
 
 SUFFIX = r'''
@@ -66,7 +72,9 @@ static void expect(bool value, const char* message) {
 }
 static void reset() {
     authorized = pending = marker = rendererMarker = ack = false;
+    phoneAuthorized = phoneDecline = phonePending = false;
     statReads = rendererReads = taints = acknowledgements = exits = 0;
+    declines = claims = 0;
     ledgerEnds = rawFinishes = 0;
     exitCode = -999;
     g_mcRunning = true;
@@ -81,6 +89,12 @@ int main() {
     reset(); authorized = true; marker = true; pending = false;
     expect(mcIsRunning() == 1, "record-writing authorized interval must stay running");
     expect(statReads == 0, "record-writing gap cannot consume window marker");
+
+    reset(); phoneAuthorized = true; marker = true;
+    expect(mcIsRunning() == 1, "opt-in phone rejects window marker before shutdown record");
+    expect(statReads == 0, "phone record-writing interval cannot consume window marker");
+    pending = true;
+    expect(mcIsRunning() == 0, "actual phone shutdown wakes the normal UI poll");
 
     reset(); authorized = true; marker = true; pending = true; rendererMarker = true;
     expect(mcIsRunning() == 0, "real exit pending must wake existing UI exit poll");
@@ -107,7 +121,7 @@ int main() {
     reset(); ack = true;
     mcForceExit();
     expect(acknowledgements == 1, "UI force-exit tries the pending ACK exactly once");
-    expect(exits == 0, "accepted ACK must not call _exit(0) and destroy saved nonzero code");
+    expect(exits == 0 && declines == 0, "accepted ACK must not call _exit(0) and destroy saved nonzero code");
     reset(); ack = false;
     mcForceExit();
     expect(acknowledgements == 1, "nonpending route still checks ACK boundary");
@@ -120,6 +134,20 @@ int main() {
     reset(); g_mcRunning = false;
     mcForceExit();
     expect(ledgerEnds == 1 && rawFinishes == 1, "main returned can finalize raw output in ordinary UI thread");
+
+    reset(); phoneDecline = pending = true;
+    mcForceExit();
+    expect(declines == 1 && exits == 0, "phone pending forced-exit releases the original waiter");
+    expect(ledgerEnds == 1 && rawFinishes == 1, "phone pending forced-exit closes its native capture");
+
+    reset();
+    expect(mcPrepareLauncherRestart() == 0 && ledgerEnds == 0 && rawFinishes == 0,
+           "without an eligible exit the worker cannot finalize an active game");
+    reset(); phonePending = true;
+    expect(mcPrepareLauncherRestart() == 1 && ledgerEnds == 1 && rawFinishes == 1 && declines == 0,
+           "worker finalizes one eligible exit while leaving process death to the platform");
+    expect(mcPrepareLauncherRestart() == 0 && ledgerEnds == 1 && rawFinishes == 1,
+           "duplicate worker cannot prepare or reclose the original game");
 
     std::printf("mc-exit seams: %d assertions, %d failures\n", assertions, failures);
     return failures ? 1 : 0;
@@ -139,7 +167,10 @@ def compile_and_run(directory, name, body):
 def main():
     """正向执行真实函数，再用同组断言拒绝仅临时副本上的两种保护丢失。"""
     text = SOURCE.read_text(encoding='utf-8')
-    body = extract(text, 'extern "C" int mcIsRunning()') + '\n' + extract(text, 'extern "C" void mcForceExit()')
+    body = '\n'.join(extract(text, signature) for signature in [
+        'extern "C" int mcIsRunning()', 'extern "C" void mcForceExit()',
+        'extern "C" int mcPrepareLauncherRestart()',
+    ])
     with workspace_temporary_directory(prefix='amcl-mc-exit-seams-') as temporary:
         directory = Path(temporary)
         result = compile_and_run(directory, 'production', body)
@@ -151,6 +182,12 @@ def main():
              'authorized+window-marker before JVM hook must stay running'),
             ('missing_ack', 'if (amclGameExitAcknowledgeRequested()) return;',
              'accepted ACK must not call _exit(0)'),
+            ('missing_phone_authorized', 'if (amclPhoneExitAuthorized()) return 1;',
+             'opt-in phone rejects window marker'),
+            ('missing_phone_decline', 'if (amclPhoneRestartDecline()) return;',
+             'phone pending forced-exit releases the original waiter'),
+            ('missing_phone_claim', 'if (!amclPhoneRestartClaim()) return 0;',
+             'without an eligible exit the worker cannot finalize an active game'),
         ]
         for name, guard, expected_error in mutations:
             if body.count(guard) != 1:

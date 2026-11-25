@@ -4,9 +4,10 @@
  * 默认读取本脚本所在仓库；AMCL_SETTINGS_TEST_ROOT 可将被测源码指定为另一续作树。
  * 平台策略、UIContext、原生 Scroller 和父层耐久回调是显式受控边缘，业务决议不复制。
  * 不执行 ArkUI Builder 或真实 Preferences/文件迁移，不代替 SDK 编译、HAP 与真机验证。
- * 本机运行请显式 --output 指向 E 盘任务目录；每次执行独占子目录，失败现场不会覆盖。
+ * 本机运行请显式 --output 指向当前工作区任务目录；每次执行独占子目录，失败现场不会覆盖。
  */
 import assert from 'node:assert/strict';
+import { verifySkillCases } from './lib/skill-business-check.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -17,6 +18,7 @@ import { PROJECT_ROOT, assertExternalOutputPath, resolveWorkspacePath } from './
 
 const COMPONENT = 'entry/src/main/ets/pages/tabs/SettingsTab.ets';
 const CATALOG = 'entry/src/main/ets/pages/tabs/SettingsCatalog.ets';
+const PREFERENCES = 'feature_system/src/main/ets/PreferenceManager.ets';
 const THEME = 'commons/src/main/ets/common/Theme.ets';
 const SHEET_SIZES = 'commons/src/main/ets/common/SheetSizes.ets';
 const DEVICE_PROFILE = 'commons/src/main/ets/common/device/DeviceProfile.ets';
@@ -125,9 +127,24 @@ function componentEvent(view, source, method, component, event, controlId) {
  * 只在平台边缘造数：生产目录函数由 load-pure-ets 执行，SettingsTab 则由既有组件宿主执行。
  * 跨树时 sourceOverrides 只替换为目标树的完整原文；同字节时不冒充负向 mutation。
  */
+const developerModules = new Map();
+function developerModule(product) {
+  if (developerModules.has(product)) return developerModules.get(product);
+  const relative = 'entry/src/' + (product === 'default' ? 'main' : product) + '/ProductDeveloperSettings.ets';
+  const text = fs.readFileSync(path.join(sourceRoot, relative), 'utf8');
+  // 运行真实产品模块的声明和重导出；只去掉不在宿主渲染的 ArkUI struct。
+  const ast = compiler.createSourceFile(relative, text, compiler.ScriptTarget.Latest, true);
+  const declarations = ast.statements.filter(node => !node.members).map(node => node.getText(ast)).join('\n');
+  const imports = { commons: {} };
+  if (product === 'store') imports['../sideload/ProductDeveloperSettings'] = developerModule('sideload');
+  const module = makePureEtsLoader(imports, { [relative]: declarations })(relative);
+  developerModules.set(product, module);
+  return module;
+}
+
 function fixture(catalog, source, changes = {}, themeExports = {}, sheetExports = {}) {
   const capability = { run: true, store: false, publisher: true, touch: true, chooseInteraction: false,
-    tabletProcess: false, pc: false, developer: false, ...changes };
+    tabletProcess: false, nativeGamepad: false, developer: false, fixedRefreshRate: true, ...changes };
   const calls = { jvm: [], committedJvm: [], choices: [], storage: [], routes: [], back: [], pixels: [], rects: [], focusClears: 0 };
   let jvmGate, jvmFailure;
   let density = 2;
@@ -144,15 +161,17 @@ function fixture(catalog, source, changes = {}, themeExports = {}, sheetExports 
     ...themeExports, ...sheetExports, ImmersiveLightPreferences: class {}, JDK_AUTO: 'auto',
     GAME_LANGUAGES: [{ code: 'zh_cn', label: '简体中文' }, { code: 'en_us', label: 'English' }],
     AppIconName: new Proxy({}, { get: (_, key) => key }),
-    DeviceProfile: { isPC: () => capability.pc }, DiagnosticPolicy: { hasTestHooks: () => capability.developer },
+    DiagnosticPolicy: { hasTestHooks: () => capability.developer },
     DistributionPolicy: { isStore: () => capability.store, allowPublisherServices: () => capability.publisher },
     dockLightModeLabel: String, gameLanguageLabel: String, floatingDockReserveHeight: () => 88,
   };
   const imports = {
-    './SettingsCatalog': catalog, 'launch': {}, 'entry/ProductDeveloperSettings': {}, 'entry/ProductTouchSettings': {},
+    '@kit.BasicServicesKit': { deviceInfo: { get sdkApiVersion() { return capability.fixedRefreshRate ? 20 : 19; } } },
+    './SettingsCatalog': catalog, 'launch': {},
+    'entry/ProductDeveloperSettings': developerModule(changes.product ?? 'default'), 'entry/ProductTouchSettings': {},
     'entry/ProductInputProfile': { ProductInputProfile: { supportsTouchLayouts: () => capability.touch,
       canChooseInteraction: () => capability.chooseInteraction, canChooseTabletProcess: () => capability.tabletProcess,
-      selection: () => ({ desktopWindow: capability.pc }) } },
+      canChooseNativeGamepad: () => capability.nativeGamepad } },
     '../../components/TouchLearningStore': { TouchLearningStore: class { request() { return true; } } },
   };
   for (const name of ['DesktopGamepadSettings', 'MobileglRendererSettings', 'AppIcon', 'LogRetentionSettings',
@@ -170,10 +189,13 @@ function fixture(catalog, source, changes = {}, themeExports = {}, sheetExports 
   view.theme = { bgPrimary: '#f1f3f5', actionPrimary: '#006fe6', errorText: '#c34232' };
   const context = { getHostContext: () => ({ filesDir: '/host/files' }),
     getFocusController: () => ({ clearFocus: () => { calls.focusClears++; } }),
-    getRouter: () => ({ pushUrl: value => { calls.routes.push(plain(value)); return Promise.resolve(); } }),
+    getRouter: () => ({ pushUrl: value => { calls.routes.push(plain(value)); return Promise.resolve(); },
+      getState: () => ({ name: calls.routes.at(-1)?.url ?? '' }) }),
     getPromptAction: () => ({ showToast: noop, showDialog: async () => ({ index: 0 }) }),
     getComponentUtils: () => ({ getRectangleById: id => { calls.rects.push(id); return rectangle(id); } }),
     px2vp: value => { calls.pixels.push(value); return value / density; } };
+  const savedSettings = {java:'17',confirmed:true};
+  view.readCommittedSettings=()=>({...savedSettings});
   view.getUIContext = () => context;
   view.onSectionBackReady = value => calls.back.push(value);
   view.onCustomJvmArgsChange = async value => {
@@ -181,8 +203,9 @@ function fixture(catalog, source, changes = {}, themeExports = {}, sheetExports 
     calls.committedJvm.push(value); view.customJvmArgs = value;
   };
   for (const [property, name] of [['onJdkVersionChange', 'java'], ['onOhosFrameRateCapChange', 'frame'],
+    ['onOhosFixedRefreshRateChange', 'fixed-refresh-rate'],
     ['onGameLanguageChange', 'language'], ['onMcSourceChange', 'mc-source'], ['onJdkSourceChange', 'jdk-source'],
-    ['onModSourceChange', 'mod-source'], ['onJdkChannelChange', 'jdk-channel']]) view[property] = value => calls.choices.push([name, value]);
+    ['onModSourceChange', 'mod-source'], ['onJdkChannelChange', 'jdk-channel']]) view[property] = async value => { calls.choices.push([name, value]); savedSettings[name==='frame'?'frame-rate':name]=String(value); return true; };
   view.onStorageLocationChange = (...args) => calls.storage.push(args);
   view.aboutToAppear();
   return { view, calls, capability, host,
@@ -192,7 +215,7 @@ function fixture(catalog, source, changes = {}, themeExports = {}, sheetExports 
 
 /** 主测试使用启动时源码快照；末尾复核文件身份，开发者同时修改生产方法会明确失败要求重跑。 */
 async function main() {
-  for (const relative of [CATALOG, COMPONENT, THEME, SHEET_SIZES, DEVICE_PROFILE]) {
+  for (const relative of [CATALOG, COMPONENT, PREFERENCES, THEME, SHEET_SIZES, DEVICE_PROFILE]) {
     const source = fs.readFileSync(path.join(sourceRoot, relative), 'utf8');
     snapshots.set(relative, source);
     fs.writeFileSync(path.join(output, 'sources', path.basename(relative)), source);
@@ -206,9 +229,172 @@ async function main() {
   const sheetExports = { ...pure(SHEET_SIZES), ...pure(DEVICE_PROFILE) };
   const make = changes => fixture(catalog, source, changes, pure(THEME), sheetExports);
 
+  await group('Skill 诊断导航只可到达当前产品装配的页面，运行权限仍须成立', async () => {
+    const expected = { tools: 'DevToolsPage', gles: 'RenderPage', vulkan: 'VulkanPage', input: 'InputProbePage', desktop: 'DesktopDeveloperToolsPage' };
+    for (const product of ['default', 'store', 'sideload', 'desktop']) {
+      const { view, calls } = make({ product, developer: true });
+      view.skillInteractive = () => true;
+      for (const [tool, page] of Object.entries(expected)) {
+        const allowed = product === 'default' ? tool !== 'desktop' : product === 'desktop' && tool === 'desktop';
+        const before = calls.routes.length;
+        const result = await view.runSettingsSkill_('openLauncherDiagnostic', {tool});
+        assert.equal(result.state, allowed ? 'needsUser' : 'failed', product + '/' + tool);
+        assert.equal(calls.routes.length, before + Number(allowed));
+        if (allowed) assert.equal(calls.routes.at(-1).url, 'pages/' + page);
+      }
+    }
+    const { view, calls } = make({ product: 'desktop', developer: false });
+    view.skillInteractive = () => true;
+    assert.equal((await view.runSettingsSkill_('openLauncherDiagnostic', {tool:'desktop'})).state,'failed');
+    assert.equal(calls.routes.length,0);
+  });
+
+  await group('系统 Skill 从真实设置目录选择，拒绝无效档位、越权产品和非活动页面', async () => {
+    const {view,calls,host,capability}=make();
+    const bus=host.load('entry/src/main/ets/launcherskill/LauncherSkillBus.ets').LauncherSkillBus;
+    const owner={};
+    view.skillInteractive=()=>true;
+    bus.attach(owner,()=>true);
+    view.aboutToAppear();
+    const call=(name,args={})=>bus.call('settings',name,args);
+    const sections=await call('findLauncherSettings',{query:'下载源'});
+    assert.equal(sections.state,'ready');assert.ok(sections.items.some(i=>i.item==='mc-source'));assert.equal(calls.choices.length,0);
+    view.ohosFrameRateCap=60;
+    assert.equal((await call('setLauncherChoice',{item:'fixed-refresh-rate',value:'120'})).state,'failed');
+    assert.equal((await call('setLauncherChoice',{item:'mc-source',value:'https://other.invalid'})).state,'failed');
+    assert.equal((await call('setLauncherChoice',{item:'java',value:'25',extra:'x'})).state,'failed');
+    assert.equal((await call('setLauncherChoice',{item:'java',value:'25'})).state,'ready');
+    assert.deepEqual(calls.choices,[['java','25']]);
+    capability.publisher=false;
+    assert.equal((await call('setLauncherSwitch',{item:'acceleration',enabled:true})).state,'failed');
+    view.skillInteractive=()=>false;
+    assert.equal((await call('setLauncherChoice',{item:'mc-source',value:'official'})).state,'unavailable');
+    assert.equal(calls.choices.length,1);
+    bus.detach(owner);
+  });
+  await group('玩家与系统关闭隔离须确认；取消保持原值，重新开启使用原偏好所有者', async () => {
+    const { view, host } = make();
+    view.skillInteractive = () => true;
+    let committed = true;
+    const writes = [], dialogs = [];
+    view.readCommittedSettings = () => ({ confirmed: true, isolation: committed });
+    view.onVersionIsolationChange = async enabled => {
+      writes.push(enabled);
+      view.versionIsolation = committed = enabled;
+      return true;
+    };
+    view.getUIContext().getPromptAction = () => ({
+      showDialog(options) {
+        const answer = deferred();
+        dialogs.push({ options, answer });
+        return answer.promise;
+      },
+    });
+    const row = property => componentEvent(view, source, 'IsolationContent_', 'SettingsToggleRow', property, 'settings-item-isolation');
+    const tap = row('onChange');
+    tap(false);
+    assert.equal(row('saving'), true, '等待决定时替换原生 Toggle，避免取消后显示未确认值');
+    assert.deepEqual(writes, []);
+    assert.match(dialogs[0].options.title, /关闭版本隔离/);
+    for (const word of ['共用', '存档', '模组', '重新开启']) assert.ok(dialogs[0].options.message.includes(word));
+    tap(false);
+    assert.equal(dialogs.length, 1, '重复事件只弹一次');
+    dialogs[0].answer.resolve({ index: 0 });
+    await settle();
+    assert.deepEqual(writes, []);
+    assert.equal(row('saving'), false);
+    assert.equal(row('value'), true);
+
+    const bus = host.load('entry/src/main/ets/launcherskill/LauncherSkillBus.ets').LauncherSkillBus;
+    bus.attach(view, () => true);
+    view.aboutToAppear();
+    const call = enabled => bus.call('settings', 'setLauncherSwitch', { item: 'isolation', enabled });
+    const rejected = call(false);
+    await settle();
+    assert.equal(dialogs[1].options.message, dialogs[0].options.message);
+    dialogs[1].answer.reject(new Error('系统返回'));
+    const cancelled = await rejected;
+    assert.equal(cancelled.state, 'cancelled');
+    assert.deepEqual(writes, []);
+
+    const saved = call(false);
+    await settle();
+    dialogs[2].answer.resolve({ index: 1 });
+    const result = await saved;
+    assert.equal(result.enabled, false);
+    assert.deepEqual(writes, [false]);
+    verifySkillCases('setLauncherSwitch', result, cancelled, 'L060');
+    tap(true);
+    await settle();
+    assert.equal(row('value'), true);
+    assert.deepEqual(writes, [false, true]);
+    assert.equal(dialogs.length, 3);
+
+    tap(false);
+    view.visible = false;
+    view.syncSectionBack_();
+    view.visible = true;
+    dialogs[3].answer.resolve({ index: 1 });
+    await settle();
+    assert.deepEqual(writes, [false, true], '旧页面的确认不能提交到重新显示的设置页');
+
+    tap(false);
+    dialogs[4].answer.resolve({ index: 1 });
+    await settle();
+    assert.deepEqual(writes, [false, true, false]);
+    assert.equal(row('value'), false);
+    bus.detach(view);
+  });
+  await group('JVM 人工接力只回报该编辑的提交；存储拒绝、取消、过期引用可分辨',async()=>{
+    const {view,host,calls}=make();
+    view.skillInteractive=()=>true;
+    const bus=host.load('entry/src/main/ets/launcherskill/LauncherSkillBus.ets').LauncherSkillBus;
+    bus.attach(view,()=>true);
+    view.aboutToAppear();
+    const call=(name,args={})=>bus.call('settings',name,args);
+    const first=await call('openLauncherSetting',{item:'jvm'});
+    assert.equal(first.state,'needsUser');assert.ok(first.reference);
+    view.jvmArgsDraft='-Dtest=true';
+    await view.saveCustomJvmArgs();
+    assert.deepEqual(calls.committedJvm,['-Dtest=true']);
+    const original=await call('readSettingHandoff',{reference:first.reference});
+    assert.equal(original.outcome,'saved');
+    assert.ok(!JSON.stringify(original).includes('-Dtest'));
+    view.sheetDisappeared_();
+    const second=await call('prepareStorageChange',{target:'external'});
+    assert.equal(second.state,'needsUser');
+    const expired=await call('readSettingHandoff',{reference:first.reference});
+    assert.equal(expired.state,'failed');
+    await call('navigateLauncherSettings',{section:'back'});
+    view.sheetDisappeared_();
+    assert.equal(calls.storage.length,0);
+    assert.equal((await call('readSettingHandoff',{reference:second.reference})).outcome,'cancelled');
+    const third=await call('prepareStorageChange',{target:'external'});
+    view.confirmStorage_(true);view.sheetDisappeared_();
+    assert.equal(calls.storage.length,1);const [location,migrate,complete]=calls.storage[0];
+    assert.equal(location,'external');assert.equal(migrate,true);complete('permissionDenied');
+    const denied=await call('readSettingHandoff',{reference:third.reference});
+    assert.equal(denied.outcome,'permissionDenied');assert.equal(denied.selectedTarget,'external');
+    const changed=await call('prepareStorageChange',{target:'external'});
+    view.choiceDraft='sandbox';view.confirmStorage_(false);view.sheetDisappeared_();
+    assert.equal(calls.storage[1][0],'sandbox');calls.storage[1][2]('saved');
+    const revised=await call('readSettingHandoff',{reference:changed.reference});
+    assert.equal(revised.requestedTarget,'external');assert.equal(revised.selectedTarget,'sandbox');
+    assert.equal(revised.outcome,'changedTarget');verifySkillCases('readSettingHandoff',revised,expired);
+    const same=await call('prepareStorageChange',{target:'external'});
+    view.confirmStorage_(false);view.sheetDisappeared_();calls.storage[2][2]('saved');
+    const saved=await call('readSettingHandoff',{reference:same.reference});
+    assert.equal(saved.outcome,'saved');assert.equal(saved.requestedTarget,saved.selectedTarget);
+    // 无指定目标的普通编辑不应沿用上一个请求的位置。
+    const manual=await call('openLauncherSetting',{item:'storage'});
+    const draft=await call('readSettingHandoff',{reference:manual.reference});
+    assert.equal(draft.requestedTarget,undefined);assert.equal(draft.selectedTarget,undefined);
+    bus.detach(view);
+  });
+
   await group('目录能力矩阵、unique ids与管理态边界', () => {
-    const keys = ['run', 'store', 'publisher', 'touch', 'chooseInteraction', 'tabletProcess', 'pc', 'developer'];
-    for (let mask = 0; mask < 256; mask++) {
+    const keys = ['run', 'store', 'publisher', 'touch', 'chooseInteraction', 'tabletProcess', 'nativeGamepad', 'developer', 'fixedRefreshRate'];
+    for (let mask = 0; mask < (1 << keys.length); mask++) {
       const c = Object.fromEntries(keys.map((key, bit) => [key, Boolean(mask & (1 << bit))]));
       const sections = catalog.settingsSections(c), items = catalog.settingsItems(c);
       const ids = new Set(items.map(item => item.id));
@@ -218,7 +404,8 @@ async function main() {
       for (const id of ['memory', 'virtual-memory', 'java', 'jvm', 'frame-rate', 'language', 'graphics', 'resolution', 'jdk-source', 'jdk-update']) assert.equal(ids.has(id), c.run, id);
       for (const id of ['input', 'layouts', 'touch-help']) assert.equal(ids.has(id), c.run && c.touch, id);
       assert.equal(ids.has('interaction'), c.run && c.chooseInteraction);
-      assert.equal(ids.has('gamepad'), c.run && c.pc); assert.equal(ids.has('developer'), c.run && c.developer);
+      assert.equal(ids.has('fixed-refresh-rate'), c.run && c.fixedRefreshRate);
+      assert.equal(ids.has('gamepad'), c.run && c.nativeGamepad); assert.equal(ids.has('developer'), c.run && c.developer);
       assert.equal(ids.has('process'), c.run && c.tabletProcess); assert.equal(ids.has('window'), c.run && !c.tabletProcess);
       assert.equal(ids.has('acceleration'), c.publisher);
       for (const id of ['install-help', 'jit-help', 'feedback', 'sponsor']) assert.equal(ids.has(id), !c.store, id);
@@ -338,6 +525,45 @@ async function main() {
     assert.deepEqual(f.calls.choices, [['java', '25']]); assert.equal(v.showSettingsSheet, false);
   });
 
+  await group('固定刷新率独立确认，并且服从原调度上限', () => {
+    const f = make(), v = f.view;
+    v.ohosFrameRateCap = 60;
+    v.openSheet_('frame');
+    assert.equal(v.choiceDraft, '60');
+    assert.ok(v.choiceOptions_().some(item => item.value === '240'));
+    v.cancelSheet_(); v.sheetDisappeared_();
+    componentEvent(v, source, 'DisplayContent_', 'SettingsValueRow', 'onAction', 'settings-item-fixed-refresh-rate')();
+    assert.equal(v.choiceDraft, '0');
+    assert.equal(v.choiceOptions_().find(item => item.value === '120').enabled, false);
+    v.choiceDraft = '120'; v.confirmChoice_();
+    assert.deepEqual(f.calls.choices, []);
+    v.choiceDraft = '60'; v.confirmChoice_();
+    assert.deepEqual(f.calls.choices, [['fixed-refresh-rate', 60]]);
+    assert.equal(v.ohosFrameRateCap, 60);
+    const old = make({ fixedRefreshRate: false });
+    old.view.openSheet_('fixed-refresh-rate');
+    assert.equal(old.view.showSettingsSheet, false);
+  });
+
+  await group('旧版调度上限和新的固定档位分别保存在实际偏好键', () => {
+    const stored = new Map([['ohosFrameRateCap', 240]]);
+    const store = { getSync: (key, fallback) => stored.has(key) ? stored.get(key) : fallback,
+      putSync: (key, value) => stored.set(key, value), flush: () => Promise.resolve() };
+    const load = makePureEtsLoader({ commons: { ProcessPreferences: { open: () => store, isGameProcess: () => false } },
+      '@kit.PerformanceAnalysisKit': { hilog: { warn() {} } } }, Object.fromEntries(snapshots));
+    const { PreferenceManager } = load(PREFERENCES);
+    const settings = new PreferenceManager({ preferencesDir: '/fixture' });
+    assert.equal(settings.ohosFrameRateCap, 240);
+    assert.equal(settings.ohosFixedRefreshRate, 0);
+    settings.ohosFixedRefreshRate = 144;
+    const nextGame = new PreferenceManager({ preferencesDir: '/fixture' });
+    assert.equal(nextGame.ohosFixedRefreshRate, 144);
+    assert.equal(nextGame.ohosFrameRateCap, 240);
+    nextGame.ohosFixedRefreshRate = 165;
+    assert.equal(nextGame.ohosFixedRefreshRate, 0);
+    assert.equal(nextGame.ohosFrameRateCap, 240);
+  });
+
   await group('JDK服务器候选撤回与运行准入撤回不会提交旧选择', () => {
     const f = make(), v = f.view; v.jdkWebEnabled = true; v.openSheet_('jdk-source'); v.choiceDraft = 'web';
     v.jdkWebEnabled = false; v.confirmChoice_(); assert.equal(v.showSettingsSheet, true);
@@ -363,15 +589,30 @@ async function main() {
 
   await group('存储关闭/隐藏/卸载撤回待派发意图并拒绝失效外部位置', () => {
     for (const withdraw of ['cancel', 'tab', 'unmount']) {
-      const f = make(), v = f.view; v.openSheet_('storage'); v.choiceDraft = 'external'; v.confirmStorage_(false);
+      const f = make(), v = f.view; v.openSheet_('storage'); const ticket=v.beginSkillEditor_('storage');
+      v.choiceDraft = 'external'; v.confirmStorage_(false);
       if (withdraw === 'cancel') v.cancelSheet_();
       else if (withdraw === 'tab') { v.visible = false; v.syncSectionBack_(); }
       else v.aboutToDisappear();
       v.sheetDisappeared_(); assert.deepEqual(f.calls.storage, []);
+      assert.equal(v.skillEditorRef_,ticket.reference); assert.equal(v.skillEditorState_,'cancelled');
     }
     const f = make(), v = f.view; v.openSheet_('storage'); v.choiceDraft = 'external'; v.externalAvailable = false;
     v.confirmStorage_(false); assert.equal(v.showSettingsSheet, true); assert.match(v.sheetError, /不可用/);
     assert.equal(v.pendingStorage_, ''); assert.deepEqual(f.calls.storage, []);
+  });
+
+  // 内存处理从游戏结果进入；隐藏期间保持请求，显示时复用真实目录定位且只消费一次。
+  await group('崩溃弹窗的内存处理只在设置可见时定位性能分区的内存项', () => {
+    const { view, calls } = make();
+    view.visible = false; view.openMemoryRequested = true;
+    view.syncSectionBack_();
+    assert.equal(view.openMemoryRequested, true);
+    view.visible = true; view.syncSectionBack_();
+    assert.equal(view.openMemoryRequested, false);
+    assert.equal(view.activeSection, 'performance'); assert.equal(view.highlightedItem, 'memory');
+    const moves = calls.focusClears;
+    view.syncSectionBack_(); assert.equal(calls.focusClears, moves);
   });
 
   await group('搜索定位使用窗口px差值并转换vp，忽略局部Area坐标', () => {

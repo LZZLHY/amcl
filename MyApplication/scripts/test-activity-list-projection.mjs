@@ -30,7 +30,8 @@ function fixture() {
   const store = { init: async () => {}, readSnapshotAsync(cancelled) {
     const result = deferred(); requests.push({ ...result, cancelled }); return result.promise;
   } };
-  new Function('module', 'getDownloadHistoryStore', 'activityStorageAlert', 'AppStorage', code)(module,
+  const { LauncherSkillBus } = makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets');
+  new Function('module', 'LauncherSkillBus', 'getDownloadHistoryStore', 'activityStorageAlert', 'AppStorage', code)(module, LauncherSkillBus,
     () => store, () => 0, { setOrCreate: (key, value) => revisions.push([key, value]) });
   const subject = new module.exports(); Object.assign(subject, { hostVisible: true, refreshing: false,
     selectionBusy: false, refreshGeneration_: 0, refreshAgain_: false, context: { filesDir: '/sandbox' },

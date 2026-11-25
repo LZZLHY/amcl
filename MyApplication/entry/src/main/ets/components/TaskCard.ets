@@ -27,6 +27,8 @@ import { ThemeColors } from 'commons';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
 import { VersionBlockIcon } from './VersionBlockIcon';
+import { loaderKeyFromRaw, resolveInstalledVersionCategory, versionCategoryForLoader } from './LoaderCatalog';
+import { VersionCategory } from 'mods';
 import { taskCategoryIcon } from '../components/ResourceIcons';
 import { formatBytes, formatEta, formatSpeed } from 'commons';
 
@@ -81,6 +83,17 @@ export struct TaskCard {
   // 2026-05-22：TaskCategory → AppIconName 已迁出到 components/ResourceIcons.taskCategoryIcon。
   // 下面 build() 里遇到 MC_VERSION 会优先用 VersionBlockIcon（PNG 方块），
   // 只有非 MC_VERSION 任务才走 taskCategoryIcon 这条路。
+
+  /** 下载尚未落盘或实例后来已删除时，图标仍对应这条任务自己的游戏与加载器。 */
+  private versionIconCategory_(): VersionCategory {
+    if (this.view.activityLoaderType.length > 0) {
+      return versionCategoryForLoader(loaderKeyFromRaw(this.view.activityLoaderType), this.view.activityGameVersion);
+    }
+    // 通用修复沿用其已装实例；该任务没有单独指定要安装的加载器。
+    return this.view.activityMcDir
+      ? resolveInstalledVersionCategory(this.view.activityMcDir, this.view.title)
+      : 'release';
+  }
 
   // ============================================================
   //  状态 → 颜色 / 图标
@@ -201,7 +214,7 @@ export struct TaskCard {
       // ============= top row：badge + title + actions =============
       Row({ space: 12 }) {
         // 分类徽章：
-        //   - MC_VERSION + view.title 是合法 versionId → 走 VersionBlockIcon（PNG 方块 / loader 图标）
+        //   - MC_VERSION 任务有实例名时按实际任务身份选择方块或加载器图标。
         //     与版本列表 / 版本详情 / 主页英雄卡保持同一套视觉
         //   - 其他类别 → AppIcon（SymbolGlyph 照旧）
         //   - MC_VERSION 但 view.title 为空 → 兑底走 AppIcon。
@@ -216,7 +229,9 @@ export struct TaskCard {
               .onError(() => { this.iconErr = true })
           } else if (this.view.category === TaskCategory.MC_VERSION && this.view.title.length > 0) {
             VersionBlockIcon({
-              versionId: this.view.title,
+              versionId: this.view.activityGameVersion,
+              category: this.versionIconCategory_(),
+              iconIdPrefix: 'task-version-icon-' + this.view.id,
               iconSize: 30,
               cornerRadius: 6,
             })

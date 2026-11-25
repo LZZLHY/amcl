@@ -213,12 +213,12 @@ await test('注入源全部失败不意外进入生产官网', async () => {
   assert.equal(actual.hasUpdate, false); assert.equal(actual.manifest, null); assert.deepEqual(f.calls.map(call => call.url), [url]);
 });
 
-for (const hooks of [true, false]) await test('受控测试收据豁免受诊断开关限制：' + hooks, async () => {
+for (const hooks of [true, false]) await test('缺少发布收据的临时来源不能提示更新：' + hooks, async () => {
   const url = 'https://amcl.lovedhy.cn/uploads/self-update-tests/' + 'a'.repeat(32) + '/manifest.json';
   const candidate = ready('1.0.6', 101); delete candidate.delivery;
   const f = fixture({ hooks, responses: { [url]: candidate } });
   const actual = await f.checker.checkForUpdate([url]);
-  assert.equal(actual.hasUpdate, hooks); assert.equal(actual.manifest !== null, hooks); assert.equal(f.calls.length, 1);
+  assert.equal(actual.hasUpdate, false); assert.equal(actual.manifest, null); assert.equal(f.calls.length, 1);
 });
 
 await test('商店渠道和空源在联网前拒绝', async () => {

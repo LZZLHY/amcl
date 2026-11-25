@@ -1,0 +1,5029 @@
+[
+  {
+    "domain": "accounts",
+    "name": "listPlayerAccounts",
+    "description": "查看本机账号类型、当前选用和匿名操作引用",
+    "args": [],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "accounts": {
+        "type": "array",
+        "description": "当次面板的匿名账号",
+        "items": {
+          "type": "object",
+          "description": "账号",
+          "properties": {
+            "accountRef": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "selected": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "accountRef",
+            "type",
+            "selected"
+          ]
+        }
+      },
+      "removalRef": {
+        "type": "string"
+      },
+      "removalState": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "accounts"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "accounts": [
+          {
+            "accountRef": "605bb432-b416-401f-bec0-59879e326786",
+            "type": "mojang",
+            "selected": true
+          }
+        ],
+        "removalState": "idle",
+        "removalRef": ""
+      }
+    }
+  },
+  {
+    "domain": "accounts",
+    "name": "closePlayerAccounts",
+    "description": "关闭当前账号管理面板",
+    "args": [],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "closed": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "closed"
+      ]
+    }
+  },
+  {
+    "domain": "accounts",
+    "name": "selectPlayerAccount",
+    "description": "选用指定账号并回读持久选择 ready 表示已回读同一账号为选中项；通过 listPlayerAccounts 查看实际选择。",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "最近一次账号列表的匿名引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "accounts",
+    "name": "checkPlayerAccount",
+    "description": "检查指定账号本地凭据状态",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "最近一次账号列表的匿名引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "type": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "credential": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "type",
+        "credential"
+      ]
+    }
+  },
+  {
+    "domain": "accounts",
+    "name": "showPlayerProfile",
+    "description": "在应用内显示当前账号完整个人资料",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "最近一次账号列表的匿名引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "accounts",
+    "name": "addOfflinePlayer",
+    "description": "从真实账号表单添加并选择离线玩家",
+    "args": [
+      {
+        "name": "playerName",
+        "type": "string",
+        "description": "玩家名，最长16个字符；空值遵循表单默认规则",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "loginRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字",
+        "minLength": 1
+      },
+      "accountRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "accountRef",
+        "loginRef"
+      ]
+    }
+  },
+  {
+    "domain": "accounts",
+    "name": "beginPlayerLogin",
+    "description": "打开指定的登录表单，由玩家授权或选择角色",
+    "args": [
+      {
+        "name": "provider",
+        "type": "string",
+        "description": "认证提供方",
+        "required": true,
+        "enum": [
+          "microsoft",
+          "authlib"
+        ]
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "loginRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字",
+        "minLength": 1
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "loginRef"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "loginRef": "728bc987-e374-4de4-858f-6b77739538fb"
+      }
+    },
+    "inputExamples": [
+      {
+        "provider": "authlib"
+      }
+    ]
+  },
+  {
+    "domain": "accounts",
+    "name": "readPlayerLogin",
+    "description": "读取先前发起的登录结果或等待状态",
+    "args": [
+      {
+        "name": "loginRef",
+        "type": "string",
+        "description": "本账号面板签发的登录操作号",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "cancelled"
+    ],
+    "output": {
+      "loginRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "accountRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "phase": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "loginRef",
+        "phase"
+      ],
+      "needsUser": [
+        "loginRef",
+        "phase"
+      ],
+      "cancelled": [
+        "loginRef",
+        "phase"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "loginRef": "728bc987-e374-4de4-858f-6b77739538fb",
+        "phase": "opening"
+      },
+      "ready": {
+        "loginRef": "728bc987-e374-4de4-858f-6b77739538fb",
+        "phase": "ready",
+        "accountRef": "605bb432-b416-401f-bec0-59879e326786"
+      },
+      "cancelled": {
+        "loginRef": "728bc987-e374-4de4-858f-6b77739538fb",
+        "phase": "cancelled"
+      }
+    },
+    "echoArgs": {
+      "loginRef": "loginRef"
+    },
+    "inputExamples": [
+      {
+        "loginRef": "728bc987-e374-4de4-858f-6b77739538fb"
+      }
+    ]
+  },
+  {
+    "domain": "accounts",
+    "name": "refreshPlayerCredentials",
+    "description": "刷新并保存当前在线账号的登录凭据",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "最近一次账号列表的匿名引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "accounts",
+    "name": "requestRemovePlayer",
+    "description": "在产品对话框确认移除本机账号，查看更新后的账号列表",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "最近一次账号列表的匿名引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "accountRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "accountRef"
+      ]
+    },
+    "echoArgs": {
+      "accountRef": "accountRef"
+    },
+    "inputExamples": [
+      {
+        "accountRef": "605bb432-b416-401f-bec0-59879e326786"
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "accountRef": "605bb432-b416-401f-bec0-59879e326786"
+      }
+    }
+  },
+  {
+    "domain": "accounts",
+    "name": "openPlayerAppearance",
+    "description": "查看本机已选账号外观摘要并打开对应的外观详情",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "最近一次账号列表的匿名引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "hasSkin": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "hasCape": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "model": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "hasSkin",
+        "hasCape",
+        "model"
+      ]
+    }
+  },
+  {
+    "domain": "offlineAppearance",
+    "name": "readOfflineAppearance",
+    "description": "在已打开的离线外观面板读取库条目与当前草稿；不返回 PNG 路径",
+    "args": [],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "editorRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字",
+        "minLength": 1
+      },
+      "revision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "skin": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "cape": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "model": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "assets": {
+        "type": "array",
+        "description": "可选素材",
+        "items": {
+          "type": "object",
+          "description": "素材",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "kind": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "width": {
+              "type": "integer",
+              "description": "产品读取的计数、修订或位置"
+            },
+            "height": {
+              "type": "integer",
+              "description": "产品读取的计数、修订或位置"
+            },
+            "used": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "width",
+            "height",
+            "used"
+          ]
+        }
+      },
+      "playerName": {
+        "type": "string"
+      },
+      "storedName": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "editorRef",
+        "revision",
+        "playerName"
+      ]
+    }
+  },
+  {
+    "domain": "offlineAppearance",
+    "name": "importAppearanceImage",
+    "description": "为共享素材库选择一张 PNG 并等待系统选择及真实导入结果",
+    "args": [
+      {
+        "name": "editorRef",
+        "type": "string",
+        "description": "刚读到的当前外观草稿引用",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "账号外观修订",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "type": "string",
+        "description": "纹理类型",
+        "required": true,
+        "enum": [
+          "skin",
+          "cape"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "cancelled",
+      "needsUser"
+    ],
+    "output": {
+      "assetId": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "kind": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "assetId",
+        "kind"
+      ]
+    },
+    "echoArgs": {
+      "kind": "kind"
+    }
+  },
+  {
+    "domain": "offlineAppearance",
+    "name": "requestRemoveAppearanceAsset",
+    "description": "由玩家确认从共享库删除未被任何离线账号使用的纹理",
+    "args": [
+      {
+        "name": "editorRef",
+        "type": "string",
+        "description": "刚读到的当前外观草稿引用",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "账号外观修订",
+        "required": true
+      },
+      {
+        "name": "assetId",
+        "type": "string",
+        "description": "当前共享库条目的引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "offlineAppearance",
+    "name": "discardOfflineAppearance",
+    "description": "放弃当前离线外观草稿并关闭编辑层",
+    "args": [
+      {
+        "name": "editorRef",
+        "type": "string",
+        "description": "刚读到的当前外观草稿引用",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "账号外观修订",
+        "required": true
+      }
+    ],
+    "results": [
+      "cancelled",
+      "needsUser"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "offlineAppearance",
+    "name": "saveOfflineAppearance",
+    "description": "保存并回读选中离线账号整份外观草稿",
+    "args": [
+      {
+        "name": "editorRef",
+        "type": "string",
+        "description": "刚读到的当前外观草稿引用",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "账号外观修订",
+        "required": true
+      },
+      {
+        "name": "playerName",
+        "type": "string",
+        "description": "玩家名",
+        "required": true
+      },
+      {
+        "name": "skin",
+        "type": "string",
+        "description": "库内皮肤引用；空串为默认",
+        "required": true
+      },
+      {
+        "name": "cape",
+        "type": "string",
+        "description": "库内披风引用；空串为无",
+        "required": true
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "description": "手臂模型",
+        "required": true,
+        "enum": [
+          "CLASSIC",
+          "SLIM"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser"
+    ],
+    "output": {
+      "playerName": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "skin": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "cape": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "model": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "revision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "playerName",
+        "skin",
+        "cape",
+        "model",
+        "revision"
+      ]
+    },
+    "echoArgs": {
+      "skin": "skin",
+      "cape": "cape"
+    },
+    "echoTrimArgs": {
+      "playerName": "playerName"
+    },
+    "inputExamples": [
+      {
+        "editorRef": "appearance-1",
+        "revision": 1,
+        "playerName": " Alex ",
+        "skin": "",
+        "cape": "",
+        "model": "CLASSIC"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "playerName": "Alex",
+        "skin": "",
+        "cape": "",
+        "model": "CLASSIC",
+        "revision": 2
+      }
+    }
+  },
+  {
+    "domain": "accounts",
+    "name": "readPlayerRoles",
+    "description": "列出当前第三方已登录账号的可切换匿名角色引用并显示原角色面板",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "正在选用的第三方账号的匿名引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "roles": {
+        "type": "array",
+        "description": "角色",
+        "items": {
+          "type": "object",
+          "description": "当前账号的匿名角色",
+          "properties": {
+            "roleRef": {
+              "type": "string",
+              "description": "业务标识或保存的文字",
+              "minLength": 1
+            },
+            "selected": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "roleRef",
+            "selected"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "roles"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "roles": [
+          {
+            "roleRef": "76f35f71-20cc-42ef-88a3-027ba245ba56",
+            "selected": false
+          },
+          {
+            "roleRef": "d7ee67c3-f122-4654-bfb0-64df3de5cdb7",
+            "selected": true
+          }
+        ]
+      }
+    },
+    "inputExamples": [
+      {
+        "accountRef": "605bb432-b416-401f-bec0-59879e326786"
+      }
+    ]
+  },
+  {
+    "domain": "accounts",
+    "name": "choosePlayerRole",
+    "description": "切换指定的已登录皮肤站角色并核对持久化后的当前角色",
+    "args": [
+      {
+        "name": "accountRef",
+        "type": "string",
+        "description": "正在选用的第三方账号的匿名引用",
+        "required": true
+      },
+      {
+        "name": "roleRef",
+        "type": "string",
+        "description": "readPlayerRoles 返回的角色引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "roleRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字",
+        "minLength": 1
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "roleRef"
+      ]
+    },
+    "echoArgs": {
+      "roleRef": "roleRef"
+    },
+    "inputExamples": [
+      {
+        "accountRef": "605bb432-b416-401f-bec0-59879e326786",
+        "roleRef": "76f35f71-20cc-42ef-88a3-027ba245ba56"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "roleRef": "76f35f71-20cc-42ef-88a3-027ba245ba56"
+      }
+    }
+  },
+  {
+    "domain": "onlineAppearance",
+    "name": "readPlayerAppearance",
+    "description": "从已打开的账号外观页读取当前皮肤型号及拥有的披风，不返回令牌和网络地址",
+    "args": [],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "appearanceRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "type": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "hasSkin": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "model": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "hasCape": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "capes": {
+        "type": "array",
+        "description": "已拥有的披风",
+        "items": {
+          "type": "object",
+          "description": "披风",
+          "properties": {
+            "capeId": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "active": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "capeId",
+            "name",
+            "active"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "appearanceRef",
+        "type",
+        "hasSkin",
+        "hasCape",
+        "capes"
+      ]
+    }
+  },
+  {
+    "domain": "onlineAppearance",
+    "name": "syncPlayerAppearance",
+    "description": "同步当前正版账号的资料和披风到设备",
+    "args": [
+      {
+        "name": "appearanceRef",
+        "type": "string",
+        "description": "当前在线外观详情回读的引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "onlineAppearance",
+    "name": "previewPlayerCape",
+    "description": "在真实预览层展示所选披风",
+    "args": [
+      {
+        "name": "appearanceRef",
+        "type": "string",
+        "description": "当前在线外观详情回读的引用",
+        "required": true
+      },
+      {
+        "name": "capeId",
+        "type": "string",
+        "description": "拥有的披风 ID；空串为无披风",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "capePreview"
+      }
+    }
+  },
+  {
+    "domain": "onlineAppearance",
+    "name": "changePlayerCape",
+    "description": "由用户确认穿戴或脱下当前正版账号的披风，并回读远端和本地提交结果",
+    "args": [
+      {
+        "name": "appearanceRef",
+        "type": "string",
+        "description": "当前在线外观详情回读的引用",
+        "required": true
+      },
+      {
+        "name": "capeId",
+        "type": "string",
+        "description": "拥有的披风 ID；空串为无披风",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "cancelled",
+      "needsUser"
+    ],
+    "output": {},
+    "userHandoff": true
+  },
+  {
+    "domain": "onlineAppearance",
+    "name": "openMinecraftProfileSite",
+    "description": "在支持的渠道打开官方资料网站交给用户管理",
+    "args": [
+      {
+        "name": "appearanceRef",
+        "type": "string",
+        "description": "当前在线外观详情回读的引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "layouts",
+    "name": "listControlLayouts",
+    "description": "读取完整布局目录、预设、活动方案及加载告警",
+    "args": [
+      {
+        "name": "offset",
+        "type": "integer",
+        "description": "非负分页起点",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "items": {
+        "type": "array",
+        "description": "已加载的方案",
+        "items": {
+          "type": "object",
+          "description": "布局",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "revision": {
+              "type": "integer",
+              "description": "产品读取的计数、修订或位置"
+            },
+            "preset": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "active": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "controls": {
+              "type": "integer",
+              "description": "产品读取的计数、修订或位置"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "revision",
+            "preset",
+            "active",
+            "controls"
+          ]
+        }
+      },
+      "hasWarnings": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "deletionState": {
+        "type": "string"
+      },
+      "deletionId": {
+        "type": "string"
+      },
+      "lastImport": {
+        "type": "object",
+        "description": "由已授权文件导入返回的本次结果"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "items",
+        "total"
+      ]
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "importControlLayout",
+    "description": "通过系统文档选择器和真实兼容性确认导入布局",
+    "args": [],
+    "results": [
+      "ready",
+      "cancelled",
+      "needsUser"
+    ],
+    "output": {
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "id": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "revision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "id",
+        "name",
+        "revision"
+      ]
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "useControlLayout",
+    "description": "使用指定 ID 和修订的完整操控方案 ready 表示已核对当前活动布局 ID；可用 listControlLayouts 查看该布局。",
+    "args": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "方案名称",
+        "required": true
+      },
+      {
+        "name": "layoutId",
+        "type": "string",
+        "description": "目录返回的方案 ID",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "目录返回的修订",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser"
+    ],
+    "output": {}
+  },
+  {
+    "domain": "layouts",
+    "name": "copyControlLayout",
+    "description": "复制已核实的原布局，返回独立的新 ID、修订 1 和实际名称。目标名在 trim 后无冲突时保留，重名时依次分配「 副本」「 副本 2」等后缀（完整名称最多 256 UTF-8 字节）。",
+    "args": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "方案名称",
+        "required": true
+      },
+      {
+        "name": "layoutId",
+        "type": "string",
+        "description": "目录返回的方案 ID",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "目录返回的修订",
+        "required": true
+      },
+      {
+        "name": "newName",
+        "type": "string",
+        "description": "期望新名称，一至四十字",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser"
+    ],
+    "output": {
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "id": {
+        "type": "string",
+        "description": "业务标识或保存的文字",
+        "minLength": 1
+      },
+      "revision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置",
+        "const": 1
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "id",
+        "name",
+        "revision"
+      ]
+    },
+    "inputExamples": [
+      {
+        "name": "原布局",
+        "layoutId": "layout-original",
+        "revision": 3,
+        "newName": " 我的布局 "
+      },
+      {
+        "name": "原布局",
+        "layoutId": "layout-original",
+        "revision": 3,
+        "newName": " 原布局 "
+      }
+    ],
+    "examples": {
+      "ready": {
+        "id": "copied-layout",
+        "name": "我的布局",
+        "revision": 1
+      }
+    },
+    "outputCases": [
+      {
+        "args": {
+          "name": "原布局",
+          "newName": " 原布局 "
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "id",
+          "name",
+          "revision"
+        ],
+        "example": {
+          "id": "new-copy-layout",
+          "name": "原布局 副本 2",
+          "revision": 1
+        }
+      }
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/pages/LayoutListPage.ets",
+      "test": "scripts/test-layout-store-transactions.mjs"
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "renameControlLayout",
+    "description": "重命名已存在的非预设方案",
+    "args": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "方案名称",
+        "required": true
+      },
+      {
+        "name": "layoutId",
+        "type": "string",
+        "description": "目录返回的方案 ID",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "目录返回的修订",
+        "required": true
+      },
+      {
+        "name": "newName",
+        "type": "string",
+        "description": "新名称，一至四十字",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser"
+    ],
+    "output": {
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "id": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "revision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "id",
+        "name",
+        "revision"
+      ]
+    },
+    "echoArgs": {
+      "id": "layoutId"
+    },
+    "echoTrimArgs": {
+      "name": "newName"
+    },
+    "inputExamples": [
+      {
+        "name": "原布局",
+        "layoutId": "layout-original",
+        "revision": 3,
+        "newName": " 我的布局 "
+      }
+    ],
+    "examples": {
+      "ready": {
+        "id": "layout-original",
+        "name": "我的布局",
+        "revision": 4
+      }
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "requestRemoveControlLayout",
+    "description": "在应用请求二次确认删除指定自建方案",
+    "args": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "方案名称",
+        "required": true
+      },
+      {
+        "name": "layoutId",
+        "type": "string",
+        "description": "目录返回的方案 ID",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "目录返回的修订",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "id": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      }
+    },
+    "echoArgs": {
+      "id": "layoutId"
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "exportControlLayout",
+    "description": "通过系统保存指定最新或兼容布局副本",
+    "args": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "方案名称",
+        "required": true
+      },
+      {
+        "name": "layoutId",
+        "type": "string",
+        "description": "目录返回的方案 ID",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "目录返回的修订",
+        "required": true
+      },
+      {
+        "name": "legacy",
+        "type": "boolean",
+        "description": "是否导出兼容副本",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "cancelled",
+      "needsUser"
+    ],
+    "output": {
+      "saved": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "saved"
+      ]
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "shareControlLayout",
+    "description": "将指定布局交给系统分享面板",
+    "args": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "方案名称",
+        "required": true
+      },
+      {
+        "name": "layoutId",
+        "type": "string",
+        "description": "目录返回的方案 ID",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "目录返回的修订",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "systemShare"
+      }
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "openLayoutWorkbench",
+    "description": "打开指定布局的几何编辑或手感与输入编辑器",
+    "args": [
+      {
+        "name": "name",
+        "type": "string",
+        "description": "方案名称",
+        "required": true
+      },
+      {
+        "name": "layoutId",
+        "type": "string",
+        "description": "目录返回的方案 ID",
+        "required": true
+      },
+      {
+        "name": "revision",
+        "type": "integer",
+        "description": "目录返回的修订",
+        "required": true
+      },
+      {
+        "name": "view",
+        "type": "string",
+        "description": "编辑分区",
+        "required": true,
+        "enum": [
+          "geometry",
+          "input"
+        ]
+      }
+    ],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      }
+    },
+    "echoArgs": {
+      "name": "name"
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "readControlWorkbench",
+    "description": "查询当前布局草稿、按键、组、尺寸，操作后均需回读草稿版本",
+    "args": [
+      {
+        "name": "search",
+        "type": "string",
+        "description": "按控件标签或ID检索",
+        "required": false
+      },
+      {
+        "name": "offset",
+        "type": "integer",
+        "description": "分页起点",
+        "required": false
+      }
+    ],
+    "results": [
+      "draft"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字",
+        "minLength": 1
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "activeControl": "jump",
+        "groups": [
+          {
+            "id": "custom-group",
+            "name": "快捷操作",
+            "visible": false,
+            "secondary": false,
+            "hidePrimary": false
+          },
+          {
+            "id": "secondary-group",
+            "name": "物品栏",
+            "visible": false,
+            "secondary": true,
+            "hidePrimary": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "finishControlWorkbench",
+    "description": "保存、撤销、请求放弃或转到手感设置；未保存冲突时由人决定",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "decision",
+        "type": "string",
+        "description": "操作",
+        "required": true,
+        "enum": [
+          "undo",
+          "save",
+          "discard",
+          "input"
+        ]
+      }
+    ],
+    "results": [
+      "draft",
+      "ready",
+      "needsUser",
+      "cancelled"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "layoutId": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "revision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "name",
+        "layoutId",
+        "revision"
+      ],
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "name": "已保存的布局",
+        "layoutId": "saved-profile",
+        "revision": 2
+      },
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      }
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "decision": "undo"
+      },
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "decision": "save"
+      },
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "decision": "discard"
+      }
+    ]
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "addWorkbenchControl",
+    "description": "创建普通组合键、常用按键，或找到/恢复摇杆和物品栏",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "type": "string",
+        "description": "目录项",
+        "required": true,
+        "enum": [
+          "button",
+          "joystick",
+          "hotbar",
+          "space",
+          "shift",
+          "e",
+          "esc",
+          "f3",
+          "f4",
+          "f5",
+          "tab"
+        ]
+      },
+      {
+        "name": "keys",
+        "type": "string",
+        "description": "普通按钮的键码，逗号分隔",
+        "required": false
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "kind": "button"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "editWorkbenchControl",
+    "description": "选择、复制、锁定、隐藏或请求删除指定控件",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "controlId",
+        "type": "string",
+        "description": "草稿控件ID",
+        "required": true
+      },
+      {
+        "name": "change",
+        "type": "string",
+        "description": "编辑意图",
+        "required": true,
+        "enum": [
+          "select",
+          "duplicate",
+          "lock",
+          "unlock",
+          "hide",
+          "show",
+          "remove"
+        ]
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "controlId": "jump",
+        "change": "lock"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "setWorkbenchGeometry",
+    "description": "将草稿控件定位到当前布局视口中的真实位置与显示尺寸",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "controlId",
+        "type": "string",
+        "description": "草稿控件ID",
+        "required": true
+      },
+      {
+        "name": "x",
+        "type": "integer",
+        "description": "当前视口的 vp 数值",
+        "required": true
+      },
+      {
+        "name": "y",
+        "type": "integer",
+        "description": "当前视口的 vp 数值",
+        "required": true
+      },
+      {
+        "name": "width",
+        "type": "integer",
+        "description": "当前视口的 vp 数值",
+        "required": true
+      },
+      {
+        "name": "height",
+        "type": "integer",
+        "description": "当前视口的 vp 数值",
+        "required": true
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "controlId": "jump",
+        "x": 20,
+        "y": 20,
+        "width": 64,
+        "height": 64
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "setWorkbenchAppearance",
+    "description": "设置控件名称、大小、文字和背景色、边框、透明度，或更改全局缩放及吸附",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "controlId",
+        "type": "string",
+        "description": "草稿控件ID",
+        "required": true
+      },
+      {
+        "name": "field",
+        "type": "string",
+        "description": "样式字段",
+        "required": true,
+        "enum": [
+          "name",
+          "scale",
+          "opacity",
+          "corner",
+          "bg",
+          "fg",
+          "borderColor",
+          "backgroundAlpha",
+          "borderWidth",
+          "globalScale",
+          "globalOpacity",
+          "snap",
+          "snapGap",
+          "snapStrength"
+        ]
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "新的合法数值、名称或 #RRGGBB",
+        "required": true
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "controlId": "jump",
+        "field": "name",
+        "value": "跳跃"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "setWorkbenchBinding",
+    "description": "设置控件键码、触发、场景、滑动或分阶段按键与组显隐动作",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "controlId",
+        "type": "string",
+        "description": "草稿控件ID",
+        "required": true
+      },
+      {
+        "name": "field",
+        "type": "string",
+        "description": "设置项目",
+        "required": true,
+        "enum": [
+          "scene",
+          "visibility",
+          "swipeGroup",
+          "dragLook",
+          "trigger",
+          "keys",
+          "phaseKeys",
+          "groupTargets"
+        ]
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "有界选项或逗号分隔的键码/组ID",
+        "required": true
+      },
+      {
+        "name": "phase",
+        "type": "string",
+        "description": "阶段",
+        "required": false,
+        "enum": [
+          "press",
+          "longPress",
+          "click",
+          "doubleClick"
+        ]
+      },
+      {
+        "name": "operation",
+        "type": "string",
+        "description": "组操作",
+        "required": false,
+        "enum": [
+          "toggle",
+          "show",
+          "hide"
+        ]
+      },
+      {
+        "name": "actionIndex",
+        "type": "integer",
+        "description": "原动作下标；-1新增",
+        "required": false
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "controlId": "jump",
+        "field": "scene",
+        "value": "game"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "arrangeWorkbenchSelection",
+    "description": "对一组草稿中的控件执行对齐、等间距、复制、锁定和经确认的移除",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "controlIds",
+        "type": "string",
+        "description": "逗号分隔的顶层控件ID",
+        "required": true
+      },
+      {
+        "name": "arrangement",
+        "type": "string",
+        "description": "变更类型",
+        "required": true,
+        "enum": [
+          "horizontal",
+          "vertical",
+          "auto",
+          "space",
+          "duplicate",
+          "lock",
+          "unlock",
+          "anchor",
+          "remove",
+          "move",
+          "style"
+        ]
+      },
+      {
+        "name": "anchor",
+        "type": "string",
+        "description": "网格锚点，如11为中心",
+        "required": false
+      },
+      {
+        "name": "dx",
+        "type": "integer",
+        "description": "水平移动 vp",
+        "required": false
+      },
+      {
+        "name": "dy",
+        "type": "integer",
+        "description": "垂直移动 vp",
+        "required": false
+      },
+      {
+        "name": "field",
+        "type": "string",
+        "description": "批量样式字段",
+        "required": false
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "批量样式目标值",
+        "required": false
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "controlIds": "jump",
+        "arrangement": "lock"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "layoutWorkbench",
+    "name": "editWorkbenchGroup",
+    "description": "按当前草稿管理原生组及二级组。新建时提供非空组名。操作已有组前先从 readControlWorkbench 的 groups 取其 ID；重命名、绑定入口和修改入口比例还要提供新值。members 接受控件 ID 列表，空列表将清空成员。",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前编辑器签发的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "change",
+        "type": "string",
+        "description": "组操作",
+        "required": true,
+        "enum": [
+          "create",
+          "createSecondary",
+          "rename",
+          "showInitially",
+          "hideInitially",
+          "raise",
+          "lower",
+          "duplicate",
+          "remove",
+          "addReturn",
+          "createOpener",
+          "bindOpener",
+          "unbindOpener",
+          "members",
+          "openerRatio",
+          "hideDuringUse",
+          "showDuringUse"
+        ]
+      },
+      {
+        "name": "groupId",
+        "type": "string",
+        "description": "现有组ID，创建时不需要",
+        "required": false
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "新组名、成员ID列表、入口ID或尺寸比例",
+        "required": false
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "width": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "height": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "total": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "activeControl": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "activeGroup": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "groups": {
+        "type": "array",
+        "description": "组初始可见性",
+        "items": {
+          "type": "object",
+          "description": "控件组",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visible": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondary": {
+              "type": "boolean"
+            },
+            "hidePrimary": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "visible"
+          ]
+        }
+      },
+      "scalePercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "opacityPercent": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "snap": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "items": {
+        "type": "array",
+        "description": "草稿控件",
+        "items": {
+          "type": "object",
+          "description": "控件状态",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "name": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "type": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "parent": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "group": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "hidden": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "locked": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "x": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "y": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "width": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "height": {
+              "type": "number",
+              "description": "控件当前保存或投影的数值"
+            },
+            "scene": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "visibility": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "trigger": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "keys": {
+              "type": "array",
+              "description": "组合键",
+              "items": {
+                "type": "integer",
+                "description": "产品读取的计数、修订或位置"
+              }
+            },
+            "style": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "phases": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "groupActions": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "swipeGroup": {
+              "type": "string",
+              "description": "业务标识或保存的文字"
+            },
+            "dragLook": {
+              "type": "boolean",
+              "description": "真实状态标志"
+            },
+            "secondaryAction": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "type",
+            "parent",
+            "group",
+            "hidden",
+            "locked",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scene",
+            "visibility",
+            "trigger",
+            "keys",
+            "style",
+            "phases",
+            "groupActions",
+            "swipeGroup",
+            "dragLook"
+          ]
+        }
+      },
+      "defaultGroup": {
+        "type": "string"
+      },
+      "snapGap": {
+        "type": "number"
+      },
+      "snapStrength": {
+        "type": "number"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      },
+      "groupId": {
+        "type": "string"
+      },
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef",
+      "groupId": "groupId"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "change": "create",
+        "value": "快捷操作"
+      },
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "change": "remove",
+        "groupId": "custom-group"
+      },
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "change": "rename",
+        "groupId": "custom-group",
+        "value": "常用操作"
+      },
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "change": "bindOpener",
+        "groupId": "secondary-group",
+        "value": "jump"
+      },
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 2,
+        "change": "openerRatio",
+        "groupId": "secondary-group",
+        "value": "2:1"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e",
+        "draftRevision": 3
+      },
+      "needsUser": {
+        "surface": "groupRemoval",
+        "groupId": "custom-group"
+      }
+    },
+    "cases": [
+      {
+        "when": {
+          "change": "create"
+        },
+        "require": [
+          "value"
+        ]
+      },
+      {
+        "when": {
+          "change": "createSecondary"
+        },
+        "require": [
+          "value"
+        ]
+      },
+      {
+        "when": {
+          "change": "rename"
+        },
+        "require": [
+          "groupId",
+          "value"
+        ]
+      },
+      {
+        "when": {
+          "change": "showInitially"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "hideInitially"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "raise"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "lower"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "duplicate"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "remove"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "addReturn"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "createOpener"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "bindOpener"
+        },
+        "require": [
+          "groupId",
+          "value"
+        ]
+      },
+      {
+        "when": {
+          "change": "unbindOpener"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "members"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "openerRatio"
+        },
+        "require": [
+          "groupId",
+          "value"
+        ]
+      },
+      {
+        "when": {
+          "change": "hideDuringUse"
+        },
+        "require": [
+          "groupId"
+        ]
+      },
+      {
+        "when": {
+          "change": "showDuringUse"
+        },
+        "require": [
+          "groupId"
+        ]
+      }
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/components/LayoutEditor.ets",
+      "test": "scripts/test-secondary-editor.mjs"
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "surface": "groupRemoval"
+        },
+        "require": [
+          "groupId"
+        ],
+        "example": {
+          "groupId": "custom-group"
+        },
+        "args": {
+          "change": "remove"
+        }
+      }
+    ]
+  },
+  {
+    "domain": "inputWorkbench",
+    "name": "readInputWorkbench",
+    "description": "读取当前方案的触控、视角和映射手柄完整草稿及输入选项",
+    "args": [],
+    "results": [
+      "draft"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字",
+        "minLength": 1
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "touch": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "joystickDeadZone": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "haptic": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "source": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "independent": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "look": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "gamepad": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "actions": {
+        "type": "array",
+        "description": "触控动作名称",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "buttons": {
+        "type": "array",
+        "description": "可用手柄按钮",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "examples": {
+      "draft": {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 2
+      }
+    }
+  },
+  {
+    "domain": "inputWorkbench",
+    "name": "finishInputWorkbench",
+    "description": "保存、撤销或请求放弃当前输入草稿",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前输入编辑器的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "decision",
+        "type": "string",
+        "description": "编辑意图",
+        "required": true,
+        "enum": [
+          "save",
+          "discard",
+          "undo"
+        ]
+      }
+    ],
+    "results": [
+      "draft",
+      "ready",
+      "needsUser",
+      "cancelled"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "touch": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "joystickDeadZone": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "haptic": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "source": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "independent": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "look": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "gamepad": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "actions": {
+        "type": "array",
+        "description": "触控动作名称",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "buttons": {
+        "type": "array",
+        "description": "可用手柄按钮",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "layoutId": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "revision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "name",
+        "layoutId",
+        "revision"
+      ],
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "name": "已保存的布局",
+        "layoutId": "saved-profile",
+        "revision": 2
+      },
+      "draft": {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 3
+      }
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 2,
+        "decision": "undo"
+      },
+      {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 2,
+        "decision": "save"
+      },
+      {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 2,
+        "decision": "discard"
+      }
+    ]
+  },
+  {
+    "domain": "inputWorkbench",
+    "name": "setTouchOption",
+    "description": "调整移动、菜单、快捷栏、陀螺仪或按键动作的草稿设置",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前输入编辑器的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "field",
+        "type": "string",
+        "description": "触控选项",
+        "required": true,
+        "enum": [
+          "scroll",
+          "sprint",
+          "bindings",
+          "swap",
+          "drop",
+          "gyroX",
+          "gyroY",
+          "menu",
+          "joystick",
+          "gyroMode",
+          "menuSpeed",
+          "menuHold",
+          "sprintThreshold",
+          "hold",
+          "gyroScale",
+          "deadZone",
+          "action"
+        ]
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "布尔文本、百分比、毫秒、模式或键码；动作支持inherit/unbind",
+        "required": true
+      },
+      {
+        "name": "actionName",
+        "type": "string",
+        "description": "动作名称，只用于action",
+        "required": false
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "touch": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "joystickDeadZone": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "haptic": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "source": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "independent": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "look": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "gamepad": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "actions": {
+        "type": "array",
+        "description": "触控动作名称",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "buttons": {
+        "type": "array",
+        "description": "可用手柄按钮",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 2,
+        "field": "scroll",
+        "value": "true"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "inputWorkbench",
+    "name": "setLookOption",
+    "description": "按输入来源设置视角、反向、灵敏度、平滑、加速和反馈",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前输入编辑器的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "source",
+        "type": "string",
+        "description": "输入来源",
+        "required": true,
+        "enum": [
+          "physical",
+          "touch",
+          "gamepad",
+          "external"
+        ]
+      },
+      {
+        "name": "field",
+        "type": "string",
+        "description": "视角选项",
+        "required": true,
+        "enum": [
+          "independent",
+          "invertY",
+          "haptic",
+          "sensitivity",
+          "smoothing",
+          "acceleration"
+        ]
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "百分比或布尔文本",
+        "required": true
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "touch": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "joystickDeadZone": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "haptic": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "source": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "independent": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "look": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "gamepad": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "actions": {
+        "type": "array",
+        "description": "触控动作名称",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "buttons": {
+        "type": "array",
+        "description": "可用手柄按钮",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 2,
+        "source": "touch",
+        "field": "invertY",
+        "value": "true"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "inputWorkbench",
+    "name": "setGamepadOption",
+    "description": "设置映射手柄的开关、按钮、摇杆及阈值，恢复默认须用户确认",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "当前输入编辑器的草稿引用",
+        "required": true
+      },
+      {
+        "name": "draftRevision",
+        "type": "integer",
+        "description": "当前草稿版本",
+        "required": true
+      },
+      {
+        "name": "field",
+        "type": "string",
+        "description": "手柄选项",
+        "required": true,
+        "enum": [
+          "reset",
+          "enabled",
+          "left",
+          "right",
+          "deadzone",
+          "threshold",
+          "scale",
+          "button"
+        ]
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "布尔文本、角色、百分比或按钮动作；reset传空串",
+        "required": true
+      },
+      {
+        "name": "button",
+        "type": "string",
+        "description": "按钮映射的按钮名",
+        "required": false
+      }
+    ],
+    "results": [
+      "draft",
+      "needsUser"
+    ],
+    "output": {
+      "draftRef": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "draftRevision": {
+        "type": "integer",
+        "description": "产品读取的计数、修订或位置"
+      },
+      "name": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "touch": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "joystickDeadZone": {
+        "type": "number",
+        "description": "控件当前保存或投影的数值"
+      },
+      "haptic": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "source": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "independent": {
+        "type": "boolean",
+        "description": "真实状态标志"
+      },
+      "look": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "gamepad": {
+        "type": "string",
+        "description": "业务标识或保存的文字"
+      },
+      "actions": {
+        "type": "array",
+        "description": "触控动作名称",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "buttons": {
+        "type": "array",
+        "description": "可用手柄按钮",
+        "items": {
+          "type": "string",
+          "description": "业务标识或保存的文字"
+        }
+      },
+      "changed": {
+        "type": "boolean",
+        "description": "该次动作是否改变了序列化业务草稿"
+      }
+    },
+    "requiredOutput": {
+      "draft": [
+        "draftRef",
+        "draftRevision"
+      ]
+    },
+    "echoArgs": {
+      "draftRef": "draftRef"
+    },
+    "inputExamples": [
+      {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 2,
+        "field": "enabled",
+        "value": "true"
+      }
+    ],
+    "examples": {
+      "draft": {
+        "draftRef": "3f5f8109-6ea0-4251-9845-c5d300ec5963",
+        "draftRevision": 3
+      }
+    }
+  },
+  {
+    "domain": "layouts",
+    "name": "readWorkbenchOutcome",
+    "description": "在返回目录后核对先前布局或输入草稿的人机确认结果；无证据回报未知",
+    "args": [
+      {
+        "name": "draftRef",
+        "type": "string",
+        "description": "先前打开的独立布局或输入草稿引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "cancelled"
+    ],
+    "output": {
+      "name": {
+        "type": "string"
+      },
+      "layoutId": {
+        "type": "string"
+      },
+      "revision": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "name",
+        "layoutId",
+        "revision"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "name": "已保存的布局",
+        "layoutId": "saved-profile",
+        "revision": 2
+      }
+    },
+    "inputExamples": [
+      {
+        "draftRef": "05ce49ef-fa73-4186-870b-293cebbfe27e"
+      }
+    ]
+  }
+]

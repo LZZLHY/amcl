@@ -473,6 +473,7 @@ set(NAPI_SOURCES
     napi/napi_jvm.cpp       # JVM / GPU / 下载引擎 probe NAPI
     platform/native_gl.cpp
     platform/desktop_gamepad.cpp
+    platform/system_clipboard.cpp # 桌面和手机共享无状态的纯文本 Pasteboard 写入
     napi/napi_desktop.cpp
     napi/napi_mc.cpp        # Minecraft 启动器 NAPI（含 MakeIntResult 统一）
     napi/napi_log.cpp       # AMCL 持久化日志 NAPI
@@ -641,6 +642,8 @@ add_library(glfw SHARED
     glfw/graphics_runtime_compat.cpp # 旧ABI仅无状态转发，公共实现归中立运行时
     platform/desktop_host_client.cpp
     glfw/glfw_callbacks.cpp    # 回调设置 + 窗口/监视器/输入 stub
+    glfw/glfw_clipboard.cpp    # GLFW 游戏内缓存及手机系统剪贴板写入
+    platform/system_clipboard.cpp # JVM 的 GLFW 映像直接使用系统库，不依赖 libentry 的符号
     glfw/glfw_vulkan.cpp       # Vulkan surface 四件套（VK_OHOS_surface，Phase 2）
     glfw/ohos_render_scheduler.cpp # OHOS 渲染线程 QoS lease（只在 context-current 生命周期内生效）
     input/adapters/glfw_input_adapter.cpp # GLFW3 typed consumer；默认 legacy、启动 flag 二选一
@@ -855,7 +858,7 @@ target_compile_definitions(amcl_input_runtime PRIVATE
 )
 
 # OHOS 系统库
-target_link_libraries(glfw PRIVATE libdeviceinfo_ndk.z.so)
+target_link_libraries(glfw PRIVATE libdeviceinfo_ndk.z.so libpasteboard.so libudmf.so)
 
 target_link_libraries(glfw PUBLIC
     libhilog_ndk.z.so
@@ -875,7 +878,7 @@ set(JVM_SOURCES
     jvm/jvm_launcher.cpp
     jvm/game_gui_bridge.cpp
     jvm/game_gui_observation.cpp # 过程拥有的有界GUI观察队列；UI只读快照，退出不等待JNI worker
-    jvm/game_process_exit.cpp # 独立游戏进程的 JNI 退出记录与进程结束；不改变同进程/processor。
+    jvm/game_process_exit.cpp # 独立进程退出及手机正常退出交接；processor 不接管。
     jvm/mc_launcher.cpp
     jvm/jni_registry.cpp
     jvm/elf_loader.cpp
@@ -912,6 +915,7 @@ set(DOWNLOAD_SOURCES
     download/config.cpp                  # 全局 CA bundle path（由 ArkTS 抽 rawfile 后设置）
     # Stage 2 NAPI 桥接
     download/napi_bridge.cpp             # Progress/Complete 线程安全回调
+    platform/archive_entry_mutation.cpp   # 玩家确认后的归档条目隔离、回读与恢复
     download/download_napi.cpp           # createTask/start/cancel/onProgress/... NAPI 方法
 )
 
@@ -1124,9 +1128,10 @@ if(AMCL_NATIVE_DESKTOP_ONLY)
     target_link_libraries(entry PUBLIC libEGL.so)
 endif()
 
-# XComponent 帧率 hint 使用真实显示刷新率；不向其他 target 传播此 OHOS 依赖。
+# XComponent 帧率 hint 使用真实显示刷新率；面板固定帧率 pinner 用 native_vsync。
+# 不向其他 target 传播此 OHOS 依赖。
 if(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
-    target_link_libraries(entry PRIVATE libnative_display_manager.so)
+    target_link_libraries(entry PRIVATE libnative_display_manager.so libnative_vsync.so)
 endif()
 
 # ============================================================

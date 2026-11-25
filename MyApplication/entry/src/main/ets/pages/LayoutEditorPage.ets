@@ -192,12 +192,12 @@ struct LayoutEditorPage {
 
       if (this.ready) {
         if (this.settingsOnly) {
-          InputSettingsEditor({palette:this.palette,targetProfileName:this.targetProfileName,screenWidth:this.screenW,screenHeight:this.screenH,initialSection:this.settingsSection,
+          InputSettingsEditor({launcherWorkbench:true,palette:this.palette,targetProfileName:this.targetProfileName,screenWidth:this.screenW,screenHeight:this.screenH,initialSection:this.settingsSection,
             onDone:(_result: LayoutProfile | null): void => { this.finishEditorPage_() },
             onInitializationFailed:(message: string): void => { this.reportEditorPageError_(message) }})
         } else {
         LayoutEditor({
-          palette: this.palette,
+          launcherWorkbench: true, palette: this.palette,
           targetProfileName:this.targetProfileName,
           onOpenSettings:(result: LayoutProfile | null,section: string): void => {
             const store=getLayoutStore(); store.beginEditorTransaction()

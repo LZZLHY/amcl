@@ -1,0 +1,605 @@
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include "desktop_host_api.h"
+
+using SDL_DisplayID = uint32_t;
+using SDL_PropertiesID = uint32_t;
+using SDL_WindowID = uint32_t;
+using SDL_MouseButtonFlags = uint32_t;
+using Uint64 = uint64_t;
+using Sint64 = int64_t;
+using Sint32 = int32_t;
+
+enum SDL_FullscreenOp { SDL_FULLSCREEN_OP_LEAVE, SDL_FULLSCREEN_OP_ENTER, SDL_FULLSCREEN_OP_UPDATE };
+enum SDL_FullscreenResult {
+    SDL_FULLSCREEN_FAILED, SDL_FULLSCREEN_SUCCEEDED, SDL_FULLSCREEN_PENDING,
+};
+enum { SDL_WINDOW_FULLSCREEN = 1, SDL_WINDOW_MAXIMIZED = 2, SDL_WINDOW_MINIMIZED = 4, SDL_WINDOW_HIDDEN = 8 };
+enum {
+    SDL_EVENT_WINDOW_ENTER_FULLSCREEN, SDL_EVENT_WINDOW_LEAVE_FULLSCREEN, SDL_EVENT_WINDOW_SHOWN,
+    SDL_EVENT_WINDOW_HIDDEN, SDL_EVENT_WINDOW_MOVED, SDL_EVENT_WINDOW_MAXIMIZED, SDL_EVENT_WINDOW_RESTORED,
+    SDL_EVENT_WINDOW_MINIMIZED, SDL_EVENT_WINDOW_DISPLAY_CHANGED, SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+    SDL_EVENT_WINDOW_RESIZED, SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED, SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED,
+};
+enum { OPENHARMONY_WINDOW_PRESENTED = 1, OPENHARMONY_WINDOW_AUXILIARY_PBUFFER };
+
+struct SDL_Rect { int x, y, w, h; };
+struct SDL_DisplayMode {
+    SDL_DisplayID displayID = 0;
+    int w = 0, h = 0, format = 0;
+    float pixel_density = 0, refresh_rate = 0;
+    void *internal = nullptr;
+};
+struct SDL_WindowData {
+    int role = OPENHARMONY_WINDOW_PRESENTED;
+    bool shown = true;
+    SDL_DisplayMode desktop_confirmed_fullscreen_mode;
+    Uint64 desktop_fullscreen_host_generation = 0;
+    Sint32 desktop_fullscreen_host_window = 0;
+};
+struct SDL_Window {
+    SDL_WindowData *internal;
+    SDL_WindowID id = 41;
+    bool fullscreen_exclusive = true, update_fullscreen_on_display_changed = false;
+    bool is_destroying = false, is_hiding = false;
+    SDL_DisplayID last_fullscreen_exclusive_display = 0, displayID = 0, pending_displayID = 0;
+    bool undefined_x = false, undefined_y = false, last_position_pending = false, tiled = false;
+    SDL_Rect windowed{}, floating{};
+    int flags = 0, pending_flags = 0, x = 0, y = 0, w = 800, h = 450;
+    SDL_DisplayMode requested_fullscreen_mode, current_fullscreen_mode;
+};
+struct SDL_DisplayData { Sint64 native_id; };
+struct SDL_VideoDisplay {
+    SDL_DisplayData *internal;
+    SDL_Window *fullscreen_window = nullptr;
+    bool fullscreen_active = false;
+    SDL_DisplayID id = 0;
+    SDL_DisplayMode desktop_mode;
+    const SDL_DisplayMode *current_mode = &desktop_mode;
+};
+struct SDL_VideoDevice {
+    int num_displays = 2;
+    SDL_VideoDisplay *displays[2]{};
+    SDL_FullscreenResult (*SetWindowFullscreen)(SDL_VideoDevice*, SDL_Window*, SDL_VideoDisplay*, SDL_FullscreenOp) = nullptr;
+    bool (*WindowUsesHostFullscreen)(SDL_Window*) = nullptr;
+    bool (*SyncWindow)(SDL_VideoDevice*, SDL_Window*) = nullptr;
+};
+
+static AmclDesktopSnapshot host_facts;
+static SDL_DisplayID displays[AMCL_DESKTOP_MAX_DISPLAYS];
+static Sint64 native_displays[AMCL_DESKTOP_MAX_DISPLAYS];
+static SDL_VideoDisplay *test_displays[2];
+static SDL_Window *mouse_focus, *presented_window;
+static SDL_VideoDevice video_device;
+static SDL_VideoDevice *const _this = &video_device;
+static SDL_WindowID visibility_window;
+static Uint64 visibility_sequence, last_event_epoch;
+static int destroy_on_event = -1;
+static bool visibility_pending, visibility_shown, close_notified;
+static bool native_desktop = true, host_available = true;
+static Uint64 ticks, last_submitted;
+static int submits, wait_calls, errors, target_display, target_fullscreen, event_count;
+static float local_x = 80.0f, local_y = 45.0f;
+static bool confirm_on_wait, reject_on_wait, replace_on_wait, queue_reject;
+static int leave_calls, common_mode_changes, pixel_size_checks, closest_mode_checks;
+
+static bool OPENHARMONY_IsDesktopDevice() { return native_desktop; }
+static Uint64 SDL_GetTicksNS() { return ticks; }
+static Uint64 SDL_MS_TO_NS(Uint64 ms) { return ms * 1000000; }
+#define SDL_zero(value) std::memset(&(value), 0, sizeof(value))
+#define SDL_min std::min
+
+template<class... T> static bool SDL_SetError(const char*, T...) { ++errors; return false; }
+static SDL_Window *SDL_GetMouseFocus() { return mouse_focus; }
+static SDL_DisplayID SDL_GetDisplayForWindow(SDL_Window *window);
+static bool SDL_GetWindowPosition(SDL_Window *window, int *x, int *y)
+{
+    const bool fullscreen = (window->flags & SDL_WINDOW_FULLSCREEN) != 0;
+    const bool other_display = fullscreen && SDL_GetDisplayForWindow(window) == displays[1];
+    *x = fullscreen ? (other_display ? 2000 : -1920) : host_facts.x;
+    *y = fullscreen ? (other_display ? 130 : -170) : host_facts.y;
+    return true;
+}
+static SDL_MouseButtonFlags SDL_GetMouseState(float *x, float *y)
+{
+    if (x) *x = local_x;
+    if (y) *y = local_y;
+    return 1;
+}
+static SDL_VideoDisplay *SDL_GetVideoDisplay(SDL_DisplayID id)
+{
+    for (int index = 0; index < 2; ++index) {
+        if (displays[index] == id) return test_displays[index];
+    }
+    return nullptr;
+}
+static SDL_DisplayID SDL_GetDisplayForWindowPosition(SDL_Window*)
+{
+    return host_facts.displayId == native_displays[0] ? displays[0] : displays[1];
+}
+#define CHECK_WINDOW_MAGIC(window, rejected) if (!(window)) return rejected
+#define SDL_PROP_SDL2_COMPAT_WINDOW_PREFERRED_FULLSCREEN_DISPLAY "sdl2-compat.window.preferred_fullscreen_display"
+static SDL_PropertiesID SDL_GetWindowProperties(SDL_Window*) { return 1; }
+static void SDL_SetNumberProperty(SDL_PropertiesID, const char*, int64_t) {}
+static void SDL_ClearProperty(SDL_PropertiesID, const char*) {}
+static SDL_VideoDisplay *SDL_GetVideoDisplayForFullscreenWindow(SDL_Window *window)
+{
+    return SDL_GetVideoDisplay(window->current_fullscreen_mode.displayID);
+}
+static SDL_Window *SDL_GetWindowFromID(SDL_WindowID id);
+static void SDL_OnWindowDisplayChanged(SDL_Window *window);
+static void SDL_OnWindowMoved(SDL_Window *window);
+static bool SDL_SendWindowEvent(SDL_Window *window, int event, int data1, int data2)
+{
+    switch (event) {
+@WINDOW_GEOMETRY_STATE@
+    default:
+        break;
+    }
+    const SDL_WindowID window_id = window->id;
+    ++event_count;
+    if (event == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
+        window->flags |= SDL_WINDOW_FULLSCREEN;
+    } else if (event == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+        window->flags &= ~SDL_WINDOW_FULLSCREEN;
+    }
+    if (event == destroy_on_event) presented_window = nullptr;
+    window = SDL_GetWindowFromID(window_id);
+    if (window) {
+        switch (event) {
+@WINDOW_GEOMETRY_DISPATCH@
+        default:
+            break;
+        }
+    }
+    return true;
+}
+static SDL_VideoDevice *SDL_GetVideoDevice() { return &video_device; }
+static SDL_Window *OPENHARMONY_GetPresentedWindow(SDL_VideoDevice*) { return presented_window; }
+static SDL_Window *SDL_GetWindowFromID(SDL_WindowID id)
+{
+    return presented_window && presented_window->id == id ? presented_window : nullptr;
+}
+static void OPENHARMONY_AMCL_UpdatePresentedForeground() {}
+static void SDL_SendDropFile(SDL_Window*, const char*, const char*) {}
+static void SDL_SendDropComplete(SDL_Window*) {}
+static int amclDecodeDesktopDrop(const char*, size_t, const char**, size_t) { return 0; }
+static int32_t TakeDrop(char*, size_t) { return 0; }
+static void SyncDisplays(bool) {}
+static void PumpGamepads(const AmclDesktopHostV1*) {}
+
+// SDL common 夹具仅替代平台查询和回调。宿主模式下任何直接切显示模式都会在断言中暴露。
+#define SDL_copyp(to, from) (*(to) = *(from))
+#define CHECK_WINDOW_NOT_POPUP(window, rejected) ((void)window)
+#define SDL_WINDOW_FULLSCREEN_VISIBLE(window) (((window)->flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIDDEN)) == SDL_WINDOW_FULLSCREEN)
+static void SDL_SyncIfRequired(SDL_Window*) {}
+static void SDL_MinimizeWindow(SDL_Window*) {}
+static void SDL_OnWindowResized(SDL_Window*) {}
+static bool SDL_SendsFullscreenDimensions(SDL_VideoDevice*) { return true; }
+static bool SDL_GetDisplayBounds(SDL_DisplayID, SDL_Rect *bounds)
+{
+    *bounds = {};
+    return true;
+}
+static bool SDL_SendsDisplayChanges(SDL_VideoDevice*) { return false; }
+static bool SDL_GetRectIntersection(const SDL_Rect*, const SDL_Rect*, SDL_Rect*) { return false; }
+static int SDL_GetDisplayIndex(SDL_DisplayID id)
+{
+    return id == displays[0] ? 0 : (id == displays[1] ? 1 : -1);
+}
+static constexpr const char *SDL_HINT_VIDEO_MATCH_EXCLUSIVE_MODE_ON_MOVE = "SDL_VIDEO_MATCH_EXCLUSIVE_MODE_ON_MOVE";
+static bool SDL_GetHintBoolean(const char*, bool default_value) { return default_value; }
+static void SDL_CheckWindowPixelSizeChanged(SDL_Window*) { ++pixel_size_checks; }
+static bool SDL_GetClosestFullscreenDisplayMode(SDL_DisplayID id, int w, int h, float refresh_rate,
+                                                bool, SDL_DisplayMode *mode)
+{
+    ++closest_mode_checks;
+    *mode = {id, w, h};
+    mode->refresh_rate = refresh_rate;
+    return true;
+}
+static bool SDL_SetDisplayModeForDisplay(SDL_VideoDisplay*, const SDL_DisplayMode*)
+{
+    ++common_mode_changes;
+    return true;
+}
+static const SDL_DisplayMode *SDL_GetFullscreenModeMatch(const SDL_DisplayMode *mode)
+{
+    return mode->w > 0 && mode->h > 0 && SDL_GetVideoDisplay(mode->displayID) ? mode : nullptr;
+}
+static void SDL_free(void*) {}
+static void SDL_FinalizeDisplayMode(SDL_DisplayMode*) {}
+static void SDL_SendDisplayEvent(SDL_VideoDisplay*, int, int, int) {}
+static Uint64 Submit(Sint32 kind, Sint32 enabled, Sint32 display, Sint32, Sint32, const char*)
+{
+    if (kind != AMCL_DESKTOP_FULLSCREEN || queue_reject) return 0;
+    target_fullscreen = enabled;
+    target_display = display;
+    ++submits;
+    return ++last_submitted;
+}
+static void Snapshot(AmclDesktopSnapshot *facts) { *facts = host_facts; }
+static Uint64 Epoch() { return host_facts.completed; }
+static int32_t WaitEvents(Uint64, Sint64 timeout)
+{
+    ++wait_calls;
+    ticks += static_cast<Uint64>(timeout);
+    if (replace_on_wait) {
+        ++host_facts.generation;
+    } else if (reject_on_wait || confirm_on_wait) {
+        host_facts.completed = last_submitted;
+        if (reject_on_wait) {
+            host_facts.lastError = 17;
+        } else {
+            host_facts.status = target_fullscreen;
+            if (target_display >= 0) host_facts.displayId = target_display;
+        }
+    }
+    return 0;
+}
+static const AmclDesktopHostV1 host = {
+    AMCL_DESKTOP_HOST_MAGIC, sizeof(AmclDesktopHostV1), 1,
+    Submit, Snapshot, nullptr, nullptr, nullptr, nullptr, Epoch, WaitEvents, nullptr, TakeDrop,
+};
+static const AmclDesktopHostV1 *DesktopHost() { return host_available ? &host : nullptr; }
+
+static bool ReconcileFullscreen(SDL_Window *window, const AmclDesktopSnapshot *facts);
+@PRODUCTION@
+
+static SDL_FullscreenResult HostFullscreen(SDL_VideoDevice*, SDL_Window *window, SDL_VideoDisplay *display,
+                                           SDL_FullscreenOp operation)
+{
+    if (operation == SDL_FULLSCREEN_OP_LEAVE) ++leave_calls;
+    SDL_FullscreenResult result = SDL_FULLSCREEN_FAILED;
+    OPENHARMONY_DesktopFullscreen(window, display, operation, &result);
+    return result;
+}
+
+@CORE_FULLSCREEN_API@
+#ifndef SDL_REPLAYED_FULLSCREEN_API
+// 普通宿主构建只获得稀疏上游补丁。--repo 额外直接执行锁定的完整公共 API。
+static SDL_DisplayID SDL_GetDisplayForWindow(SDL_Window *window)
+{
+    if ((window->flags & SDL_WINDOW_FULLSCREEN) && window->current_fullscreen_mode.displayID) {
+        return window->current_fullscreen_mode.displayID;
+    }
+    return SDL_GetDisplayForWindowPosition(window);
+}
+static const SDL_DisplayMode *SDL_GetWindowFullscreenMode(SDL_Window *window)
+{
+    return SDL_GetFullscreenModeMatch((window->flags & SDL_WINDOW_FULLSCREEN)
+                                     ? &window->current_fullscreen_mode : &window->requested_fullscreen_mode);
+}
+static bool SDL_SetWindowFullscreen(SDL_Window *window, bool enabled)
+{
+    auto *display = SDL_GetVideoDisplay(window->requested_fullscreen_mode.displayID);
+    return HostFullscreen(_this, window, display, enabled ? SDL_FULLSCREEN_OP_ENTER : SDL_FULLSCREEN_OP_LEAVE)
+           != SDL_FULLSCREEN_FAILED;
+}
+static bool SDL_SetWindowFullscreenMode(SDL_Window *window, const SDL_DisplayMode *mode)
+{
+    window->requested_fullscreen_mode = *mode;
+    return HostFullscreen(_this, window, SDL_GetVideoDisplay(mode->displayID), SDL_FULLSCREEN_OP_UPDATE)
+           != SDL_FULLSCREEN_FAILED;
+}
+static bool SDL_SyncWindow(SDL_Window *window) { return SyncDesktopWindow(_this, window); }
+static void SDL_SetDesktopDisplayMode(SDL_VideoDisplay *display, const SDL_DisplayMode *mode)
+{
+    if (!display->fullscreen_active) display->desktop_mode = *mode;
+}
+#endif
+
+static bool SetFullscreenMode(SDL_Window *window, SDL_VideoDisplay *display)
+{
+    const SDL_DisplayMode mode = display->desktop_mode;
+    return SDL_SetWindowFullscreenMode(window, &mode);
+}
+
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "%d: %s\n", __LINE__, #x); return 1; } } while (0)
+
+int main()
+{
+    SDL_WindowData window_data;
+    SDL_Window window{&window_data};
+    SDL_DisplayData primary_data{12}, other_data{24};
+    SDL_VideoDisplay display{&primary_data}, other_display{&other_data};
+    SDL_FullscreenResult result = SDL_FULLSCREEN_FAILED;
+    displays[0] = 90;
+    native_displays[0] = 12;
+    test_displays[0] = &display;
+    display.id = displays[0];
+    window.displayID = display.id;
+    display.desktop_mode = {display.id, 1920, 1080};
+    displays[1] = 91;
+    native_displays[1] = 24;
+    test_displays[1] = &other_display;
+    other_display.id = displays[1];
+    other_display.desktop_mode = {other_display.id, 2560, 1440};
+    video_device.displays[0] = &display;
+    video_device.displays[1] = &other_display;
+    video_device.SetWindowFullscreen = HostFullscreen;
+    video_device.WindowUsesHostFullscreen = Presented;
+    video_device.SyncWindow = SyncDesktopWindow;
+    presented_window = &window;
+    host_facts = {};
+    host_facts.active = 1;
+    host_facts.generation = 1;
+    host_facts.windowId = 151;
+    host_facts.displayId = 12;
+    host_facts.width = 1200;
+    host_facts.height = 900;
+    auto request = [&](SDL_FullscreenOp operation, SDL_VideoDisplay *selected) {
+        return OPENHARMONY_DesktopFullscreen(&window, selected, operation, &result);
+    };
+
+    // 桌面宿主迟到时拒绝虚假全屏，手机及辅助窗口仍由原有分支判断。
+    host_available = false;
+    CHECK(request(SDL_FULLSCREEN_OP_ENTER, &display) && result == SDL_FULLSCREEN_FAILED && submits == 0);
+    native_desktop = false;
+    CHECK(!request(SDL_FULLSCREEN_OP_ENTER, &display));
+    native_desktop = true;
+    host_available = true;
+    window_data.role = OPENHARMONY_WINDOW_AUXILIARY_PBUFFER;
+    CHECK(!request(SDL_FULLSCREEN_OP_ENTER, &display));
+    window_data.role = OPENHARMONY_WINDOW_PRESENTED;
+
+    CHECK(request(SDL_FULLSCREEN_OP_ENTER, &display) && result == SDL_FULLSCREEN_PENDING);
+    CHECK(submits == 1 && target_fullscreen == 1 && target_display == 12 && window.flags == 0);
+    CHECK(request(SDL_FULLSCREEN_OP_UPDATE, &display) && result == SDL_FULLSCREEN_PENDING && submits == 1);
+    CHECK(request(SDL_FULLSCREEN_OP_ENTER, &display) && result == SDL_FULLSCREEN_PENDING && submits == 1);
+
+    // 等待上限是真实单调时钟差。超时后同目标保留原事务，迟到确认仍可恢复。
+    CHECK(!SDL_SyncWindow(&window) && ticks == SDL_MS_TO_NS(1500) && event_count == 0);
+    CHECK(wait_calls == 94);
+    CHECK(request(SDL_FULLSCREEN_OP_ENTER, &display) && result == SDL_FULLSCREEN_FAILED && submits == 1);
+    CHECK(request(SDL_FULLSCREEN_OP_UPDATE, &display) && result == SDL_FULLSCREEN_PENDING && submits == 1);
+    CHECK(!SDL_SyncWindow(&window) && wait_calls == 94);
+    host_facts.completed = last_submitted;
+    host_facts.status = 1;
+    CHECK(SDL_SyncWindow(&window));
+    confirm_on_wait = true;
+    CHECK(window.flags == SDL_WINDOW_FULLSCREEN && window.pending_flags == SDL_WINDOW_FULLSCREEN);
+    CHECK(display.fullscreen_window == &window && !display.fullscreen_active);
+    CHECK(request(SDL_FULLSCREEN_OP_UPDATE, &display) && result == SDL_FULLSCREEN_SUCCEEDED && submits == 1);
+
+    // UPDATE 可留在全屏并转屏。后发 LEAVE 的确认以其完整序列为准。
+    CHECK(request(SDL_FULLSCREEN_OP_UPDATE, &other_display) && result == SDL_FULLSCREEN_PENDING);
+    CHECK(submits == 2 && target_fullscreen == 1 && target_display == 24);
+    CHECK(request(SDL_FULLSCREEN_OP_LEAVE, &display) && result == SDL_FULLSCREEN_PENDING);
+    CHECK(submits == 3 && target_fullscreen == 0 && target_display == -1);
+    CHECK(request(SDL_FULLSCREEN_OP_LEAVE, &other_display) && result == SDL_FULLSCREEN_PENDING && submits == 3);
+    host_facts.completed = 2;
+    CHECK(ReconcileFullscreen(&window, &host_facts) && window.flags == SDL_WINDOW_FULLSCREEN);
+    CHECK(SDL_SyncWindow(&window) && !window.flags && !window.pending_flags);
+    CHECK(!display.fullscreen_window && !display.fullscreen_active);
+
+    // 宿主拒绝须保留实际状态，旧代次完成不得修改新窗口。
+    CHECK(request(SDL_FULLSCREEN_OP_ENTER, &display) && result == SDL_FULLSCREEN_PENDING);
+    reject_on_wait = true;
+    CHECK(!SDL_SyncWindow(&window) && !window.flags && !window.pending_flags);
+    reject_on_wait = false;
+    const int submissions_after_rejection = submits;
+    const int before_same_screen_retry = leave_calls;
+    window.requested_fullscreen_mode = display.desktop_mode;
+    CHECK(!SDL_SetWindowFullscreen(&window, true));
+    CHECK(submits == submissions_after_rejection && leave_calls == before_same_screen_retry);
+    host_facts.lastError = 0;
+    CHECK(request(SDL_FULLSCREEN_OP_ENTER, &display) && result == SDL_FULLSCREEN_PENDING);
+    CHECK(submits == submissions_after_rejection + 1);
+    replace_on_wait = true;
+    CHECK(!SDL_SyncWindow(&window) && !window.flags && !window.pending_flags);
+    replace_on_wait = false;
+
+    auto observe_intermediate_floating = [&](SDL_DisplayID previous_display) {
+        host_facts.status = 0;
+        OPENHARMONY_DesktopPump(&video_device);
+        return host_facts.completed < last_submitted && !(window.flags & SDL_WINDOW_FULLSCREEN) &&
+               !window.current_fullscreen_mode.displayID && !window.fullscreen_exclusive &&
+               !display.fullscreen_window && !other_display.fullscreen_window &&
+               window_data.desktop_confirmed_fullscreen_mode.displayID == previous_display;
+    };
+
+    // 跨屏 A→B 可以先恢复浮窗。B 被拒、平台补偿回 A 后，恢复 A 的已确认独占模式。
+    host_facts.status = 1;
+    host_facts.displayId = 12;
+    CHECK(ReconcileFullscreen(&window, &host_facts));
+    CHECK(display.fullscreen_window == &window && !other_display.fullscreen_window);
+    CHECK(SetFullscreenMode(&window, &display));
+    CHECK(SDL_GetDisplayForWindow(&window) == display.id);
+    const int before_cross_screen = submits;
+    const int before_cross_screen_leaves = leave_calls;
+    CHECK(SetFullscreenMode(&window, &other_display));
+    CHECK(submits == before_cross_screen + 1 && target_fullscreen == 1 && target_display == 24);
+    CHECK(SDL_GetDisplayForWindow(&window) == display.id);
+    CHECK(display.fullscreen_window == &window && display.fullscreen_active);
+    CHECK(!other_display.fullscreen_window && !other_display.fullscreen_active && common_mode_changes == 0);
+    const SDL_DisplayMode updated_b{other_display.id, 3440, 1440};
+    SDL_SetDesktopDisplayMode(&other_display, &updated_b);
+    CHECK(other_display.desktop_mode.w == updated_b.w);
+    CHECK(observe_intermediate_floating(display.id));
+    host_facts.status = 1;
+    reject_on_wait = true;
+    CHECK(!SDL_SyncWindow(&window));
+    CHECK(!SetFullscreenMode(&window, &other_display));
+    CHECK(submits == before_cross_screen + 1 && leave_calls == before_cross_screen_leaves && target_fullscreen == 1);
+    CHECK(window.flags == SDL_WINDOW_FULLSCREEN && window.pending_flags == SDL_WINDOW_FULLSCREEN);
+    CHECK(host_facts.displayId == 12 && display.fullscreen_window == &window && display.fullscreen_active);
+    CHECK(!other_display.fullscreen_window && !other_display.fullscreen_active && common_mode_changes == 0);
+    const SDL_DisplayMode next_b_mode{other_display.id, 3840, 2160};
+    SDL_SetDesktopDisplayMode(&other_display, &next_b_mode);
+    CHECK(other_display.desktop_mode.w == next_b_mode.w);
+    CHECK(window.requested_fullscreen_mode.displayID == other_display.id);
+    CHECK(window.current_fullscreen_mode.displayID == display.id && SDL_GetDisplayForWindow(&window) == display.id);
+    CHECK(SDL_GetWindowFullscreenMode(&window) && SDL_GetWindowFullscreenMode(&window)->displayID == display.id);
+    int confirmed_origin_x = 0, confirmed_origin_y = 0;
+    CHECK(SDL_GetWindowPosition(&window, &confirmed_origin_x, &confirmed_origin_y));
+    CHECK(confirmed_origin_x == -1920 && confirmed_origin_y == -170);
+
+    // 主动重试同目标仍允许。超时不发反向命令，B 的迟到确认能完成原请求。
+    reject_on_wait = false;
+    confirm_on_wait = false;
+    host_facts.lastError = 0;
+    CHECK(SetFullscreenMode(&window, &other_display));
+    CHECK(submits == before_cross_screen + 2);
+    CHECK(!SDL_SyncWindow(&window));
+    CHECK(!SetFullscreenMode(&window, &other_display));
+    CHECK(submits == before_cross_screen + 2 && leave_calls == before_cross_screen_leaves);
+    CHECK(window.flags == SDL_WINDOW_FULLSCREEN && display.fullscreen_window == &window && display.fullscreen_active);
+    CHECK(!other_display.fullscreen_window && !other_display.fullscreen_active);
+    CHECK(observe_intermediate_floating(display.id));
+    host_facts.completed = last_submitted;
+    host_facts.status = 1;
+    host_facts.displayId = 24;
+    CHECK(SDL_SyncWindow(&window));
+    CHECK(window.flags == SDL_WINDOW_FULLSCREEN && window.pending_flags == SDL_WINDOW_FULLSCREEN);
+    CHECK(!display.fullscreen_window && !display.fullscreen_active);
+    CHECK(other_display.fullscreen_window == &window && other_display.fullscreen_active && common_mode_changes == 0);
+    const SDL_DisplayMode updated_a{display.id, 2304, 1296};
+    SDL_SetDesktopDisplayMode(&display, &updated_a);
+    CHECK(display.desktop_mode.w == updated_a.w);
+    CHECK(window.current_fullscreen_mode.displayID == other_display.id && SDL_GetDisplayForWindow(&window) == other_display.id);
+    CHECK(SDL_GetWindowPosition(&window, &confirmed_origin_x, &confirmed_origin_y));
+    CHECK(confirmed_origin_x == 2000 && confirmed_origin_y == 130);
+    CHECK(SetFullscreenMode(&window, &other_display));
+    CHECK(submits == before_cross_screen + 2 && leave_calls == before_cross_screen_leaves);
+
+    // 请求未入队也必须保留实际全屏，下一次明确请求仍可工作。
+    queue_reject = true;
+    CHECK(!SetFullscreenMode(&window, &display));
+    CHECK(submits == before_cross_screen + 2 && leave_calls == before_cross_screen_leaves && other_display.fullscreen_window == &window);
+    queue_reject = false;
+
+    // 补偿最终失败而停在浮窗时，不能继续保留 B 的已确认模式。
+    CHECK(SetFullscreenMode(&window, &display));
+    CHECK(observe_intermediate_floating(other_display.id));
+    host_facts.completed = last_submitted;
+    host_facts.lastError = 17;
+    CHECK(!SDL_SyncWindow(&window));
+    CHECK(!window_data.desktop_confirmed_fullscreen_mode.displayID && !window.current_fullscreen_mode.displayID);
+    CHECK(!(window.flags & SDL_WINDOW_FULLSCREEN) && !other_display.fullscreen_window && !other_display.fullscreen_active);
+    host_facts.lastError = 0;
+    CHECK(SetFullscreenMode(&window, &other_display));
+    CHECK(SDL_SetWindowFullscreen(&window, true));
+    host_facts.completed = last_submitted;
+    host_facts.status = 1;
+    CHECK(SDL_SyncWindow(&window));
+
+    // 真实 SDL_SetWindowFullscreen(false) 的成功入队和失败回执都仍在 B，全屏 getter 不能变 NULL。
+    const int before_leave_request = submits;
+    CHECK(SDL_SetWindowFullscreen(&window, false) && submits == before_leave_request + 1);
+    CHECK(SDL_GetWindowFullscreenMode(&window) && SDL_GetWindowFullscreenMode(&window)->displayID == other_display.id);
+    CHECK(other_display.fullscreen_window == &window && other_display.fullscreen_active);
+    reject_on_wait = true;
+    CHECK(!SDL_SyncWindow(&window));
+    CHECK(!SDL_SetWindowFullscreen(&window, false) && submits == before_leave_request + 1);
+    CHECK(SDL_GetWindowFullscreenMode(&window) && SDL_GetWindowFullscreenMode(&window)->displayID == other_display.id);
+    CHECK(other_display.fullscreen_window == &window && other_display.fullscreen_active);
+    reject_on_wait = false;
+    host_facts.lastError = 0;
+    CHECK(SDL_SetWindowFullscreen(&window, false) && submits == before_leave_request + 2);
+    CHECK(observe_intermediate_floating(other_display.id));
+    host_facts.completed = last_submitted;
+    host_facts.displayId = 12;
+    CHECK(SDL_SyncWindow(&window) && !window.current_fullscreen_mode.displayID && !window.flags);
+    CHECK(!window_data.desktop_confirmed_fullscreen_mode.displayID);
+    CHECK(!other_display.fullscreen_window && !other_display.fullscreen_active && common_mode_changes == 0);
+    SDL_SetDesktopDisplayMode(&other_display, &updated_b);
+    CHECK(other_display.desktop_mode.w == updated_b.w);
+
+    // 同一 SDL_Window 的宿主换代也不能继承旧窗口的已确认模式。
+    CHECK(SetFullscreenMode(&window, &display));
+    CHECK(SDL_SetWindowFullscreen(&window, true));
+    host_facts.completed = last_submitted;
+    host_facts.status = 1;
+    CHECK(SDL_SyncWindow(&window));
+    CHECK(window_data.desktop_confirmed_fullscreen_mode.displayID == display.id);
+    CHECK(SetFullscreenMode(&window, &other_display));
+    replace_on_wait = true;
+    CHECK(!SDL_SyncWindow(&window));
+    CHECK(!window_data.desktop_confirmed_fullscreen_mode.displayID && !window.current_fullscreen_mode.displayID);
+    replace_on_wait = false;
+    host_facts.status = 0;
+    OPENHARMONY_DesktopPump(&video_device);
+
+    // SDL 事件观察器同步拆掉窗口后，当前状态不能转给已释放窗口或接任窗口。
+    presented_window = &window;
+    destroy_on_event = SDL_EVENT_WINDOW_MOVED;
+    host_facts.x = window.x + 10;
+    const int before = event_count;
+    OPENHARMONY_DesktopPump(&video_device);
+    CHECK(!presented_window && event_count == before + 1);
+    presented_window = &window;
+    destroy_on_event = SDL_EVENT_WINDOW_ENTER_FULLSCREEN;
+    host_facts.x = window.x + 10;
+    host_facts.status = 1;
+    OPENHARMONY_DesktopPump(&video_device);
+    CHECK(!presented_window && event_count == before + 3);
+
+    // 26.3 的 MouseHandler 使用全局点减 SDL 窗口原点。非100%下也必须还原普通 MOVE 点。
+    mouse_focus = &window;
+    host_facts.x = -240;
+    host_facts.y = 70;
+    float x = 0.0f, y = 0.0f;
+    int origin_x = 0, origin_y = 0;
+    CHECK(window.w != host_facts.width && window.h != host_facts.height);
+    window.flags &= ~SDL_WINDOW_FULLSCREEN;
+    CHECK(SDL_GetWindowPosition(&window, &origin_x, &origin_y));
+    CHECK(OPENHARMONY_GlobalMouseState(&x, &y) == 1 && x == -160.0f && y == 115.0f);
+    CHECK(x - origin_x == local_x && y - origin_y == local_y);
+    host_facts.x = 800;
+    CHECK(OPENHARMONY_GlobalMouseState(&x, nullptr) == 1 && x == 880.0f);
+    window.flags |= SDL_WINDOW_FULLSCREEN;
+    CHECK(SDL_GetWindowPosition(&window, &origin_x, &origin_y));
+    CHECK(OPENHARMONY_GlobalMouseState(&x, &y) == 1 && x == -1840.0f && y == -125.0f);
+    CHECK(x - origin_x == local_x && y - origin_y == local_y);
+    mouse_focus = nullptr;
+    CHECK(OPENHARMONY_GlobalMouseState(&x, &y) == 1 && x == local_x && y == local_y);
+#ifdef SDL_REPLAYED_FULLSCREEN_API
+    // 系统同代 A→B 调整：保留游戏曾请求的 A，同时 SDL 只观察实际 B 并维护像素尺寸。
+    presented_window = &window;
+    destroy_on_event = -1;
+    window.flags &= ~SDL_WINDOW_FULLSCREEN;
+    host_facts.status = 0;
+    host_facts.displayId = 12;
+    CHECK(SetFullscreenMode(&window, &display));
+    CHECK(SDL_SetWindowFullscreen(&window, true));
+    host_facts.completed = last_submitted;
+    host_facts.status = 1;
+    CHECK(SDL_SyncWindow(&window));
+    OPENHARMONY_DesktopPump(&video_device);
+    CHECK(window.displayID == display.id && SDL_GetDisplayForWindow(&window) == display.id);
+    const int before_system_move = submits;
+    const int before_pixel_check = pixel_size_checks;
+    const int before_mode_check = closest_mode_checks;
+    const Uint64 same_generation = host_facts.generation;
+    host_facts.displayId = 24;
+    host_facts.x = 2000;
+    host_facts.y = 130;
+    OPENHARMONY_DesktopPump(&video_device);
+    CHECK(host_facts.generation == same_generation);
+    CHECK(window.displayID == other_display.id && SDL_GetDisplayForWindow(&window) == other_display.id);
+    CHECK(window.requested_fullscreen_mode.displayID == display.id && submits == before_system_move);
+    CHECK(pixel_size_checks == before_pixel_check + 1 && closest_mode_checks == before_mode_check);
+    CHECK(!display.fullscreen_window && !display.fullscreen_active);
+    CHECK(other_display.fullscreen_window == &window && !other_display.fullscreen_active);
+    OPENHARMONY_DesktopPump(&video_device);
+    CHECK(submits == before_system_move && pixel_size_checks == before_pixel_check + 1);
+    // 只有公开的应用请求可再次选择 A。
+    CHECK(SDL_SetWindowFullscreen(&window, true));
+    CHECK(submits == before_system_move + 1 && target_fullscreen == 1 && target_display == 12);
+    CHECK(SetFullscreenMode(&window, &display) && submits == before_system_move + 1);
+
+    // 非宿主窗口保留 SDL 原有位移推断与显示变化通知。
+    SDL_Window other_window{&window_data};
+    other_window.id = 95;
+    other_window.displayID = display.id;
+    presented_window = &other_window;
+    video_device.WindowUsesHostFullscreen = nullptr;
+    const int before_generic_move = pixel_size_checks;
+    CHECK(SDL_SendWindowEvent(&other_window, SDL_EVENT_WINDOW_MOVED, host_facts.x, host_facts.y));
+    CHECK(other_window.displayID == other_display.id && pixel_size_checks == before_generic_move + 1);
+#endif
+    std::puts("SDL desktop fullscreen async confirmation, replacement, failure and cached global pointer PASS");
+}

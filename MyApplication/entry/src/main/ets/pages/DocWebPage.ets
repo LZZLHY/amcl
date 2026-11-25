@@ -64,11 +64,14 @@ struct DocWebPage {
   }
 
   /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
-  onPageShow(): void { this.applyTheme_(); }
+  @State private webVisible_: boolean = false;
+  onPageShow(): void { this.webVisible_ = true; this.applyTheme_(); }
+  onPageHide(): void { this.webVisible_ = false; }
 
   build() {
     Column() {
       WebHostView({
+        hostPage: 'DocWebPage', hostVisible: this.webVisible_,
         theme: this.theme,
         topSafeHeight: this.topSafeHeight,
         src: this.src,

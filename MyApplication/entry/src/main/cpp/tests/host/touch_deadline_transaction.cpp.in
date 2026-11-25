@@ -24,12 +24,254 @@ int beginLong(const AmclCtrlEntry& control) {
     return 0;
 }
 
+// 同一真实consumer泵的坐标与松键回调进同一轨迹，避免生产者调用次数冒充消费顺序。
+struct CarriedDelivery {
+    double x, y;
+    bool release;
+    bool operator==(const CarriedDelivery& other) const {
+        return x==other.x&&y==other.y&&release==other.release;
+    }
+};
+std::vector<CarriedDelivery> carriedDelivery;
+double deliveredX=0,deliveredY=0;
+bool requestNestedWarp=false;
+void recordDeliveredCursor(void*,double x,double y) {
+    deliveredX=x;deliveredY=y;carriedDelivery.push_back({x,y,false});
+    if(requestNestedWarp) {
+        requestNestedWarp=false;
+        glfwSetCursorPos(&sourceFixtureWindow,620,405);
+    }
+}
+void recordDeliveredCarriedRelease(const Output& output,int action) {
+    if(output.kind==OutputKind::Mouse&&output.code==1&&action==GLFW_RELEASE) {
+        carriedDelivery.push_back({deliveredX,deliveredY,true});
+    }
+}
+
+// SDK边界只造触点和原物理登记，跑生产末段处理、owner收尾与共享队列。
+bool carriedTouch(int phase,int fid,float x,float y) {
+    clockNs+=10000000;
+    if(phase==OH_NATIVEXCOMPONENT_UP || phase==OH_NATIVEXCOMPONENT_CANCEL) s_fingerDown[fid]=false;
+    return handleSchemaCarriedTouch({phase,clockNs},x,y,fid);
+}
+int holdWorldDrag(bool enabled,int key,bool secondFinger) {
+    inputBridge_setGrabState(1);
+    CHECK(consumeGrabEpochLocked(true));
+    s_fingerDown[0]=s_fingerDown[1]=s_fingerDead[0]=s_fingerDead[1]=false;
+    AmclCtrlEntry drag{};
+    std::strcpy(drag.id,"held-drag");drag.kind=0;drag.keyOrMouse=key;drag.dragLook=enabled;
+    drag.x=drag.y=100;drag.w=drag.h=100;
+    TouchInteractionConfig config;
+    config.menuSensitivity=1.5;
+    CHECK(ohos_set_control_schema_v3(&drag,1,1000,1000,1,.18f,3,&config)>0);
+    const int beforeLooks=looks;
+    const double beforeX=lookX,beforeY=lookY;
+    s_fingerDown[0]=true;handleSchemaGrabbedTouch({OH_NATIVEXCOMPONENT_DOWN,++clockNs},150,150,0);
+    if(secondFinger) {
+        s_fingerDown[1]=true;handleSchemaGrabbedTouch({OH_NATIVEXCOMPONENT_DOWN,++clockNs},151,151,1);
+    }
+    handleSchemaGrabbedTouch({OH_NATIVEXCOMPONENT_MOVE,++clockNs},165,155,0);
+    CHECK(looks==beforeLooks+enabled&&lookX==beforeX+(enabled?15:0)&&lookY==beforeY+(enabled?5:0));
+    return 0;
+}
+int openMenuFromDrag(bool enabled,int key=-2,bool secondFinger=false,bool publish=true) {
+    CHECK(holdWorldDrag(enabled,key,secondFinger)==0);
+    const auto config=s_touchConfig;
+    inputBridge_setGrabState(0);
+    CHECK(!consumeGrabEpochLocked(false));
+    // 模态发布可隐藏游戏内的原键，跨模式已承接的物理手指仍可移动并抬起。
+    if(publish) CHECK(ohos_set_control_schema_v3(nullptr,0,1000,1000,0,.18f,3,&config)>0);
+    CHECK(ledger.isHeld({key<0?OutputKind::Mouse:OutputKind::Key,key<0?-key-1:key}));
+    inputBridge_publishMenuCursor(400,500);
+    amclDesktopNotifyInput(); // 有序绝对位置入口入队后由真实consumer采纳为基线。
+    CHECK(deliveredX==400&&deliveredY==500);
+    carriedDelivery.clear();edges.clear();
+    return 0;
+}
+
+// 夹具消费窗口的真实WSI是42。按两次有效present推进，而无关窗口的帧不授予本窗口资格。
+void presentCarriedTarget() {
+    inputBridge_notifyFramePresentedForTargetV1(42,1);
+    amclDesktopNotifyInput();
+}
+
+// 模拟实际开屏顺序：MouseHandler先回中并释放抓取，GUI.init随后按已保存值调用GLFW设位。
+// 观察游戏回调而不是只查glfwGetCursorPos，且不靠手指微动或后续poll把首帧补对。
+int testInitialMenuWarp() {
+    sourceFixtureWindow.cursorPosCb=recordDeliveredCursor;
+    inputBridge_setCursorPosCallback(recordDeliveredCursor);
+    for (int scenario=0; scenario<3; ++scenario) {
+        const bool samePreviousPoint=scenario==1, moveAfterWarp=scenario==2;
+        inputBridge_setGrabState(0);
+        consumeGrabEpochLocked(false);
+        const double targetX=210, targetY=330;
+        // 旧消费者位置可在另一个刻度，也可恰与目标相同。后者还把旧去重基准置于目标，
+        // 但开屏时MouseHandler自身会回中，仍需收到一次真正的游戏定位回调。
+        inputBridge_publishMenuCursor(samePreviousPoint?targetX:750,samePreviousPoint?targetY:620);
+        amclDesktopNotifyInput();
+        if(samePreviousPoint) inputBridge_setLookCursor(targetX,targetY);
+        CHECK(holdWorldDrag(true,-2,false)==0);
+        sourceFixtureWindow.cursorMode=GLFW_CURSOR_DISABLED;
+        deliveredX=500; deliveredY=500;
+        glfwSetCursorPos(&sourceFixtureWindow,500,500);
+        sourceFixtureWindow.cursorMode=GLFW_CURSOR_NORMAL;
+        inputBridge_setGrabState(0);
+        if(moveAfterWarp) CHECK(!consumeGrabEpochLocked(false));
+        carriedDelivery.clear();edges.clear();
+        GLFWwindow aux;aux.auxiliary=true;aux.cursorPosCb=recordDeliveredCursor;
+        glfwSetCursorPos(&aux,79,82);
+        CHECK(aux.cursorX==79&&aux.cursorY==82&&carriedDelivery.empty());
+        if(moveAfterWarp) {
+            // 真实鼠标刚取得指针时，仍按住触控键不表示它可以吸走实体光标。
+            ohos_note_physical_pointer_visual();
+            glfwSetCursorPos(&sourceFixtureWindow,111,112);
+            CHECK(carriedDelivery.empty());
+            // 同一手指较早的菜单移动已入队，模组的定位必须在其后送达，并成为下一段位移的基线。
+            sourceFixtureReady=false;
+            CHECK(carriedTouch(OH_NATIVEXCOMPONENT_MOVE,0,167,157));
+            sourceFixtureReady=true;
+        }
+        glfwSetCursorPos(&sourceFixtureWindow,targetX,targetY);
+        CHECK(deliveredX==targetX&&deliveredY==targetY);
+        if(!moveAfterWarp) CHECK(!consumeGrabEpochLocked(false));
+        CHECK(ohos_set_control_schema_v3(nullptr,0,1000,1000,0,.18f,3,&s_touchConfig)>0);
+        const float x=moveAfterWarp?173:165, y=moveAfterWarp?161:155;
+        if(moveAfterWarp) CHECK(carriedTouch(OH_NATIVEXCOMPONENT_MOVE,0,x,y));
+        const double endX=targetX+(moveAfterWarp?9:0), endY=targetY+(moveAfterWarp?6:0);
+        CHECK(deliveredX==endX&&deliveredY==endY);
+        CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,0,x,y));
+        CHECK(count(OutputKind::Mouse,1,GLFW_RELEASE)==0);
+        presentCarriedTarget();
+        CHECK(count(OutputKind::Mouse,1,GLFW_RELEASE)==0);
+        presentCarriedTarget();
+        CHECK(count(OutputKind::Mouse,1,GLFW_RELEASE)==1&&edges.size()==1);
+        CHECK(carriedDelivery.back().release&&carriedDelivery.back().x==endX&&carriedDelivery.back().y==endY);
+        // 游戏收屏时请求回中：已结束的触点不领取新warp，重抓后world基准仍为窗口中心。
+        const auto previous=carriedDelivery.size();
+        glfwSetCursorPos(&sourceFixtureWindow,500,500);
+        inputBridge_setGrabState(1);
+        double worldX=0,worldY=0;
+        inputBridge_getCursorSnapshot(&worldX,&worldY);
+        CHECK(carriedDelivery.size()==previous&&worldX==500&&worldY==500);
+    }
+
+    // 在坐标回调里再次设位：外层只泵到其原order，后来的请求留给下次poll。
+    CHECK(openMenuFromDrag(true)==0);
+    requestNestedWarp=true;
+    glfwSetCursorPos(&sourceFixtureWindow,220,330);
+    const std::vector<CarriedDelivery> firstWarp{{220,330,false}};
+    CHECK(!requestNestedWarp&&carriedDelivery==firstWarp);
+    amclDesktopNotifyInput();
+    const std::vector<CarriedDelivery> bothWarps{{220,330,false},{620,405,false}};
+    CHECK(carriedDelivery==bothWarps);
+
+    // 再次在回调内排队，但这次窗口代次先被替换。旧设位不能把新窗口拉回旧刻度。
+    carriedDelivery.clear();requestNestedWarp=true;
+    glfwSetCursorPos(&sourceFixtureWindow,230,340);
+    const std::vector<CarriedDelivery> beforeTargetChange{{230,340,false}};
+    CHECK(carriedDelivery==beforeTargetChange);
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&sourceFixtureWindow),2,43);
+    amclDesktopNotifyInput();
+    CHECK(carriedDelivery==beforeTargetChange);
+    inputBridge_glfwSetTargetV1(reinterpret_cast<uint64_t>(&sourceFixtureWindow),1,42);
+
+    // 菜单打开后若已经取消原触点，后来的程序设位也不能继承它的资格。
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_CANCEL,0,900,900));
+    carriedDelivery.clear();
+    glfwSetCursorPos(&sourceFixtureWindow,61,62);
+    CHECK(carriedDelivery.empty());
+
+    // 普通游戏键也可开屏，但没有触控鼠键承接资格，此时仍保留实体指针的原坐标合同。
+    CHECK(holdWorldDrag(false,65,false)==0);
+    inputBridge_setGrabState(0);CHECK(!consumeGrabEpochLocked(false));
+    carriedDelivery.clear();
+    glfwSetCursorPos(&sourceFixtureWindow,61,62);
+    CHECK(carriedDelivery.empty());
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,0,165,155));
+    std::cout<<"PASS GUI opening warp: saved value before first draw, first relative sample and stationary release\n";
+    return 0;
+}
+
+int testCarriedDrag() {
+    inputBridge_setCursorPosCallback(recordDeliveredCursor);
+    // 双指共用右键owner时，仅原世界里实际负责拖动的指头继续移动菜单指针。
+    CHECK(openMenuFromDrag(true,-2,true,false)==0);
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_MOVE,1,240,280));
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,1,245,290));
+    CHECK(ledger.isHeld({OutputKind::Mouse,1})&&carriedDelivery.empty()&&edges.empty());
+    const int beforeLook=looks;
+    // 让移动和释放排队到同一次消费，真实consumer必须先拿到真实UP末样，再观察到右键松开。
+    sourceFixtureReady=false;
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_MOVE,0,171,159));
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,0,185,165));
+    // UI可迟到至物理UP之后才发布首张菜单空表，保留共享队列上已等候的末样。
+    CHECK(ohos_set_control_schema_v3(nullptr,0,1000,1000,0,.18f,3,&s_touchConfig)>0);
+    sourceFixtureReady=true;
+    amclDesktopNotifyInput();
+    const std::vector<CarriedDelivery> pendingPositions{{409,506,false},{430,515,false}};
+    CHECK(carriedDelivery==pendingPositions);
+    inputBridge_notifyFramePresentedForTargetV1(13,1);
+    inputBridge_notifyFramePresentedForTargetV1(13,1);
+    amclDesktopNotifyInput();
+    presentCarriedTarget();
+    CHECK(carriedDelivery==pendingPositions);
+    presentCarriedTarget();
+    const std::vector<CarriedDelivery> expected{{409,506,false},{430,515,false},{430,515,true}};
+    if(carriedDelivery!=expected) {
+        for(const auto& event:carriedDelivery)
+            std::cerr<<(event.release?"release ":"cursor ")<<event.x<<','<<event.y<<'\n';
+    }
+    CHECK(carriedDelivery==expected);
+    CHECK(count(OutputKind::Mouse,1,0)==1&&edges.size()==1&&looks==beforeLook&&ledger.ownerCount()==0);
+
+    // SDK若合并掉全部菜单MOVE，仍用真正UP坐标补齐。取消坐标仅退出原owner。
+    CHECK(openMenuFromDrag(true)==0);
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,0,175,161));
+    CHECK(count(OutputKind::Mouse,1,0)==0);
+    presentCarriedTarget();presentCarriedTarget();
+    const std::vector<CarriedDelivery> upOnly{{415,509,false},{415,509,true}};
+    CHECK(carriedDelivery==upOnly&&ledger.ownerCount()==0);
+    // 运动指先抬、共同按住该键的末指才实际松键。已呈现的坐标不应再多等一轮。
+    for(bool alreadyPresented:{false,true}){
+        CHECK(openMenuFromDrag(true,-2,true)==0);
+        CHECK(carriedTouch(OH_NATIVEXCOMPONENT_MOVE,0,175,161));
+        CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,0,175,161));
+        CHECK(ledger.isHeld({OutputKind::Mouse,1})&&count(OutputKind::Mouse,1,0)==0);
+        if(alreadyPresented){presentCarriedTarget();presentCarriedTarget();}
+        CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,1,151,151));
+        CHECK(count(OutputKind::Mouse,1,0)==(alreadyPresented?1:0));
+        if(!alreadyPresented){presentCarriedTarget();presentCarriedTarget();}
+        CHECK(carriedDelivery==upOnly&&ledger.ownerCount()==0);
+    }
+    CHECK(openMenuFromDrag(true)==0);
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_CANCEL,0,950,990));
+    const std::vector<CarriedDelivery> releasedAtStart{{400,500,true}};
+    CHECK(carriedDelivery==releasedAtStart&&ledger.ownerCount()==0);
+
+    // 未启用拖动或只持键盘键的触点仍只承接原按键。再次抓取时，菜单动作不能延续到新世界。
+    CHECK(openMenuFromDrag(false)==0);
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_MOVE,0,210,230));
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,0,220,242));
+    CHECK(carriedDelivery==releasedAtStart&&ledger.ownerCount()==0);
+    CHECK(openMenuFromDrag(true,65)==0);
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_MOVE,0,210,230));
+    CHECK(carriedTouch(OH_NATIVEXCOMPONENT_UP,0,220,242));
+    CHECK(carriedDelivery.empty()&&count(OutputKind::Key,65,0)==1&&ledger.ownerCount()==0);
+    CHECK(openMenuFromDrag(true)==0);
+    inputBridge_setGrabState(1);
+    CHECK(consumeGrabEpochLocked(true)&&s_fingerDead[0]);
+    CHECK(!carriedTouch(OH_NATIVEXCOMPONENT_UP,0,220,242)&&ledger.ownerCount()==0);
+    std::cout<<"PASS carried pointer: real menu motion, terminal coordinate before right release, cancel and regrab\n";
+    return 0;
+}
+
 int main() {
     CHECK(initializeSourceFixture());
     // 真bridge writer调用公告callback，公告队列和worker共用实际生产mode围栏。
     char callback[64]; std::snprintf(callback,sizeof(callback),"%llu",
         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&announceGrab)));
     setTestEnv("AMCL_TOUCH_GRAB_CB",callback);
+    inputBridge_setCarriedMenuWarpClaimV1(amcl_touch_claim_menu_warp);
     AmclCtrlEntry longKey{};std::strcpy(longKey.id,"long");longKey.kind=0;
     longKey.trigger=3;longKey.keyOrMouse=65;longKey.x=longKey.y=100;longKey.w=longKey.h=100;
 
@@ -84,4 +326,6 @@ int main() {
     handleSchemaGrabbedTouch(menuUp,150,150,0);s_fingerDown[0]=false;
     CHECK(!ledger.isHeld({OutputKind::Key,65})&&ledger.ownerCount()==0);
     std::cout<<"PASS production deadline: grab-first, worker-first, repeated flip, carry, unavailable gate/mode\n";
+    CHECK(testCarriedDrag()==0);
+    CHECK(testInitialMenuWarp()==0);
 }

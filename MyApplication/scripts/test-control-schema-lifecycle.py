@@ -18,7 +18,7 @@ source = (ROOT / 'entry/src/main/cpp/platform/touch_input.cpp').read_text(encodi
 types = source[source.index('enum SchemaFingerRole {'):source.index('static SchemaFingerBinding s_schemaFingers')]
 snapshot_start = source.index('struct MenuToolHeldSnapshot {')
 menu_snapshot_type = source[snapshot_start:source.index('\n};', snapshot_start) + len('\n};')]
-signatures = ['static bool touchOverlayContains(', 'static bool setTouchOverlayBounds(',
+signatures = ['static bool finitePair(', 'static bool touchOverlayContains(', 'static bool setTouchOverlayBounds(',
               'static int schemaGroupControlIndex(',
               'extern "C" bool ohos_set_menu_mouse_bounds(', 'extern "C" bool ohos_set_touch_guide_bounds(',
               'static bool pointInRect(', 'static bool schemaHitTestLocked(', 'static void schemaHotbarTap(',
@@ -57,6 +57,7 @@ SchemaFingerBinding s_schemaFingers[MAX_FINGERS];
 std::map<std::string,SchemaButtonRuntime> s_schemaButtons;
 std::map<OwnerToken,SchemaCarriedOwner> s_schemaCarriedOwners;
 std::map<int,OwnerToken> s_schemaCarriedByFinger;
+SchemaCarriedMenuDrag s_schemaCarriedMenuDrag;
 std::vector<AmclCtrlEntry> s_schema;
 TouchGroupState s_touchGroups;
 uint64_t s_touchGroupSequence=0;
@@ -103,6 +104,7 @@ uint64_t s_touchPublicationGrabEpoch=0;
 TouchInteractionConfig s_touchConfig;MenuTouchInteraction s_menuTouch;TouchJoystickInteraction s_touchJoystick;
 TouchGuideSignals s_touchGuide;
 std::string s_touchJoystickId;int64_t s_touchPolicyStartNs=0;
+std::atomic<bool> s_touchOwnsMenuWarp{false};
 std::atomic<bool> s_touchMenuCursorVisible{false};int64_t schemaNowNs(){return 1000000000;}
 int s_touchLastTapSlot=-1;int64_t s_touchLastTapNs=0;std::string s_touchLastTapControl;
 uint32_t s_activeMenuTransactionToken=0;int s_normalFinger=-1;

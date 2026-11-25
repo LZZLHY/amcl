@@ -45,6 +45,10 @@ def verify_declarations(old_output,new_output,class_name):
             ('private final java.util.LinkedList<long[]> keyboardReadScalars;','descriptor: Ljava/util/LinkedList;'),
             ('private boolean inputDraining;','descriptor: Z'),
             ('private boolean drainEvents(int);','descriptor: (I)Z'),
+            # 设位只在原触点上获准；这三个私有增量负责申请与按原顺序拉取。
+            ('private boolean drainEvents(int, long);','descriptor: (IJ)Z'),
+            ('private static native long nRequestMenuWarp(long, int, int);','descriptor: (JII)J'),
+            ('private static native boolean nNextEventThrough(int[], long);','descriptor: ([IJ)Z'),
             ('boolean keyboardReadPreflight();','descriptor: ()Z'),
             ('private boolean lookLatencyAvailable;','descriptor: Z'),
             ('private long[] lookLatencyPending;','descriptor: [J'),
@@ -56,6 +60,8 @@ def verify_declarations(old_output,new_output,class_name):
             ('private static native void nLookLatencyNote(long[], int);','descriptor: ([JI)V'),
             ('private static native void nLookLatencyFinish(long[], int);','descriptor: ([JI)V')],
         'org.lwjgl.opengl.Display':[
+            ('public static void amclSetMenuCursor(org.lwjgl.opengl.InputImplementation, int, int);',
+             'descriptor: (Lorg/lwjgl/opengl/InputImplementation;II)V'),
             ('public static boolean amclKeyboardReadPreflight(org.lwjgl.opengl.InputImplementation);',
              'descriptor: (Lorg/lwjgl/opengl/InputImplementation;)Z')],
         'org.lwjgl.opengl.EventQueue':[

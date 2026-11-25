@@ -30,6 +30,16 @@ public class AmclLauncher {
     private static final ThreadLocal<PreparedLaunch> PREPARED = new ThreadLocal<PreparedLaunch>();
 
     /**
+     * 由手机游戏宿主在同一个已解析的启动类上注册 JNI 后调用。这里仅报告 JVM
+     * 进入 Java 正常 shutdown，等待重启发生在之后的 Invocation exit 回调中。
+     */
+    private static void installExitObserver() {
+        Runtime.getRuntime().addShutdownHook(new Thread(AmclLauncher::markJavaShutdown, "AMCL-game-shutdown"));
+    }
+
+    private static native void markJavaShutdown();
+
+    /**
      * classpath 交付方式（ArkTS 世代契约表的产出，经 {@code -Damcl.classpathDelivery=} 下传）。
      * 字面量与 ArkTS 的 {@code ClasspathDelivery} 逐字对应，由
      * {@code scripts/check-launch-generation-contract.mjs} 静态校验两侧一致。

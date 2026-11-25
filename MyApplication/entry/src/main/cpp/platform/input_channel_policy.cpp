@@ -3,6 +3,7 @@
 
 #include "../utils/amcl_log.h"
 
+#include <array>
 #include <atomic>
 // `size_t` 用在下方的模板参数上。本 TU 从 2026-08-20 起也进主机侧 `-pedantic -Werror`
 // 构建（input_channel_policy_test），不能再依赖 <atomic> 间接引入它。
@@ -21,13 +22,21 @@ namespace {
 std::atomic<uint32_t> g_leftSeen{0};
 std::atomic<uint32_t> g_wheelSeen{0};
 
-// 能力选择按按钮，持有记录按设备。不能把同通道的第二台设备当成重复 DOWN，
-// 更不能让它的 UP 清掉第一台设备的配对。surface gate 负责跨下游事务串行；
-// 本锁保护策略自身，测试/诊断访问不依赖平台锁。
+// surface gate 负责跨下游事务串行。按原设备保留配对和各通道的最后一次完整边沿，
+// 匿名桶可与任一设备重叠，但两个可区分的设备无需争同一按钮的通道资格。
 std::mutex g_buttonMutex;
-std::map<uint32_t, uint32_t> g_buttonSeen;
 using ButtonIdentity = std::pair<uint32_t, uint64_t>;
-std::map<ButtonIdentity, AmclInputChannel> g_buttonPressOwners;
+struct ButtonPress {
+    AmclInputChannel channel;
+    uint64_t timeNs;
+    bool desktop;
+};
+struct ButtonHistory {
+    uint32_t seen = 0u;
+    std::array<uint64_t, 4> releasedAt{};
+};
+std::map<ButtonIdentity, ButtonHistory> g_buttonHistories;
+std::map<ButtonIdentity, ButtonPress> g_buttonPressOwners;
 
 // 上一次打印过的所有者，用于"只在变化时打一行"。
 std::atomic<uint8_t> g_loggedLeftOwner{255u};
@@ -101,19 +110,21 @@ bool ValidButtonChannel(AmclInputChannel channel, uint32_t button) {
 /** 调用方持策略锁。历史能力不跨已结束的输入拓扑，尚未结束的真实按住保留其通道事实。
  * 滚轮没有持有或可关联的设备号，真实拔插/换surface时退休整个兼容域，等待新样本发现。 */
 void RetireChannelsLocked(bool preserveHeld) {
-    // 配对存在的按钮必已登记过能力，原位清位再重建，退休路径不分配新的map节点。
-    for (auto& seen : g_buttonSeen) seen.second = 0;
+    // 移动端保留在途通道能力。电脑的在途归属由配对表保护，完成一次真实 UP 后才登记历史。
+    for (auto& history : g_buttonHistories) history.second = {};
     uint32_t left = 0;
     for (const auto& held : g_buttonPressOwners) {
         if (!preserveHeld) break;
-        const auto seen = g_buttonSeen.find(held.first.first);
-        if (seen != g_buttonSeen.end()) seen->second |= ChannelBit(held.second);
-        if (held.first.first == 1u) left |= ChannelBit(held.second);
+        if (!held.second.desktop) {
+            const auto history = g_buttonHistories.find({held.first.first, 0u});
+            if (history != g_buttonHistories.end()) history->second.seen |= ChannelBit(held.second.channel);
+        }
+        if (held.first.first == 1u) left |= ChannelBit(held.second.channel);
     }
     g_leftSeen.store(left, std::memory_order_release);
     g_wheelSeen.store(0, std::memory_order_release);
-    for (auto it=g_buttonSeen.begin(); it!=g_buttonSeen.end();) {
-        if (it->second == 0) it=g_buttonSeen.erase(it); else ++it;
+    for (auto it = g_buttonHistories.begin(); it != g_buttonHistories.end();) {
+        if (it->second.seen == 0u) it = g_buttonHistories.erase(it); else ++it;
     }
 }
 
@@ -173,11 +184,11 @@ extern "C" bool amcl_input_policy_left_begin(AmclInputChannel channel) {
     // 兼容旧调用/host 契约：它们先显式 note，身份只能表达未知桶。新生产者应使用
     // button_begin；该入口不可再承担有 deviceId 的物理事件。
     if (LeftOwnerLocked() != channel) return false;
-    return amcl_input_policy_button_begin(channel, 0u, 1u);
+    return amcl_input_policy_button_begin(channel, 0u, 1u, 0u, false);
 }
 
 extern "C" bool amcl_input_policy_left_end(AmclInputChannel channel) {
-    return amcl_input_policy_button_end(channel, 0u, 1u);
+    return amcl_input_policy_button_end(channel, 0u, 1u, 0u);
 }
 
 extern "C" bool amcl_input_policy_left_held(void) {
@@ -201,32 +212,56 @@ extern "C" void amcl_input_policy_retire_channels(void) {
 }
 
 extern "C" bool amcl_input_policy_button_begin(
-        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
+        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton,
+        uint64_t eventTimeNs, bool desktop) {
     if (!ValidButton(nativeButton) || !ValidButtonChannel(channel, nativeButton)) return false;
     if (nativeButton == 1u) amcl_input_policy_note_left_channel(channel);
     std::lock_guard<std::mutex> lock(g_buttonMutex);
-    uint32_t& seen = g_buttonSeen[nativeButton];
-    seen |= ChannelBit(channel);
-    // 左键旧诊断入口仍可登记能力；其位图与新协议使用同一事实。
-    if (nativeButton == 1u) seen |= g_leftSeen.load(std::memory_order_acquire);
-    if (PickOwner(kLeftPriority, seen) != channel) return false;
     const ButtonIdentity identity{nativeButton, deviceId};
+    const auto mayShareDevice = [identity, desktop](const ButtonIdentity& other) {
+        return identity.first == other.first &&
+            (!desktop || identity.second == other.second || identity.second == 0u || other.second == 0u);
+    };
+    if (!desktop) {
+        auto& history = g_buttonHistories[{nativeButton, 0u}];
+        history.seen |= ChannelBit(channel);
+        if (nativeButton == 1u) history.seen |= g_leftSeen.load(std::memory_order_acquire);
+    }
     if (g_buttonPressOwners.find(identity) != g_buttonPressOwners.end()) return false;
     for (const auto& held : g_buttonPressOwners) {
-        if (held.first.first != nativeButton) continue;
-        // native/mirror 没有共享设备标识，不能猜测它与 ArkUI 是不同的硬件，
-        // 也不能在一次按住中迁移身份。已接受的通道完成 UP 后新优先级才生效。
-        if (held.second != channel) return false;
+        // 同类入口原样保留其 known/unknown 账目，拒绝的只是可能重叠的另一条入口。
+        if (held.second.channel != channel && mayShareDevice(held.first)) return false;
     }
-    g_buttonPressOwners.emplace(identity, channel);
+    uint32_t unordered = ChannelBit(channel);
+    for (const auto& item : g_buttonHistories) {
+        if (!mayShareDevice(item.first)) continue;
+        for (const auto observed : kLeftPriority) {
+            if (observed == channel || (item.second.seen & ChannelBit(observed)) == 0u) continue;
+            const uint64_t releasedAt = item.second.releasedAt[observed];
+            // 同一物理边沿完整迟到时，DOWN 仍位于原手势实际 UP 前。事件时间
+            // 只做顺序判断；缺字段不拿接收时间替代，也不设固定双击/静默窗口。
+            if (!desktop || eventTimeNs == 0u || releasedAt == 0u) unordered |= ChannelBit(observed);
+            else if (eventTimeNs <= releasedAt) return false;
+        }
+    }
+    if (PickOwner(kLeftPriority, unordered) != channel) return false;
+    g_buttonPressOwners.emplace(identity, ButtonPress{channel, desktop ? eventTimeNs : 0u, desktop});
     return true;
 }
 
 extern "C" bool amcl_input_policy_button_end(
-        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
+        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton, uint64_t eventTimeNs) {
     std::lock_guard<std::mutex> lock(g_buttonMutex);
     const auto found = g_buttonPressOwners.find({nativeButton, deviceId});
-    if (found == g_buttonPressOwners.end() || found->second != channel) return false;
+    if (found == g_buttonPressOwners.end() || found->second.channel != channel) return false;
+    const uint64_t pressedAt = found->second.timeNs;
+    if (eventTimeNs != 0u && eventTimeNs < pressedAt) return false;
+    if (found->second.desktop) {
+        // 被拒的镜像 DOWN 或下游撤销的预留不能证明这条通道完成过一次点击。
+        auto& history = g_buttonHistories[found->first];
+        history.seen |= ChannelBit(channel);
+        history.releasedAt[channel] = pressedAt == 0u ? 0u : eventTimeNs;
+    }
     g_buttonPressOwners.erase(found);
     return true;
 }
@@ -234,7 +269,16 @@ extern "C" bool amcl_input_policy_button_end(
 extern "C" void amcl_input_policy_button_abort(
         AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
     // 下游拒绝 DOWN 时只撤销该生产者刚取得的预留，不影响其它设备或按钮。
-    (void)amcl_input_policy_button_end(channel, deviceId, nativeButton);
+    std::lock_guard<std::mutex> lock(g_buttonMutex);
+    const auto found = g_buttonPressOwners.find({nativeButton, deviceId});
+    if (found != g_buttonPressOwners.end() && found->second.channel == channel) g_buttonPressOwners.erase(found);
+}
+
+extern "C" bool amcl_input_policy_button_held(
+        AmclInputChannel channel, uint64_t deviceId, uint32_t nativeButton) {
+    std::lock_guard<std::mutex> lock(g_buttonMutex);
+    const auto found = g_buttonPressOwners.find({nativeButton, deviceId});
+    return found != g_buttonPressOwners.end() && found->second.channel == channel;
 }
 
 extern "C" void amcl_input_policy_release_pointer_device(

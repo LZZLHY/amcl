@@ -5,16 +5,20 @@
  * 运行准入和设备能力继续归原服务所有。V1 状态范式与共同 HDS 标题宿主保持一致。
  * 手机使用单列，840 vp 起展示分类侧栏；1120 vp 起性能正文按可用宽度分成两列。
  */
+import { LauncherSkillBus } from '../../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingFailure, settingKeys, settingText, nextSettingsReceipt } from '../../launcherskill/SettingsSkillValues';
+import { themeAccentOptions, normalizePhoneSheetHeightPercent, DockLightMode, normalizeDockLightMode, copyImmersiveLightPreferences } from 'commons';
 import { promptAction } from '@kit.ArkUI';
 import { ThemeColors, ThemeMode, ThemeSelection, themeAccentLabel, ImmersiveLightPreferences, dockLightModeLabel,
   APP_VERSION, DOCS_INSTALL_URL, DOCS_INSTALL_FALLBACK_URL, DOCS_NO_JIT_URL,
-  DOCS_NO_JIT_FALLBACK_URL, DeviceProfile, DeviceForm, Breakpoint, detailSheetHeightForLayout,
+  DOCS_NO_JIT_FALLBACK_URL, DeviceForm, Breakpoint, detailSheetHeightForLayout,
   DEFAULT_PHONE_SHEET_HEIGHT_PERCENT, JDK_AUTO, GAME_LANGUAGES, GameLanguageOption,
   gameLanguageLabel, AppIconName, floatingDockReserveHeight, DistributionPolicy, DiagnosticPolicy } from 'commons';
 import { JdkVersionInfo } from 'launch';
-import { ProductDeveloperSettings } from 'entry/ProductDeveloperSettings';
+import { ProductDeveloperSettings, developerToolRoute } from 'entry/ProductDeveloperSettings';
 import { ProductTouchSettings } from 'entry/ProductTouchSettings';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
+
 import { DesktopGamepadSettings } from '../../components/DesktopGamepadSettings';
 import { MobileglRendererSettings } from '../../components/MobileglRendererSettings';
 import { GameResolutionSettings } from '../../components/GameResolutionSettings';
@@ -29,6 +33,7 @@ import { ModAudioSettings } from '../../components/ModAudioSettings';
 import { BluetoothMidiPermissionSettings } from '../../components/BluetoothMidiPermissionSettings';
 import { ImmersiveTitleScaffold } from '../../components/ImmersiveTitleScaffold';
 import { SettingsGroup, SettingsDivider, SettingsValueRow, SettingsToggleRow, SettingsHint } from '../../components/SettingsPrimitives';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { SettingsCapabilities, SettingsSection, SettingsItem, SettingsChoice,
   SETTINGS_WIDE_WIDTH, settingsSections, settingsItems, searchSettings } from './SettingsCatalog';
 
@@ -61,6 +66,8 @@ export struct SettingsTab {
   @Prop immersiveLightSaveError: string = ''
   /** Tab 隐藏不会卸载组件；显式可见性用于撤销设置二级页的系统返回消费资格。 */
   @Prop @Watch('syncSectionBack_') visible: boolean = false
+  /** 内存不足处理复用搜索目录中的内存卡；父页先切 Tab，首次挂载和再次切换均能消费。 */
+  @Link @Watch('syncSectionBack_') openMemoryRequested: boolean
   @Prop selectedJdkVersion: string = '17'
   @Prop versionIsolation: boolean = true
   @Prop useNewWindow: boolean = false
@@ -104,53 +111,61 @@ export struct SettingsTab {
   @Prop gameLanguage: string = 'zh_cn'
   /** OHOS XComponent 调度帧率上限。0 = 自动跟随显示刷新率；不修改游戏内 FPS 设置。 */
   @Prop ohosFrameRateCap: number = 0
+  @Prop ohosFixedRefreshRate: number = 0
   /** 是否有可用更新（驱动「检查更新」行红点）。 */
   @Prop hasUpdate: boolean = false
 
+  /** 由真实首页裁定弹窗、前台、初始化与扫描状态。 */
+  skillInteractive: () => boolean = (): boolean => false;
   // 回调
-  onXmxChange: (value: number) => void = () => {}
-  onVirtualMemoryModeChange: (isOn: boolean) => void = () => {}
+  onXmxChange: (value: number) => Promise<boolean> = async (): Promise<boolean> => false
+  onVirtualMemoryModeChange: (isOn: boolean) => Promise<boolean> = async (): Promise<boolean> => false
   /** 主题选中立即更新显示，并由父层的同目录所有者耐久保存。 */
   onThemePreview: (selection: ThemeSelection | undefined) => void = () => {}
   onThemeSave: (selection: ThemeSelection) => Promise<void> = async (): Promise<void> => {}
   /** 高度编辑只提交百分比，不直接访问偏好或更改设备形态。 */
   onPhoneSheetHeightSave: (percent: number) => Promise<void> = async (): Promise<void> => {}
-  onImmersiveLightChange: (preferences: ImmersiveLightPreferences) => void = () => {}
+  onImmersiveLightChange: (preferences: ImmersiveLightPreferences) => Promise<boolean> = async (): Promise<boolean> => false
   /** 父页面保有系统返回优先级，设置页仅登记当前二级分区是否可以退回概览。 */
   onSectionBackReady: (handler: (() => boolean) | undefined) => void = () => {}
-  onVersionIsolationChange: (isOn: boolean) => void = () => {}
-  onNewWindowChange: (isOn: boolean) => void = () => {}
+  onVersionIsolationChange: (isOn: boolean) => Promise<boolean> = async (): Promise<boolean> => false
+  onNewWindowChange: (isOn: boolean) => Promise<boolean> = async (): Promise<boolean> => false
   /** 父页面负责等待保存/错误回滚；此组件不修改当前进程路线或正在运行的游戏。 */
-  onTabletProcessChange: (enabled: boolean) => void = () => {}
+  onTabletProcessChange: (enabled: boolean) => Promise<boolean> = async (): Promise<boolean> => false
   /** 与其他运行设置一样由启动器保存，界面只展示父页面确认的值。 */
-  onGameKeepScreenOnChange: (enabled: boolean) => void = () => {}
+  onGameKeepScreenOnChange: (enabled: boolean) => Promise<boolean> = async (): Promise<boolean> => false
   /** 用户切换游戏数据存储位置（'sandbox'|'external'）；父组件负责权限/迁移/落盘。 */
-  onStorageLocationChange: (loc: string, migrate?: boolean) => void = () => {}
+  onStorageLocationChange: (loc: string, migrate?: boolean, report?: (outcome: string) => void) => void = () => {}
   onOpenLog: () => void = () => {}
   /** 最近游戏通过父页面解析活动身份，与应用运行摘要保持明确的内容边界。 */
-  onOpenGameLog: () => void = () => {}
+  onOpenGameLog: () => Promise<boolean> = async (): Promise<boolean> => false
   onExportLog: () => void = () => {}
-  onModSourceChange: (value: string) => void = () => {}
-  onCacheRemoteMetaChange: (isOn: boolean) => void = () => {}
+  onCopySkillDiagnostic: () => Promise<boolean> = async (): Promise<boolean> => false;
+  onReadDiagnosticSummary: () => string = (): string => '';
+  readCommittedSettings: (item: string) => SettingsSkillData = (): SettingsSkillData => ({});
+  onReadRelayStatus: () => SettingsSkillData = (): SettingsSkillData => ({});
+  onModSourceChange: (value: string) => Promise<boolean> = async (): Promise<boolean> => false
+  onCacheRemoteMetaChange: (isOn: boolean) => Promise<boolean> = async (): Promise<boolean> => false
   /** 用户切换加速下载；父组件持久化 + 握手 + 注入 native */
-  onAccelDownloadChange: (isOn: boolean) => void = () => {}
+  onAccelDownloadChange: (isOn: boolean) => Promise<boolean> = async (): Promise<boolean> => false
   onModConcurrentDownloadsChange: (value: number) => void = () => {}
   /** 用户在 JDK 版本 chip 上做切换；父组件持久化到 prefs 并同步 jdkReady 状态。 */
-  onJdkVersionChange: (version: string) => void = () => {}
+  onJdkVersionChange: (version: string) => Promise<boolean> = async (): Promise<boolean> => false
   /** 用户切换 JDK 下载源；父组件持久化到 prefs 并注入 setJdkDownloadSource。 */
-  onJdkSourceChange: (value: string) => void = () => {}
-  onJdkChannelChange: (value: string) => void = () => {}
-  onJdkWebChange: (enabled: boolean) => void = () => {}
-  onJdkAutoCheckChange: (enabled: boolean) => void = () => {}
+  onJdkSourceChange: (value: string) => Promise<boolean> = async (): Promise<boolean> => false
+  onJdkChannelChange: (value: string) => Promise<boolean> = async (): Promise<boolean> => false
+  onJdkWebChange: (enabled: boolean) => Promise<boolean> = async (): Promise<boolean> => false
+  onJdkAutoCheckChange: (enabled: boolean) => Promise<boolean> = async (): Promise<boolean> => false
   onCheckJdkUpdate: () => void = () => {}
   /** 用户切换 MC 版本下载源；父组件持久化到 prefs 并注入 setMcSourcePreference。 */
-  onMcSourceChange: (value: string) => void = () => {}
+  onMcSourceChange: (value: string) => Promise<boolean> = async (): Promise<boolean> => false
   /** 用户编辑全局自定义 JVM 参数；父组件持久化到 prefs（PreferenceManager.customJvmArgs）。 */
   onCustomJvmArgsChange: (args: string) => Promise<void> = async (): Promise<void> => {}
   /** 用户切换全局游戏语言；父组件持久化到 prefs（PreferenceManager.gameLanguage）。 */
-  onGameLanguageChange: (code: string) => void = () => {}
+  onGameLanguageChange: (code: string) => Promise<boolean> = async (): Promise<boolean> => false
   /** 用户切换 OHOS 调度帧率上限；父组件持久化并同步到 native policy。 */
-  onOhosFrameRateCapChange: (fpsCap: number) => void = () => {}
+  onOhosFrameRateCapChange: (fpsCap: number) => Promise<boolean> = async (): Promise<boolean> => false
+  onOhosFixedRefreshRateChange: (rate: number) => Promise<boolean> = async (): Promise<boolean> => false
   /** 用户点击「检查更新」；父组件拉 update.json 比对 versionCode 并提示结果。 */
   onCheckUpdate: () => void = () => {}
 
@@ -166,6 +181,8 @@ export struct SettingsTab {
   @State private choiceDraft: string = '';
   @State private jvmArgsDraft: string = '';
   @State private jvmSaving: boolean = false;
+  /** 等待用户选择或落盘时卸载原生 Toggle，结束后按已保存的值重建。 */
+  @State private isolationPending_: boolean = false;
   @State private sheetError: string = '';
   @State private highXmxAck: boolean = false;
   private contentScroller: Scroller = new Scroller();
@@ -175,6 +192,11 @@ export struct SettingsTab {
   private focusGeneration_: number = 0;
   private pendingStorage_: string = '';
   private pendingMigration_: boolean = false;
+  private skillEditorRef_: string = '';
+  private skillEditorKind_: string = '';
+  private skillEditorState_: string = '';
+  private skillStorageRequested_: string = '';
+  private skillStorageSelected_: string = '';
 
   /** 返回资格只在本 Tab 真实可见时有效；优先退出局部草稿，再清搜索，最后回到概览。 */
   private sectionBackHandler_: () => boolean = (): boolean => {
@@ -191,16 +213,28 @@ export struct SettingsTab {
   /** 首次挂载只初始化轻量草稿，不进行偏好读取、网络查询或额外设备探测。 */
   aboutToAppear(): void {
     this.mounted_ = true;
+    this.skillChildTargets_.forEach((item: string, domain: string): void => {
+      LauncherSkillBus.bindOpener(domain,this,(): boolean => {
+        if (!this.mounted_ || !this.visible || !this.skillInteractive() || this.showSettingsSheet || this.sheetClosing_ || !this.hasItem_(item)) return false;
+        if (item === 'graphics' || item === 'resolution') this.selectSection_(item);
+        else this.openSearchItem_(item);
+        return true;
+      });
+    });
+    LauncherSkillBus.bind('settings', this, (method: string, args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.runSettingsSkill_(method, args), (): boolean => this.mounted_ && this.visible && this.skillInteractive());
     this.xmxDraft = String(this.mcXmx);
     this.syncSectionBack_();
   }
 
   /** 退出仅撤销显示权；已经交给父层的耐久保存继续由原 owner 完成。 */
   aboutToDisappear(): void {
+    this.skillChildTargets_.forEach((_item: string,domain: string): void => { LauncherSkillBus.unbindOpener(domain,this); });
+    LauncherSkillBus.unbind('settings', this);
     this.mounted_ = false;
     this.sheetGeneration_++;
     this.focusGeneration_++;
-    this.pendingStorage_ = '';
+    this.withdrawStorageIntent_();
     this.onSectionBackReady(undefined);
   }
 
@@ -210,8 +244,8 @@ export struct SettingsTab {
       publisher: DistributionPolicy.allowPublisherServices(),
       touch: ProductInputProfile.supportsTouchLayouts(),
       chooseInteraction: ProductInputProfile.canChooseInteraction(),
-      tabletProcess: ProductInputProfile.canChooseTabletProcess(), pc: DeviceProfile.isPC(),
-      developer: DiagnosticPolicy.hasTestHooks() };
+      tabletProcess: ProductInputProfile.canChooseTabletProcess(), nativeGamepad: ProductInputProfile.canChooseNativeGamepad(),
+      developer: DiagnosticPolicy.hasTestHooks(), fixedRefreshRate: deviceInfo.sdkApiVersion >= 20 };
   }
 
   private availableSections_(): SettingsSection[] { return settingsSections(this.capabilities_()); }
@@ -229,10 +263,14 @@ export struct SettingsTab {
   /** Tab 隐藏时关闭未提交草稿与定位资格；迟到保存不得向再次打开的面板发布状态。 */
   private syncSectionBack_(): void {
     if (!this.mounted_) return;
+    if (this.visible && this.openMemoryRequested) {
+      this.openMemoryRequested = false;
+      this.openSearchItem_('memory');
+    }
     if (!this.visible) {
       this.sheetGeneration_++;
       this.focusGeneration_++;
-      this.pendingStorage_ = '';
+      this.withdrawStorageIntent_();
       if (this.showSettingsSheet) this.sheetClosing_ = true;
       this.showSettingsSheet = false;
       this.jvmSaving = false;
@@ -297,18 +335,19 @@ export struct SettingsTab {
   }
 
   /** 入口再次用实时目录校验，避免旧搜索结果在产品能力变化后打开已隐藏的功能。 */
-  private openSearchItem_(id: string): void {
+  private async openSearchItem_(id: string): Promise<boolean> {
     const item: SettingsItem | undefined = this.availableItems_().find((candidate: SettingsItem): boolean => candidate.id === id);
-    if (item === undefined) return;
-    if (item.section === 'about') { this.openPage_('pages/AboutPage'); return; }
-    if (item.section === 'ledger') { this.openLedger_(); return; }
+    if (item === undefined) return false;
+    if (item.section === 'about') return this.openPage_('pages/AboutPage');
+    if (item.section === 'ledger') return this.openLedger_();
     // 设置搜索与总览共用常驻更新入口，允许在更新任务以外查看并完成开发者登录。
-    if (item.section === 'software-update') { this.openPage_('pages/SoftwareUpdatePage'); return; }
+    if (item.section === 'software-update') return this.openPage_('pages/SoftwareUpdatePage');
     // 分辨率包含自身的作用域、保存与继承操作，搜索直接进入同一个详情页，避免跨分区
     // 首次布局/键盘收起时对尚未稳定的长卡片坐标重复补偿而滚过目标。
-    if (id === 'resolution') { this.selectSection_('resolution'); return; }
+    if (id === 'resolution') { this.selectSection_('resolution'); return true; }
     this.selectSection_(item.section);
     this.highlightedItem = item.id;
+    return true;
   }
 
   /**
@@ -347,29 +386,350 @@ export struct SettingsTab {
   }
 
   /** 风险确认只在松手/点击发生；拖动越界时先保持建议阈值，避免连续弹窗。 */
-  private onXmxSliderChange(value: number, mode: SliderChangeMode): void {
+  private async onXmxSliderChange(value: number, mode: SliderChangeMode): Promise<boolean> {
     const threshold: number = this.xmxRiskThreshold();
-    if (value <= threshold || this.highXmxAck) { this.onXmxChange(value); return; }
-    if (mode !== SliderChangeMode.End && mode !== SliderChangeMode.Click) { this.onXmxChange(threshold); return; }
-    this.confirmHighXmx(value, threshold);
+    if (value <= threshold || this.highXmxAck) return this.onXmxChange(value);
+    if (mode !== SliderChangeMode.End && mode !== SliderChangeMode.Click) return this.onXmxChange(threshold);
+    return this.confirmHighXmx(value, threshold);
   }
 
-  /** 取消或弹窗失败都回到阈值；继续授权只对本组件会话生效。 */
-  private confirmHighXmx(value: number, threshold: number): void {
+  /** 松开滑块的原风险选择同样等待实际偏好所有者，失败不会发布目标容量。 */
+  private async confirmHighXmx(value: number, threshold: number): Promise<boolean> {
+    let desired: number = threshold;
     try {
-      this.getUIContext().getPromptAction().showDialog({ title: '内存分配过高',
-        message: '你选择了 ' + value + ' MB，超过设备物理内存的 80%（' + threshold
-          + ' MB）。\n\n游戏还需要图形与其他运行内存。分配过高时，系统可能在内存紧张时结束游戏进程。',
-        buttons: [{ text: '使用建议值', color: this.theme.actionText as string },
-          { text: '仍要使用', color: this.theme.errorText as string }],
-      }).then((result: promptAction.ShowDialogSuccessResponse): void => {
-        if (result.index === 1) { this.highXmxAck = true; this.onXmxChange(value); }
-        else this.onXmxChange(threshold);
-      }).catch((): void => { this.onXmxChange(threshold); });
-    } catch (_) { this.onXmxChange(threshold); }
+      const answer = await this.getUIContext().getPromptAction().showDialog({title:'内存分配过高',
+        message:'选择了 '+value+' MB，超过建议的 '+threshold+' MB，游戏还需要图形和其他内存。',
+        buttons:[{text:'使用建议值',color:this.theme.actionText as string},{text:'仍要使用',color:this.theme.errorText as string}]});
+      if (!this.mounted_ || !this.visible) return false;
+      if (answer.index === 1) { this.highXmxAck = true; desired = value; }
+    } catch (_) { if (!this.mounted_ || !this.visible) return false; }
+    return this.onXmxChange(desired);
   }
 
   /** 稳定的可见项 id 同时定义单选入口资格，能力撤回或目录换代时不能提交旧候选。 */
+  /** 可见目录是页面与系统能力的共同白名单。忙碌或失效的视图不会替用户提交设置。 */
+  private async runSettingsSkill_(method: string, args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (!this.mounted_ || !this.visible || !this.skillInteractive()) return settingFailure('notInteractive');
+    if (method === 'readSettingHandoff') {
+      if (!settingKeys(args,['reference']) || !this.skillEditorRef_ || args['reference'] !== this.skillEditorRef_) return settingFailure('editorExpired');
+      const reply: SettingsSkillData = {'state':'ready','reference':this.skillEditorRef_,'item':this.skillEditorKind_,'outcome':this.skillEditorState_};
+      if (this.skillEditorKind_ === 'storage') {
+        if (this.skillStorageRequested_) reply['requestedTarget'] = this.skillStorageRequested_;
+        if (this.skillStorageSelected_) reply['selectedTarget'] = this.skillStorageSelected_;
+      }
+      return reply;
+    }
+    if (method === 'navigateLauncherSettings' && settingKeys(args,['section'])) {
+      const section=settingText(args,'section');
+      if (section === 'back') {
+        if (this.jvmSaving || this.sheetClosing_) return settingFailure('busy');
+        this.sectionBackHandler_();
+      } else if (section === 'clearSearch') this.changeSearch_('');
+      else if (!this.showSettingsSheet && !this.sheetClosing_ && (section === 'overview' ||
+        this.availableSections_().some((item: SettingsSection): boolean => item.id === section))) this.selectSection_(section);
+      else return settingFailure('sectionUnavailable');
+      return {'state':'ready','section':this.activeSection,'editorOpen':this.showSettingsSheet};
+    }
+    const child = this.skillChildMethods_.get(method);
+    if (child) {
+      const item = this.skillChildTargets_.get(child);
+      if (!item || !this.hasItem_(item) || this.showSettingsSheet || this.sheetClosing_) return settingFailure('settingUnavailable');
+      return LauncherSkillBus.forward(this,child,method,args);
+    }
+    if (method === 'findLauncherSettings') {
+      if (!settingKeys(args, []) && !settingKeys(args, ['query'])) return settingFailure('invalidArguments');
+      const query = settingText(args, 'query');
+      if (query.length > 128 || (args['query'] !== undefined && typeof args['query'] !== 'string')) return settingFailure('invalidArguments');
+      const items = query.trim() ? searchSettings(this.availableItems_(), query) : this.availableItems_();
+      return { 'state': 'ready', 'items': items.map((item: SettingsItem): SettingsSkillData =>
+        ({ 'item': item.id, 'section': item.section, 'title': item.title })), 'section': this.activeSection };
+    }
+    if (method === 'readLauncherSetting') {
+      if (!settingKeys(args, ['item'])) return settingFailure('invalidArguments');
+      const id = settingText(args, 'item');
+      return this.hasItem_(id) ? this.readSkillSetting_(id) : settingFailure('settingUnavailable');
+    }
+    if (this.showSettingsSheet || this.sheetClosing_) return settingFailure('editorAlreadyOpen');
+    if (method === 'openLauncherSetting') {
+      if (!settingKeys(args, ['item'])) return settingFailure('invalidArguments');
+      return this.openSkillSetting_(settingText(args, 'item'));
+    }
+    if (method === 'openLauncherDiagnostic' && settingKeys(args,['tool'])) {
+      if (!this.hasItem_('developer') || !DiagnosticPolicy.hasTestHooks()) return settingFailure('notAvailable');
+      const tool=settingText(args,'tool');
+      const route = developerToolRoute(tool);
+      if (!route) return settingFailure('toolUnavailable');
+      const router = this.getUIContext().getRouter();
+      await router.pushUrl({url:route});
+      const page = router.getState().name;
+      if (page !== route && 'pages/' + page !== route) return { 'state':'unknown','reason':'destinationUnconfirmed' };
+      return {'state':'needsUser','tool':tool,'reason':'performDiagnosticsInApp'};
+    }
+    if (method === 'prepareStorageChange' && settingKeys(args,['target'])) {
+      const target=settingText(args,'target');
+      if (!this.hasItem_('storage') || !this.choiceOptions_('storage').some((o: SettingsChoice): boolean => o.value === target && o.enabled)) return settingFailure('storageUnavailable');
+      if (this.storageLocation === target) {
+        // 当前会话可能临时回退沙箱。只有持久选择也一致，才能直接返回而跳过用户确认。
+        const stored = this.readSkillSetting_('storage');
+        if (stored['state'] !== 'ready' || stored['value'] === target) return stored;
+      }
+      this.openSheet_('storage');
+      if (!this.showSettingsSheet || this.sheetKind !== 'storage') return settingFailure('editorUnavailable');
+      this.choiceDraft=target;
+      return this.beginSkillEditor_('storage',method,target);
+    }
+    if (method === 'setLauncherChoice') {
+      if (!settingKeys(args, ['item','value']) || typeof args['value'] !== 'string') return settingFailure('invalidArguments');
+      const id = settingText(args, 'item');
+      const value = settingText(args, 'value');
+      if (!this.hasItem_(id) || id === 'storage') return settingFailure('settingUnavailable');
+      const kind = this.skillChoiceKind_(id);
+      if (!kind || !this.choiceOptions_(kind).some((option: SettingsChoice): boolean =>
+        option.value === value && option.enabled)) return settingFailure('invalidChoice');
+      if (!await this.submitChoice_(kind,value)) return settingFailure('settingNotSaved');
+      const confirmed=this.readSkillSetting_(id);
+      return confirmed['value'] === value ? confirmed : settingFailure('settingChanged');
+    }
+    if (method === 'setLauncherSwitch') return await this.skillSwitch_(args);
+    if (method === 'copyLauncherDiagnostic' && settingKeys(args,[])) {
+      if (!this.hasItem_('diagnostics')) return settingFailure('notAvailable');
+      LauncherSkillBus.awaitingUser(method);
+      const confirm = await this.getUIContext().getPromptAction().showDialog({ title:'复制本机诊断摘要？',
+        message:'将脱敏后的启动器日志摘要写入系统剪贴板，系统智能体只收到复制结果。',
+        buttons:[{text:'取消',color:this.theme.textSecondary as string},{text:'复制',color:this.theme.actionText as string}]});
+      if (confirm.index !== 1) return {'state':'cancelled'};
+      if (!this.mounted_ || !this.visible || !this.skillInteractive()) return settingFailure('ownerChanged');
+      return await this.onCopySkillDiagnostic() ? {'state':'ready','copied':true} : settingFailure('copyFailed');
+    }
+    if (method === 'setLauncherAppearance') {
+      if (!settingKeys(args,['mode','accent']) || !this.hasItem_('theme')) return settingFailure('invalidArguments');
+      const mode = settingText(args,'mode');
+      const accent = themeAccentOptions().find(option => option.id === args['accent']);
+      if (!accent || !['system','light','dark'].includes(mode)) return settingFailure('invalidArguments');
+      const target = new ThemeSelection(mode === 'system' ? ThemeMode.SYSTEM : mode === 'light' ? ThemeMode.LIGHT : ThemeMode.DARK, accent.id);
+      await this.onThemeSave(target);
+      return { 'state':'ready', 'mode':mode, 'accent':accent.id };
+    }
+    if (method === 'setLauncherSheetHeight') {
+      const percent = args['percent'];
+      if (!settingKeys(args,['percent']) || this.deviceForm !== DeviceForm.PHONE || !this.hasItem_('phone-sheet-height') || typeof percent !== 'number' ||
+        !Number.isInteger(percent) || normalizePhoneSheetHeightPercent(percent) !== percent) return settingFailure('invalidHeight');
+      await this.onPhoneSheetHeightSave(percent);
+      return { 'state':'ready', 'percent':percent };
+    }
+    if (method === 'setLauncherLightMaterial') return this.skillLight_(args);
+    if (method === 'setLauncherMemory') {
+      const value = args['megabytes'];
+      if (!this.hasItem_('memory') || !settingKeys(args,['megabytes']) || typeof value !== 'number' ||
+        !Number.isInteger(value) || value < 512 || value > this.xmxMax || value % 256 !== 0) return settingFailure('invalidMemory');
+      if (value > this.xmxRiskThreshold() && !this.highXmxAck) LauncherSkillBus.awaitingUser(method);
+      if (!await this.onXmxSliderChange(value, SliderChangeMode.Click)) return settingFailure('settingNotSaved');
+      return this.readSkillSetting_('memory');
+    }
+    if (method === 'scheduleTouchGuide') {
+      if (!settingKeys(args,[]) || !this.hasItem_('touch-help')) return settingFailure('notAvailable');
+      const before=this.readSkillSetting_('touch-help');
+      if (before['state'] !== 'ready') return before;
+      if (before['requested'] !== true) this.requestTouchGuide_();
+      const after=this.readSkillSetting_('touch-help');
+      return after['state']==='ready' && after['requested']!==true ? settingFailure('guideNotSaved') : after;
+    }
+    return settingFailure('unsupportedMethod');
+  }
+
+  private skillChoiceKind_(id: string): string {
+    if (id === 'frame-rate') return 'frame';
+    if (id === 'jdk-update') return 'jdk-channel';
+    return ['java','fixed-refresh-rate','language','mc-source','mod-source','jdk-source','storage'].includes(id) ? id : '';
+  }
+
+  /** 子组件的视觉开关、存储事务与系统权限由其当前所有者执行。 */
+  private skillChildTargets_: Map<string,string> = new Map<string,string>([
+    ['settingsGraphics','graphics'],['settingsResolution','resolution'],['settingsRetention','retention'],
+    ['settingsMic','mod-audio'],['settingsMidi','mod-audio'],['settingsInteraction','interaction'],['settingsGamepad','gamepad']
+  ]);
+  private skillChildMethods_: Map<string,string> = new Map<string,string>([
+    ['listGraphicsBackends','settingsGraphics'],['selectGraphicsBackend','settingsGraphics'],
+    ['getGlobalResolution','settingsResolution'],['setGlobalResolution','settingsResolution'],
+    ['getGameLogRetention','settingsRetention'],['setGameLogRetention','settingsRetention'],
+    ['bluetoothMidiAccess','settingsMidi'],['configureModMicrophone','settingsMic'],['getModMicrophone','settingsMic'],
+    ['getDesktopInteraction','settingsInteraction'],['setDesktopInteraction','settingsInteraction'],
+    ['getGamepadMode','settingsGamepad'],['setGamepadMode','settingsGamepad']
+  ]);
+
+  private readSkillSetting_(id: string): SettingsSkillData {
+    const result: SettingsSkillData = { 'state':'ready','item':id };
+    const kind = this.skillChoiceKind_(id);
+    let stored: SettingsSkillData;
+    try { stored=this.readCommittedSettings(id); } catch (_) { return {'state':'unknown','item':id,'reason':'settingUnreadable'}; }
+    if (stored['confirmed'] !== true) return {'state':'unknown','item':id,'reason':'preferenceUnconfirmed'};
+    if (kind) {
+      if ((kind==='jdk-source' && stored['jdk-web'] !== this.jdkWebEnabled) ||
+        (kind==='fixed-refresh-rate' && stored['cap'] !== this.ohosFrameRateCap)) return {'state':'unknown','item':id,'reason':'choicesChanged'};
+      result['value'] = String(stored[id]);
+      result['choices'] = this.choiceOptions_(kind).map((o: SettingsChoice): SettingsSkillData =>
+        ({'value':o.value, 'enabled':o.enabled,'title':o.title}));
+    }
+    switch (id) {
+      case 'theme':
+        result['mode'] = stored['mode'];
+        result['accent'] = stored['accent'];
+        break;
+      case 'phone-sheet-height': result['percent'] = stored['percent']; break;
+      case 'immersive':
+        result['enabled'] = stored['enabled']; result['navigation'] = stored['navigation'];
+        result['bottomBar'] = stored['bottomBar']; result['titleButtons'] = stored['titleButtons'];
+        result['manualMaterial'] = this.immersiveLightHasPresets; result['saving'] = this.immersiveLightSaving;
+        result['saveFailed'] = this.immersiveLightSaveError.length > 0;
+        break;
+      case 'memory': result['megabytes'] = stored['memory']; result['max'] = this.xmxMax; break;
+      case 'virtual-memory': result['enabled'] = stored['virtual-memory']; break;
+      case 'isolation': result['enabled'] = stored['isolation']; break;
+      case 'game-keep-screen-on': result['enabled'] = stored['game-keep-screen-on']; break;
+      case 'process': result['enabled'] = stored['process']; result['active'] = this.tabletProcessActive; result['saving']=this.tabletProcessSaving; break;
+      case 'window': result['independent'] = ProductInputProfile.selection().desktopWindow; break;
+      case 'remote-cache': result['enabled'] = stored['remote-cache']; break;
+      case 'acceleration': result['enabled'] = stored['acceleration']; result['relay'] = this.onReadRelayStatus(); break;
+      case 'download-concurrency': result['policy'] = 'automatic'; break;
+      case 'jdk-source': result['publisherEnabled'] = stored['jdk-web']; break;
+      case 'jdk-update': result['autoCheck'] = stored['jdk-auto']; result['checking'] = this.jdkChecking; result['available'] = this.jdkHasUpdate; break;
+      case 'jvm': result['hasCustomArguments'] = stored['hasCustomArguments']; break;
+      case 'diagnostics': result['summary'] = this.onReadDiagnosticSummary(); break;
+      case 'software-update':
+        result['delivery'] = DistributionPolicy.isStore() ? 'appMarket' : 'sideload';
+        result['currentVersion'] = stored['currentVersion'];
+        result['currentCode'] = stored['currentCode'];
+        break;
+      case 'touch-help': {
+        const ctx = this.getUIContext().getHostContext();
+        if (!ctx) return settingFailure('contextUnavailable');
+        try { result['requested'] = new TouchLearningStore(ctx.filesDir).strictRequested(); }
+        catch (_) { return {'state':'unknown','reason':'guideUnreadable'}; }
+        break;
+      }
+      default: if (!kind) return { 'state':'needsUser','item':id }; break;
+    }
+    return result;
+  }
+
+  /** 玩家与系统共用隔离确认。取消、页面离开或原值变化时保留已保存的目录选择。 */
+  private async requestIsolation_(enabled: boolean, fromSkill: boolean = false): Promise<SettingsSkillData> {
+    if (this.isolationPending_) return settingFailure('busy');
+    const before = this.readSkillSetting_('isolation');
+    if (before['state'] !== 'ready') return before;
+    const baseline = this.versionIsolation;
+    if (before['enabled'] !== baseline) return settingFailure('settingChanged');
+    if (baseline === enabled) return before;
+    const generation = this.sheetGeneration_;
+    this.isolationPending_ = true;
+    try {
+      if (!enabled || fromSkill) {
+        if (fromSkill) LauncherSkillBus.awaitingUser('setLauncherSwitch');
+        const answer: promptAction.ShowDialogSuccessResponse | undefined = await this.getUIContext().getPromptAction().showDialog({
+          title: enabled ? '开启版本隔离？' : '关闭版本隔离？',
+          message: enabled ? '普通版本将重新使用各自目录里的存档和模组。共享目录里的内容会留在原处。' :
+            '关闭后，普通版本将共用存档和模组。原先独立的存档和模组会保留，重新开启隔离后可以继续使用。关闭期间新增的共享存档和模组会留在共享目录。整合包继续独立使用自己的目录。',
+          buttons: [{ text: '取消', color: this.theme.textSecondary as string },
+            { text: enabled ? '开启隔离' : '关闭隔离', color: (enabled ? this.theme.actionText : this.theme.errorText) as string }]
+        }).catch((): undefined => undefined);
+        if (answer?.index !== 1) return {'state':'cancelled','item':'isolation'};
+        if (!this.mounted_ || !this.visible || this.sheetGeneration_ !== generation ||
+          (fromSkill && !this.skillInteractive()) || this.versionIsolation !== baseline ||
+          this.readSkillSetting_('isolation')['enabled'] !== baseline) return settingFailure('settingChanged');
+      }
+      if (!await this.onVersionIsolationChange(enabled)) return settingFailure('settingNotSaved');
+      const result = this.readSkillSetting_('isolation');
+      return result['enabled'] === enabled ? result : settingFailure('settingNotSaved');
+    } catch (_) {
+      return settingFailure('settingNotSaved');
+    } finally {
+      this.isolationPending_ = false;
+    }
+  }
+
+  /** 高影响偏好在当前界面询问具体值，用户答复后重新检查可见状态与原基线。 */
+  private async skillSwitch_(args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (!settingKeys(args,['item','enabled']) || typeof args['enabled'] !== 'boolean') return settingFailure('invalidArguments');
+    const key = settingText(args, 'item');
+    const id = key === 'jdk-web' ? 'jdk-source' : key === 'jdk-auto' ? 'jdk-update' : key;
+    if (!this.hasItem_(id)) return settingFailure('settingUnavailable');
+    const enabled = args['enabled'] as boolean;
+    if (key === 'isolation') return await this.requestIsolation_(enabled, true);
+    if (key === 'process') {
+      const baseline = this.tabletIndependentGameProcess;
+      if (baseline === enabled && this.readCommittedSettings(key)[key] === enabled) return this.readSkillSetting_(id);
+      LauncherSkillBus.awaitingUser('setLauncherSwitch');
+      const answer = await this.getUIContext().getPromptAction().showDialog({title:'更改启动器设置？', message:(enabled?'开启':'关闭')+'下次启动的独立游戏进程',
+        buttons:[{text:'取消',color:this.theme.textSecondary as string},{text:'确认',color:this.theme.actionText as string}]});
+      if (answer.index !== 1) return { 'state':'cancelled','item':id };
+      if (!this.mounted_ || !this.visible || !this.skillInteractive() || !this.hasItem_(id) ||
+        this.tabletIndependentGameProcess !== baseline) return settingFailure('settingChanged');
+    }
+    let saved=false;
+    switch (key) {
+      case 'virtual-memory': saved=await this.onVirtualMemoryModeChange(enabled); break;
+      case 'game-keep-screen-on':
+        if (this.gameKeepScreenOnSaving) return settingFailure('busy');
+        saved=await this.onGameKeepScreenOnChange(enabled); break;
+      case 'process':
+        if (this.tabletProcessSaving) return settingFailure('busy');
+        saved=await this.onTabletProcessChange(enabled); break;
+      case 'remote-cache': saved=await this.onCacheRemoteMetaChange(enabled); break;
+      case 'acceleration': saved=await this.onAccelDownloadChange(enabled); break;
+      case 'jdk-web':
+        if (!DistributionPolicy.allowPublisherServices()) return settingFailure('notAvailable');
+        saved=await this.onJdkWebChange(enabled); break;
+      case 'jdk-auto': saved=await this.onJdkAutoCheckChange(enabled); break;
+      default: return settingFailure('invalidSwitch');
+    }
+    return saved && this.readCommittedSettings(key)[key] === enabled ? this.readSkillSetting_(id) : settingFailure('settingNotSaved');
+  }
+
+  private async skillLight_(args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (!settingKeys(args,['part','value']) || !this.hasItem_('immersive') || this.immersiveLightSaving) return settingFailure('notAvailable');
+    const part = settingText(args,'part'), value = settingText(args,'value');
+    const next = copyImmersiveLightPreferences(this.immersiveLight);
+    if (part === 'material') {
+      const mode = normalizeDockLightMode(value);
+      if (value !== mode || mode === DockLightMode.OFF || !next.enabled ||
+        (!this.immersiveLightHasPresets && mode !== DockLightMode.AUTO)) return settingFailure('invalidMaterial');
+      next.navigationMode = mode;
+    } else {
+      if (value !== 'on' && value !== 'off') return settingFailure('invalidValue');
+      if (part === 'enabled') next.enabled = value === 'on';
+      else if (part === 'bottomBar' && next.enabled) next.bottomBar = value === 'on';
+      else if (part === 'titleButtons' && next.enabled) next.titleButtons = value === 'on';
+      else return settingFailure('invalidPart');
+    }
+    if (!await this.onImmersiveLightChange(next)) return settingFailure('settingNotSaved');
+    return {'state':'ready','item':'immersive','enabled':next.enabled,'navigation':next.navigationMode,'bottomBar':next.bottomBar,'titleButtons':next.titleButtons};
+  }
+
+  /** 留在应用的编辑、授权与分享按实际设置目录进入原页面，不接受自由 URL。 */
+  private async openSkillSetting_(id: string): Promise<SettingsSkillData> {
+    if (!this.hasItem_(id)) return settingFailure('settingUnavailable');
+    if (id === 'software-update' && DistributionPolicy.isStore()) return settingFailure('marketUpdateOnly');
+    if (!await this.openSearchItem_(id)) return settingFailure('destinationUnavailable');
+    if (id === 'jvm' || id === 'storage') {
+      this.openSheet_(id);
+      if (!this.showSettingsSheet || this.sheetKind !== id) return settingFailure('editorUnavailable');
+      return this.beginSkillEditor_(id,'openLauncherSetting');
+    }
+    else if (id === 'graphics') this.selectSection_('graphics');
+    else if (id === 'input') await this.getUIContext().getRouter().pushUrl({url:'pages/LayoutEditorPage', params:{settingsOnly:true}});
+    else if (id === 'layouts') await this.getUIContext().getRouter().pushUrl({url:'pages/LayoutListPage'});
+    else if (id === 'network') {
+      // 面板亲自确认挂载；首次探测可以仍在进行中，结果另由 inspectNetwork 查询。
+      const opened = await LauncherSkillBus.forward(this,'settingsNetwork','observeNetworkPanel',{});
+      if (opened['surface'] !== 'network') return settingFailure('diagnosticsUnavailable');
+    }
+    else if (id === 'launcher-log') this.onOpenLog();
+    else if (id === 'game-log' && !await this.onOpenGameLog()) return settingFailure('destinationUnavailable');
+    else if (id === 'feedback' || id === 'sponsor') await this.getUIContext().getRouter().pushUrl({url:id === 'feedback'?'pages/FeedbackPage':'pages/SponsorPage'});
+    else if ((id === 'jit-help' || id === 'install-help') && !await this.openHelp_(id === 'install-help')) return settingFailure('destinationUnavailable');
+    return { 'state':'needsUser','item':id };
+  }
+
   private choiceItem_(kind: string): string {
     if (kind === 'frame') return 'frame-rate';
     if (kind === 'jdk-channel') return 'jdk-update';
@@ -378,6 +738,7 @@ export struct SettingsTab {
   private currentChoice_(kind: string): string {
     if (kind === 'java') return this.selectedJdkVersion;
     if (kind === 'frame') return String(this.ohosFrameRateCap);
+    if (kind === 'fixed-refresh-rate') return String(this.ohosFixedRefreshRate);
     if (kind === 'language') return this.gameLanguage;
     if (kind === 'mc-source') return this.mcSource;
     if (kind === 'jdk-source') return this.jdkSource;
@@ -388,22 +749,30 @@ export struct SettingsTab {
   }
 
   /** Java 动态目录与产品能力在每次渲染/确认时重新消费，不硬编码设计稿中的示例版本。 */
-  private choiceOptions_(): SettingsChoice[] {
-    if (this.sheetKind === 'java') {
+  private choiceOptions_(kind: string = this.sheetKind): SettingsChoice[] {
+    if (kind === 'java') {
       const options: SettingsChoice[] = [{ value: JDK_AUTO, title: '自动选择', description: '按 Minecraft 版本匹配，推荐日常使用', enabled: true }];
       for (const jdk of this.jdkVersions) options.push({ value: jdk.version, title: 'JDK ' + jdk.version,
         description: jdk.version === '8' ? '实验性 · 旧版游戏与调试' : '固定使用 JDK ' + jdk.version + (jdk.updateAvailable ? ' · 有可用更新' : ''), enabled: true });
       return options;
     }
-    if (this.sheetKind === 'frame') return [0, 30, 60, 90, 120, 144, 165, 240].map((value: number): SettingsChoice =>
+    if (kind === 'frame') return [0, 30, 60, 90, 120, 144, 165, 240].map((value: number): SettingsChoice =>
       ({ value: String(value), title: value === 0 ? '自动' : value + ' Hz', description: value === 0 ? '跟随当前显示刷新率' : '系统渲染调度提示上限', enabled: true }));
-    if (this.sheetKind === 'language') return GAME_LANGUAGES.map((language: GameLanguageOption): SettingsChoice =>
+    if (kind === 'fixed-refresh-rate') {
+      // 设置页选择想要的档位，游戏启动后再核对实际游戏窗口的显示设备。
+      return [0, 30, 60, 90, 120, 144].map((rate: number): SettingsChoice => {
+        const withinCap: boolean = this.ohosFrameRateCap === 0 || rate <= this.ohosFrameRateCap;
+        return { value: String(rate), title: rate === 0 ? '不固定' : rate + ' Hz', enabled: withinCap,
+          description: rate === 0 ? '沿用系统调度帧率上限' : (withinCap ? '游戏屏幕支持时生效' : '高于系统调度帧率上限') };
+      });
+    }
+    if (kind === 'language') return GAME_LANGUAGES.map((language: GameLanguageOption): SettingsChoice =>
       ({ value: language.code, title: language.label, description: language.code, enabled: true }));
-    if (this.sheetKind === 'mc-source') return [
+    if (kind === 'mc-source') return [
       { value: 'auto', title: '自动', description: '保留各源，按实际下载表现选择', enabled: true },
       { value: 'mirror', title: '镜像优先', description: '优先 BMCLAPI，官方继续作为备用', enabled: true },
       { value: 'official', title: '源站', description: '仅 Mojang 官方来源，可经过 AMCL 网关', enabled: true }];
-    if (this.sheetKind === 'jdk-source') {
+    if (kind === 'jdk-source') {
       const sources: SettingsChoice[] = [
         { value: 'auto', title: '自动', description: '源站与镜像实际竞速，按当前线路选择', enabled: true },
         { value: 'github', title: '源站', description: '仅 GitHub 官方来源，可经过 AMCL 网关', enabled: true },
@@ -412,14 +781,14 @@ export struct SettingsTab {
       if (this.jdkWebEnabled && DistributionPolicy.allowPublisherServices()) sources.push({ value: 'web', title: 'AMCL 服务器', description: '使用已启用的 AMCL 来源', enabled: true });
       return sources;
     }
-    if (this.sheetKind === 'mod-source') return [
+    if (kind === 'mod-source') return [
       { value: 'auto', title: '自动', description: '保留各源，由下载引擎选择', enabled: true },
       { value: 'mcim', title: '镜像', description: '优先使用模组镜像数据源', enabled: true },
       { value: 'official', title: '源站', description: '仅源站文件，可经过 AMCL 网关；CF 元数据仍使用 MCIM', enabled: true }];
-    if (this.sheetKind === 'jdk-channel') return [
+    if (kind === 'jdk-channel') return [
       { value: 'stable', title: '稳定', description: '日常使用推荐的更新通道', enabled: true },
       { value: 'preview', title: '预览', description: '较新的修复，仍需更多设备与模组验证', enabled: true }];
-    if (this.sheetKind === 'storage') return [
+    if (kind === 'storage') return [
       { value: 'sandbox', title: '应用私有', description: '卸载应用时删除', enabled: true },
       { value: 'external', title: '外部存储', description: this.externalAvailable ? 'Download/AMCL · 卸载后保留' : '当前设备不支持外部存储', enabled: this.externalAvailable }];
     return [];
@@ -447,12 +816,20 @@ export struct SettingsTab {
 
   /** 关闭不写配置；已开始的 JVM 耐久保存仅失去显示权，不被伪装为取消写入。 */
   private cancelSheet_(): void {
+    if (this.skillEditorKind_ === this.sheetKind && this.skillEditorState_ === 'waiting') this.skillEditorState_='cancelled';
     this.sheetGeneration_++;
-    this.pendingStorage_ = '';
+    this.withdrawStorageIntent_();
     this.jvmSaving = false;
     if (this.showSettingsSheet) this.sheetClosing_ = true;
     this.showSettingsSheet = false;
     this.syncSectionBack_();
+  }
+
+  /** 只撤销仍属于面板的意图。父层已接手后，以其事务回调作为最终结果。 */
+  private withdrawStorageIntent_(): void {
+    if (this.skillEditorKind_ === 'storage' && (this.skillEditorState_ === 'waiting' ||
+      (this.skillEditorState_ === 'submitted' && this.pendingStorage_.length > 0))) this.skillEditorState_ = 'cancelled';
+    this.pendingStorage_ = '';
   }
 
   /** 普通单选只在显式确定时提交一次；候选失效保留面板并说明，不静默改成另一项。 */
@@ -464,14 +841,21 @@ export struct SettingsTab {
     const value: string = choice.value;
     this.sheetClosing_ = true;
     this.showSettingsSheet = false;
-    if (kind === 'java') this.onJdkVersionChange(value);
-    else if (kind === 'frame') this.onOhosFrameRateCapChange(Number(value));
-    else if (kind === 'language') this.onGameLanguageChange(value);
-    else if (kind === 'mc-source') this.onMcSourceChange(value);
-    else if (kind === 'jdk-source') this.onJdkSourceChange(value);
-    else if (kind === 'mod-source') this.onModSourceChange(value);
-    else if (kind === 'jdk-channel') this.onJdkChannelChange(value);
+    this.submitChoice_(kind, value);
     this.syncSectionBack_();
+  }
+
+  /** 已核对的候选由同一个父级回调应用到页面、偏好与下载引擎。 */
+  private async submitChoice_(kind: string, value: string): Promise<boolean> {
+    if (kind === 'java') return this.onJdkVersionChange(value);
+    else if (kind === 'frame') return this.onOhosFrameRateCapChange(Number(value));
+    else if (kind === 'fixed-refresh-rate') return this.onOhosFixedRefreshRateChange(Number(value));
+    else if (kind === 'language') return this.onGameLanguageChange(value);
+    else if (kind === 'mc-source') return this.onMcSourceChange(value);
+    else if (kind === 'jdk-source') return this.onJdkSourceChange(value);
+    else if (kind === 'mod-source') return this.onModSourceChange(value);
+    else if (kind === 'jdk-channel') return this.onJdkChannelChange(value);
+    return false;
   }
 
   /** 存储意图在面板消失后才交给父层，保留原权限/复制事务并避免叠加询问。 */
@@ -480,6 +864,10 @@ export struct SettingsTab {
     const choice: SettingsChoice | undefined = this.choiceOptions_().find((item: SettingsChoice): boolean => item.value === this.choiceDraft && item.enabled);
     if (choice === undefined) { this.sheetError = '该位置已不可用，请重新选择。'; return; }
     this.pendingStorage_ = choice.value;
+    if (this.skillEditorKind_ === 'storage' && this.skillEditorState_ === 'waiting') {
+      // 玩家可在面板改选；保留原请求，另记实际交给迁移事务的位置。
+      this.skillStorageSelected_=choice.value; this.skillEditorState_='submitted';
+    }
     this.pendingMigration_ = migrate;
     this.sheetClosing_ = true;
     this.showSettingsSheet = false;
@@ -494,19 +882,32 @@ export struct SettingsTab {
     this.sheetKind = '';
     this.sheetError = '';
     this.syncSectionBack_();
-    if (this.mounted_ && this.visible && location.length > 0) this.onStorageLocationChange(location, migrate);
+    if (location.length === 0) return;
+    const receipt=this.skillEditorKind_ === 'storage' && this.skillEditorState_ === 'submitted' ? this.skillEditorRef_ : '';
+    if (this.mounted_ && this.visible) {
+      if (!receipt) this.onStorageLocationChange(location, migrate);
+      else this.onStorageLocationChange(location, migrate, (state: string): void => {
+        if (this.skillEditorRef_ !== receipt) return;
+        const changed = this.skillStorageRequested_.length > 0 && location !== this.skillStorageRequested_;
+        this.skillEditorState_ = state === 'saved' && changed ? 'changedTarget' : state;
+      });
+    } else if (receipt) this.skillEditorState_ = 'cancelled';
   }
 
   /** 显式保存等待父层真实 put/flush；失败保留草稿，隐藏或换 owner 后只撤销显示发布。 */
   private async saveCustomJvmArgs(): Promise<void> {
     if (!this.mounted_ || !this.visible || !this.showSettingsSheet || this.sheetKind !== 'jvm' || this.jvmSaving) return;
     const generation: number = this.sheetGeneration_;
+    const receipt=this.skillEditorKind_ === 'jvm' && this.skillEditorState_ === 'waiting' ? this.skillEditorRef_ : '';
+    if (receipt) this.skillEditorState_='saving';
     this.jvmSaving = true;
     this.sheetError = '';
     try {
       await this.onCustomJvmArgsChange(this.jvmArgsDraft.trim());
+      if (receipt && this.skillEditorRef_ === receipt) this.skillEditorState_='saved';
       if (this.mounted_ && this.visible && generation === this.sheetGeneration_) this.cancelSheet_();
     } catch (error) {
+      if (receipt && this.skillEditorRef_ === receipt) this.skillEditorState_='waiting';
       if (this.mounted_ && this.visible && generation === this.sheetGeneration_) this.sheetError = '保存失败：' + (error as Error).message;
     } finally {
       if (this.mounted_ && generation === this.sheetGeneration_) this.jvmSaving = false;
@@ -527,12 +928,12 @@ export struct SettingsTab {
   }
 
   /** 既有独立页面继续由原 router 所有；失败始终给出可见反馈。 */
-  private openPage_(url: string): void {
+  private async openPage_(url: string): Promise<boolean> {
     try { this.getUIContext().getFocusController().clearFocus(); } catch (_) { /* 导航仍由原router处理。 */ }
-    try { this.getUIContext().getRouter().pushUrl({ url }).catch((): void => { this.navigationError_(); }); }
-    catch (_) { this.navigationError_(); }
+    try { await this.getUIContext().getRouter().pushUrl({url}); return true; }
+    catch (_) { this.navigationError_(); return false; }
   }
-  private openLedger_(): void { this.openPage_('pages/DownloadHistoryPage'); }
+  private openLedger_(): Promise<boolean> { return this.openPage_('pages/DownloadHistoryPage'); }
   private navigationError_(): void {
     try { this.getUIContext().getPromptAction().showToast({ message: '无法打开页面，请重试' }); } catch (_) { /* 页面可能已退出。 */ }
   }
@@ -548,11 +949,12 @@ export struct SettingsTab {
   }
 
   /** 已有内嵌文档继续使用原 fallback，不把设置导航改成新的联网服务。 */
-  private openHelp_(install: boolean): void {
-    this.getUIContext().getRouter().pushUrl({ url: 'pages/DocWebPage', params: {
+  private async openHelp_(install: boolean): Promise<boolean> {
+    try { await this.getUIContext().getRouter().pushUrl({ url: 'pages/DocWebPage', params: {
       src: install ? DOCS_INSTALL_URL : DOCS_NO_JIT_URL, title: install ? '怎么安装' : 'JIT 的解决办法',
       fallback: install ? DOCS_INSTALL_FALLBACK_URL : DOCS_NO_JIT_FALLBACK_URL,
-    } }).catch((): void => { this.navigationError_(); });
+    } }); return true; }
+    catch (_) { this.navigationError_(); return false; }
   }
 
   private sourceLabel_(value: string): string {
@@ -563,6 +965,18 @@ export struct SettingsTab {
     if (value === 'gitee') return 'Gitee';
     if (value === 'web') return 'AMCL 服务器';
     return value;
+  }
+
+  private beginSkillEditor_(kind: string, method: string, requestedTarget: string = ''): SettingsSkillData {
+    this.skillStorageRequested_=requestedTarget;
+    this.skillStorageSelected_='';
+    this.skillEditorRef_=nextSettingsReceipt();
+    this.skillEditorKind_=kind;
+    this.skillEditorState_='waiting';
+    const ref=this.skillEditorRef_;
+    LauncherSkillBus.followUserCondition(method, (): boolean => this.skillEditorRef_ === ref &&
+      ['waiting','submitted','saving'].includes(this.skillEditorState_));
+    return {'state':'needsUser','item':kind,'reference':this.skillEditorRef_};
   }
   private immersiveLightSummary_(): string {
     if (!this.immersiveLight.enabled) return '已关闭';
@@ -882,8 +1296,8 @@ export struct SettingsTab {
   @Builder
   private IsolationContent_() {
     SettingsToggleRow({ title: '版本隔离', description: '每个版本独立保存存档、模组与资源包', value: this.versionIsolation,
-      theme: this.theme, controlId: 'settings-item-isolation', highlighted: this.highlightedItem === 'isolation',
-      onLayout: (): void => { this.locateItem_('isolation'); }, onChange: (value: boolean): void => { this.onVersionIsolationChange(value); } });
+      saving: this.isolationPending_, theme: this.theme, controlId: 'settings-item-isolation', highlighted: this.highlightedItem === 'isolation',
+      onLayout: (): void => { this.locateItem_('isolation'); }, onChange: (value: boolean): void => { this.requestIsolation_(value); } });
   }
 
   /** 输入、渲染等子域继续使用其原产品组件，UI 不复制冻结设置或图形能力库存。 */
@@ -905,7 +1319,7 @@ export struct SettingsTab {
         SettingsGroup({ title: '触控与输入', theme: this.theme, content: (): void => { this.InputContent_(); } });
         SettingsGroup({ title: '操作帮助', theme: this.theme, content: (): void => { this.TouchHelp_(); } });
       }
-      if (DeviceProfile.isPC()) {
+      if (this.hasItem_('gamepad')) {
         Column() { DesktopGamepadSettings({ theme: this.theme }); }
           .width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).id('settings-item-gamepad')
           .onAreaChange((): void => { this.locateItem_('gamepad'); });
@@ -925,6 +1339,15 @@ export struct SettingsTab {
     SettingsValueRow({ title: '系统调度帧率上限', value: this.ohosFrameRateCap === 0 ? '自动' : this.ohosFrameRateCap + ' Hz',
       theme: this.theme, controlId: 'settings-item-frame-rate', highlighted: this.highlightedItem === 'frame-rate',
       onLayout: (): void => { this.locateItem_('frame-rate'); }, onAction: (): void => { this.openSheet_('frame'); } });
+    if (this.hasItem_('fixed-refresh-rate')) {
+      SettingsDivider({ theme: this.theme });
+      SettingsValueRow({ title: '游戏屏幕刷新率',
+        value: this.ohosFixedRefreshRate === 0 ? '不固定' : this.ohosFixedRefreshRate + ' Hz',
+        theme: this.theme, controlId: 'settings-item-fixed-refresh-rate',
+        highlighted: this.highlightedItem === 'fixed-refresh-rate',
+        onLayout: (): void => { this.locateItem_('fixed-refresh-rate'); },
+        onAction: (): void => { this.openSheet_('fixed-refresh-rate'); } });
+    }
     SettingsDivider({ theme: this.theme });
     SettingsValueRow({ title: '游戏语言', value: gameLanguageLabel(this.gameLanguage),
       theme: this.theme, controlId: 'settings-item-language', highlighted: this.highlightedItem === 'language',
@@ -1166,6 +1589,9 @@ export struct SettingsTab {
             if (this.jvmSaving) SettingsHint({ text: '正在保存。关闭面板不会撤销已提交的保存。', theme: this.theme, isAccent: true });
           } else {
             if (this.sheetKind === 'frame') SettingsHint({ text: '仅调整系统渲染调度提示，不更改游戏内的最大帧率。', theme: this.theme });
+            if (this.sheetKind === 'fixed-refresh-rate') {
+              SettingsHint({ text: '下次启动游戏时生效。所选档位须受游戏所在屏幕支持，且不高于系统调度帧率上限。', theme: this.theme });
+            }
             if (this.sheetKind === 'language') SettingsHint({ text: '设置游戏内的默认语言，单个版本可单独覆盖。', theme: this.theme });
             if (this.sheetKind === 'java') SettingsHint({ text: '自动按 Minecraft 版本匹配，推荐日常使用。下次启动游戏时生效。', theme: this.theme });
             Column() {

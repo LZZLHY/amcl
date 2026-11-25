@@ -12,8 +12,8 @@ spec = importlib.util.spec_from_file_location('source_recipe', ROOT / 'scripts/g
 recipe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(recipe)
 source = (ROOT / 'entry/src/main/cpp/platform/touch_input.cpp').read_text(encoding='utf-8')
-maintain = recipe.block(source, source.index('extern "C" bool ohos_touch_input_maintain('))
-visual = recipe.block(source, source.index('extern "C" void ohos_touch_interaction_visual('))
+maintain = recipe.block(source, source.index('extern "C" bool ohos_touch_frontend_maintain(')) + '\n' + recipe.block(source, source.index('extern "C" bool ohos_touch_input_maintain('))
+visual = recipe.block(source, source.index('static void readTouchVisualLocked(double* values, int count) {')) + '\n' + recipe.block(source, source.index('extern "C" void ohos_touch_interaction_visual('))
 output = workspace_path('run', 'touch-maintenance')
 build = workspace_path('build', 'touch-maintenance') / ('run-' + uuid.uuid4().hex[:8])
 output.mkdir(parents=True, exist_ok=True)
@@ -23,6 +23,7 @@ build.mkdir(parents=True, exist_ok=True)
 prefix = r'''
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <cstdint>
 #include <iostream>
 #include <map>
@@ -81,6 +82,10 @@ FingerBinding s_schemaFingers[MAX_FINGERS];
 struct Button {bool outputDown=false;Control control;};std::map<int,Button>s_schemaButtons;
 struct Config {double holdMs=200;int gestureMode=0,actions[16]{};}s_touchConfig;
 int64_t schemaNowNs(){return 1000000000;}
+// 来源账本在 touch-groups-production 中单独执行；这里验证查询仅发生在需要完整投影时。
+int aimReads=0;
+bool schemaTouchUseHeldLocked(){++aimReads;return false;}
+static void readTouchVisualLocked(double*,int);
 '''
 main = r'''
 int main(){
@@ -99,7 +104,14 @@ int main(){
  CHECK(groupAdvances==2);s_touchPaused=true;CHECK(ohos_touch_input_maintain());CHECK(groupAdvances==2);s_touchPaused=false;
  modeAvailable=false;ackAvailable=false;CHECK(!ohos_touch_input_maintain());
  CHECK(!s_touchMenuCursorVisible.load());ohos_touch_interaction_visual(values,25);CHECK(values[2]==0&&groupAdvances==2);
- std::cout<<"PASS production explicit maintenance and read-only visual contract\n";return 0;
+ // 组合观察从同一临界区返回改变位，无订阅时不构造视觉，纯几何模式不检查操控字段。
+ modeAvailable=true;modeGrabbed=true;
+ double observed[26]{}; CHECK(ohos_touch_frontend_maintain(observed,25)&&observed[25]==1);
+ for(int i=0;i<600;i++) { CHECK(ohos_touch_frontend_maintain(observed,25)&&observed[25]==0); }
+ const int beforeGeometryOnly=aimReads;
+ s_fingerDown[1]=true;CHECK(ohos_touch_frontend_maintain(observed,2)&&observed[25]==0&&aimReads==beforeGeometryOnly);
+ CHECK(ohos_touch_frontend_maintain(observed,25)&&observed[25]==1&&observed[23]==2);
+ std::cout<<"PASS production explicit maintenance and read-only visual contract; 600 idle updates, 0 buffer writes\n";return 0;
 }
 '''
 

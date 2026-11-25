@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SDL_HOST_FIXTURE_FILES = ['src/SDL.c', 'src/events/SDL_events.c', 'LICENSE.txt'];
+export const SDL_HOST_FIXTURE_FILES = ['src/SDL.c', 'src/events/SDL_events.c', 'src/video/SDL_video.c', 'LICENSE.txt'];
 
 /**
  * 对固定文件白名单做大小、SHA-256 和 Git blob SHA-1 三重检查，并绑定 deps.lock commit。

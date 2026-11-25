@@ -11,7 +11,9 @@ import { applyNativeTheme } from './AppTheme';
 import { DeveloperLoginContent, developerLoginSheetOptions } from './DeveloperLoginContent';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark, APP_VERSION } from 'commons';
+import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark, APP_VERSION, DistributionPolicy } from 'commons';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingKeys, settingText, settingFailure } from '../launcherskill/SettingsSkillValues';
 import { PreferenceManager } from 'feature_system';
 import { SideloadUpdateViewModel, SideloadUpdatePageParams } from '../sideload/SideloadUpdateViewModel';
 
@@ -63,7 +65,51 @@ export struct SideloadUpdateContent {
   };
 
   /** 先建立窗口和订阅，首次联网由根节点onAppear触发，避免未显示时启动官方登录。 */
+  private skillPrompt_: boolean = false;
+
+  /** 更新所有权留在同一窗口的 Coordinator；拒绝拿旧活动或旧阶段推进新的更新。 */
+  private async skillUpdate_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    const vm = this.viewModel;
+    if (!this.windowInteractive() || DistributionPolicy.isStore()) return settingFailure('notInteractive');
+    if (method === 'getActiveLauncherUpdate' && settingKeys(args,[])) {
+      return {'state':'ready','activityId':vm.activityId,'phase':vm.phase,'version':vm.version,'progress':vm.progress,
+        'checkingConnection':vm.checking,'connectionReady':vm.connectionReady,'needsLogin':vm.needsLogin,
+        'loginVisible':vm.loginVisible,'recovery':vm.recoveryAction,'failedPhase':vm.failedPhase,'canContinue':this.primaryEnabled()};
+    }
+    if (method !== 'controlActiveLauncherUpdate' || !settingKeys(args,['activityId','phase','operation']) ||
+      args['activityId'] !== vm.activityId || args['phase'] !== vm.phase || this.skillPrompt_) return settingFailure('updateChanged');
+    const op = settingText(args,'operation');
+    if (op === 'details') { this.detailsVisible=true; return {'state':'needsUser','reason':'updateDetails'}; }
+    if (op === 'viewActivity' && vm.activityId > 0 && !vm.finishing && !this.installationPending()) {
+      return await this.openActivity() ? {'state':'needsUser','reason':'activity'} : settingFailure('activityPageUnavailable');
+    }
+    if (op === 'manualPort' || op === 'retryConnection' || op === 'wirelessSettings') {
+      if (!vm.working || vm.connectionReady || this.installationPending() || vm.finishing || vm.runtimeRetired || vm.checking) return settingFailure('notAvailable');
+      if (op === 'wirelessSettings') return await vm.openDebugSettings() ? {'state':'needsUser','reason':'wirelessSettings'} : settingFailure('systemSettingsUnavailable');
+      if (!vm.connectionRetry && !this.manualPort) return settingFailure('notAvailable');
+      if (op === 'manualPort') { this.manualPort=true; return {'state':'needsUser','reason':'enterPortInApp'}; }
+      this.retryConnection(); return {'state':'accepted','activityId':vm.activityId};
+    }
+    if (op !== 'continue' && op !== 'close') return settingFailure('invalidOperation');
+    if (op === 'continue' && !this.primaryEnabled()) return settingFailure('busy');
+    const phase=vm.phase, id=vm.activityId, version=vm.version;
+    const label=op === 'close' ? '退出当前更新界面' : this.primaryLabel();
+    this.skillPrompt_=true;
+    try {
+      LauncherSkillBus.awaitingUser(method);
+      const answer=await this.getUIContext().getPromptAction().showDialog({title:'应用更新',message:label+'？'+(version?' 目标版本 '+version:''),
+        buttons:[{text:'取消',color:this.theme.textSecondary as string},{text:'确认',color:this.theme.actionText as string}]});
+      if (answer.index !== 1) return {'state':'cancelled'};
+      if (!this.windowInteractive() || vm !== this.viewModel || vm.phase !== phase || vm.activityId !== id || vm.version !== version ||
+        (op === 'continue' && (!this.primaryEnabled() || this.primaryLabel() !== label))) return settingFailure('updateChanged');
+      if (op === 'close') this.close(); else this.runPrimary();
+      return {'state':'accepted','activityId':id};
+    } finally {this.skillPrompt_=false;}
+  }
+
   aboutToAppear(): void {
+    LauncherSkillBus.bind('activeUpdate',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.skillUpdate_(method,args), (): boolean => this.windowInteractive() && !DistributionPolicy.isStore());
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.stage = context.windowStage; this.appWindow = this.stage.getMainWindowSync();
     this.previousKeepScreenOn = this.appWindow.getWindowProperties().isKeepScreenOn;
@@ -101,6 +147,7 @@ export struct SideloadUpdateContent {
 
   /** 框架卸载只解除本视图资源；显式退出由按钮/Back命令撤销本轮许可。 */
   aboutToDisappear(): void {
+    LauncherSkillBus.unbind('activeUpdate',this);
     this.stage?.off('windowStageLifecycleEvent', this.stageListener); this.stage = undefined;
     this.appWindow?.off('windowEvent', this.windowListener);
     if (this.factsTimer >= 0) clearTimeout(this.factsTimer); this.factsTimer = -1;
@@ -291,12 +338,13 @@ export struct SideloadUpdateContent {
   }
 
   /** 记录仅在原流程允许的非忙态打开，先完成原取消/关闭协议，再使用已有活动记录页面。 */
-  private openActivity(): void {
+  private async openActivity(): Promise<boolean> {
     if (this.viewModel.activityId <= 0 || this.viewModel.working || this.viewModel.finishing ||
-      this.viewModel.phase === 'dispatch-intent' || this.viewModel.phase === 'installing') return;
+      this.viewModel.phase === 'dispatch-intent' || this.viewModel.phase === 'installing') return false;
     const id = this.viewModel.activityId;
     this.close();
-    this.getUIContext().getRouter().pushUrl({ url: 'pages/ActivityLogPage', params: { 'activityId': id, 'view': 'overview' } });
+    try { await this.getUIContext().getRouter().pushUrl({ url: 'pages/ActivityLogPage', params: { 'activityId': id, 'view': 'overview' } }); return true; }
+    catch (_) { return false; }
   }
 
   /** 标题只说明更新状态；容量归下载正文，日期归已有详情区，固定高度同步收紧为一行。 */

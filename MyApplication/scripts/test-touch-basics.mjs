@@ -1,5 +1,6 @@
 /** 基础触控的生产模型/组件方法回归：真实几何、接受态、教学隔离与解除绑定，不重写产品逻辑。 */
 import assert from 'node:assert/strict';
+import { actionUiReceiver, loadActionComponent } from './lib/unified-actions-fixture.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -383,7 +384,7 @@ check('pointer和wheel手指身份、余量与取消不会相互继承',()=>{
   m.startPad(4,10,20);m.movePad(5,50,80);m.movePad(4,15,17);m.endPad(4);m.movePad(4,40,50);
   assert.deepEqual(moves,[[5,-3]]);
   m.startWheel(2,100);m.moveWheel(2,93);m.moveWheel(2,87);m.endWheel(2);
-  assert.deepEqual(wheels,[-1]);m.startWheel(3,100);m.moveWheel(3,89);assert.deepEqual(wheels,[-1]);m.releaseAll();
+  assert.deepEqual(wheels,[1]);m.startWheel(3,100);m.moveWheel(3,89);assert.deepEqual(wheels,[1]);m.releaseAll();
 });
 check('entry真实sink停用后拒绝新动作且关闭补放',()=>{
   const emitted=[];
@@ -795,7 +796,7 @@ check('解除与取消的真实选择器结果不同，显式未绑定可保存�
 });
 check('低高度横屏的编辑器与改键弹窗保留可达的保存/取消区域',()=>{
   const editor=component('entry/src/main/ets/components/LayoutEditor.ets','LayoutEditor',
-    ['compactPanel','panelChromeH','panelMinContentH','panelMaxTop','panelTopBase','panelContentMaxH']);
+    ['wideToolPanel_','compactPanel','panelChromeH','panelMinContentH','panelMaxTop','panelTopBase','panelContentMaxH']);
   for(const height of [180,240,320,360,480,720]) {
     for(const panelY of [-1,12,height-10]) {
       Object.assign(editor,{screenHeight:height,panelY,panelDragDy:0});
@@ -974,10 +975,10 @@ check('单个与批量复制超视口合法大控件都保持零下界且整份�
 });
 
 check('真实全局缩放Slider两次拖动分两步撤销，同值End和离散Click正确收口',()=>{
-  const editor=component(editorFile,'LayoutEditor',['beginSliderUndo','prepareSliderChange'],{SliderChangeMode:sliderModes});
+  const editor=component(editorFile,'LayoutEditor',['beginSliderUndo','prepareSliderChange','setOverallStyle_'],{SliderChangeMode:sliderModes});
   const snapshots=[];Object.assign(editor,{sliderUndoKey:'',globalScale:1,refreshControls(){},pushUndo(){snapshots.push(this.globalScale);this.sliderUndoKey='';}});
   const onChange=originalComponentCallback(editorFile,'LayoutEditor','GlobalLayoutPanel_',(node,tree)=>
-    compiler.isArrowFunction(node)&&node.getText(tree).includes("prepareSliderChange('globalScale'"),editor);
+    compiler.isArrowFunction(node)&&node.getText(tree).includes("setOverallStyle_('globalScale'"),editor);
   onChange(100,sliderModes.Begin);onChange(80,sliderModes.Moving);onChange(80,sliderModes.End);
   onChange(80,sliderModes.Begin);onChange(60,sliderModes.Moving);onChange(60,sliderModes.End);
   assert.deepEqual(snapshots,[1,.8]);assert.equal(editor.globalScale,.6);assert.equal(editor.sliderUndoKey,'');
@@ -991,7 +992,8 @@ check('触控选项原Slider阶段贯通至宿主，重复值结束不丢下一�
     {normalizeTouchPreferences:touch.normalizeTouchPreferences,SliderChangeMode:sliderModes});
   const snapshots=[];Object.assign(editor,{touch:new touch.TouchConfiguration(),sliderUndoKey:'',pushUndo(){snapshots.push(this.touch.menuSensitivity);this.sliderUndoKey='';}});
   const panel=component('entry/src/main/ets/components/TouchOptionsEditor.ets','TouchOptionsEditor',['number','commit'],
-    {normalizeTouchPreferences:touch.normalizeTouchPreferences,TouchConfiguration:touch.TouchConfiguration});
+    {normalizeTouchPreferences:touch.normalizeTouchPreferences,TouchConfiguration:touch.TouchConfiguration,
+      touchNumberDraft:makePureEtsLoader({gamecontrol:touch})('entry/src/main/ets/runtime/TouchOptionDraft.ets').touchNumberDraft});
   Object.assign(panel,{value:editor.touch,onChange:(value,key,mode)=>{editor.applyTouchChange(value,key,mode);panel.value=editor.touch;}});
   const widget={onChange:(value,mode)=>panel.number('menuSpeed',value,mode)};
   const onChange=originalComponentCallback('entry/src/main/ets/components/TouchOptionsEditor.ets','TouchOptionSlider','build',
@@ -1003,18 +1005,19 @@ check('触控选项原Slider阶段贯通至宿主，重复值结束不丢下一�
 
 check('共享指针速度选项的真实菜单分支在直接操作和触摸板模式均可达',()=>{
   const file='entry/src/main/ets/components/TouchOptionsEditor.ets';
-  const ast=compiler.createSourceFile(file,fs.readFileSync(path.join(root,file),'utf8'),compiler.ScriptTarget.Latest,true);
-  const owner=ast.statements.find(node=>node.name?.getText(ast)==='TouchOptionsEditor');
-  const build=owner.members.find(node=>node.name?.getText(ast)==='build');let speed;
-  const visit=node=>{if(compiler.isCallExpression(node)&&node.expression.getText(ast)==='TouchOptionSlider'&&
-    node.arguments[0]?.getText(ast).includes("this.number('menuSpeed'"))speed=node;compiler.forEachChild(node,visit);};visit(build);
-  assert.ok(speed,'必须存在真实共享指针速度控件');
-  // 执行生产AST中包围此控件的条件表达式；不另写一份界面可见性判定来掩盖错误分支。
-  const guards=[];for(let node=speed;node&&node!==build;node=node.parent)if(compiler.isIfStatement(node))guards.push(node.expression.getText(ast));
-  const js=compiler.transpileModule('module.exports=function(){return '+guards.map(text=>'('+text+')').join('&&')+';};',
-    {compilerOptions:{target:compiler.ScriptTarget.ES2020,module:compiler.ModuleKind.CommonJS}}).outputText;
-  const module={exports:{}};new Function('module',js)(module);
-  for(const menuMode of ['direct','touchpad'])assert.equal(module.exports.call({section:'menu',value:{menuMode}}),true);
+  // 从生产 build 交付的次栏进入，执行真实滑杆回调；两个操作模式和两种排布共用同一速度设置。
+  const ui=actionUiReceiver(), sliders=[], writes=[];
+  const Screen=loadActionComponent(file,'TouchOptionsEditor',{methods:['build','Secondary_'],render:true,
+    globals:{...ui.globals,TouchOptionSlider:props=>sliders.push(props)},
+    dependencies:{'./GameSettingsNavigation':{InputSettingsColumns:props=>props.secondary(),InputSettingsGroup(){}}}});
+  const view=new Screen();
+  Object.assign(view,{palette:{},showSectionPicker:false,section:'menu',number:(...args)=>writes.push(args)});
+  for (const wide of [false,true]) for (const menuMode of ['direct','touchpad']) {
+    view.wide=wide;view.value={menuMode,menuSensitivity:1.4,menuHoldMs:350};sliders.length=0;
+    view.build();
+    const speed=sliders.find(item=>item.label===(menuMode==='direct'?'悬浮鼠标速度':'触摸板与悬浮鼠标速度'));
+    assert.equal(speed?.value,140);speed.onChange(150,7);assert.deepEqual(writes.at(-1),['menuSpeed',150,7]);
+  }
 });
 
 console.log(`[touch-basics] PASS ${cases} production model/component groups`);

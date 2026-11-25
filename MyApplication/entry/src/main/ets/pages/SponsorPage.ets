@@ -52,32 +52,48 @@ struct SponsorPage {
   }
 
   /** 收款码放大图「下载」→ 下载并经系统弹窗免权限存进相册。 */
+  @State private albumResult_: string = 'idle';
+  private albumGeneration_: number = 0;
+  aboutToDisappear(): void {
+    this.albumGeneration_++;
+    if (this.albumResult_ === 'waiting') this.albumResult_ = 'unknown';
+  }
   private handleImageDownload_(url: string) {
     // 商店没有赞助网页，历史下载回调也不能继续请求收款码。
-    if (DistributionPolicy.isStore()) return
-    if (!url || url.length === 0) return
-    if (!(url.startsWith('http://') || url.startsWith('https://'))) {
+    if (DistributionPolicy.isStore() || this.albumResult_ === 'waiting') return
+    const generation = ++this.albumGeneration_;
+    if (!url || !(url.startsWith('http://') || url.startsWith('https://'))) {
+      this.albumResult_ = 'unavailable';
       this.toast_('该图片需在浏览器中保存')
       return
     }
+    this.albumResult_ = 'waiting';
     this.toast_('正在保存收款码…')
     AlbumSaver.saveImageUrl(this.context, url).then((r) => {
+      if (generation !== this.albumGeneration_) return;
+      this.albumResult_ = r === 'saved' ? 'saved' : 'cancelled';
       this.toast_(r === 'saved' ? '已保存到相册' : '已取消')
     }).catch((e: Error) => {
+      if (generation !== this.albumGeneration_) return;
       hilog.warn(0x0000, TAG, 'save image failed: %{public}s', e.message)
+      this.albumResult_ = 'failed';
       this.toast_('保存失败：' + e.message)
     })
   }
 
   /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
-  onPageShow(): void { this.applyTheme_(); }
+  @State private webVisible_: boolean = false;
+  onPageShow(): void { this.webVisible_ = true; this.applyTheme_(); }
+  onPageHide(): void { this.webVisible_ = false; }
 
   build() {
     Column() {
       WebHostView({
+        hostPage: 'SponsorPage', hostVisible: this.webVisible_,
         theme: this.theme,
         topSafeHeight: this.topSafeHeight,
         src: SPONSOR_PAGE_URL,
+        albumResult: this.albumResult_,
         title: '支持作者',
         fallbackBrowserUrl: AMCL_WEB_BASE + '/sponsor',
         onDownloadUrl: (url: string) => { this.handleImageDownload_(url) },

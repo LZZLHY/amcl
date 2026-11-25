@@ -15,14 +15,19 @@ import { floatingDockReserveHeight } from 'commons';
 import { router, promptAction } from '@kit.ArkUI';
 import { ThemeColors } from 'commons';
 import { McVersionService, McVersion } from 'feature_core';
-import { JdkManager, JdkVersionInfo } from 'launch';
+import { JdkManager, JdkVersionInfo, RuntimeCatalogObservation, RuntimeRefreshResult } from 'launch';
+import { LauncherSkillBus } from '../../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingKeys, settingText, settingFailure, nextSettingsReceipt } from '../../launcherskill/SettingsSkillValues';
 import { ModBrowsePage } from '../ModBrowsePage';
 // v6.5：ModDlState 不再需要（ModBrowsePage 改为 registry.enqueue）
 import { AppIconName } from 'commons';
 import { AppIcon } from '../../components/AppIcon';
 import { VersionBlockIcon } from '../../components/VersionBlockIcon';
+import { VersionScrollEntrance } from '../../components/VersionScrollEntrance';
 import { classifyVersion, VersionCategory } from 'mods';
 import { DownloadAuxiliaryList } from '../../components/DownloadAuxiliaryList';
+import { UiMotion } from '../../components/UiMotion';
+import { downloadRowKey, VersionDownloadRowSource, VersionRowCue, versionRowCues, VersionRowsInitialFrame } from '../../components/VersionDownloadRows';
 import { DownloadSearchField } from '../../components/DownloadSearchField';
 
 // 顶级 Tab 元数据（与设计稿对齐：6 个一字排开）
@@ -30,6 +35,18 @@ interface DlTabMeta {
   idx: number
   icon: AppIconName
   label: string
+}
+/** 实际窗口中的卡片位置，索引不含 List 的首占位。 */
+interface VersionVisibleRow {
+  ver: McVersion
+  index: number
+  y: number
+  height: number
+}
+interface VersionRowsChange {
+  before: VersionVisibleRow[]
+  revealed: Set<string>
+  entering: boolean
 }
 const DL_TABS: DlTabMeta[] = [
   { idx: 0, icon: AppIconName.Game,         label: '版本' },
@@ -40,11 +57,133 @@ const DL_TABS: DlTabMeta[] = [
   { idx: 5, icon: AppIconName.Java,         label: 'JDK' },
 ]
 
+/** 同一实际仓库与运行时管理器的采样；本机依然可用的槽不会因为云端失败而消失。 */
+export interface RuntimeSlotInventory {
+  catalog: RuntimeCatalogObservation;
+  slots: JdkVersionInfo[];
+}
+
 @Component
 export struct DownloadTab {
+  /** 系统智能体与目录行使用同一推荐、已装状态与父层事务；所有目标只从本轮真实目录取得。 */
+  skillInteractive: () => boolean = (): boolean => false;
+  private slotDialogBusy_: boolean = false;
+  private importRef_: string = '';
+  private consumedNavCommand_: number = -1;
+  private importOutcome_: SettingsSkillData = { 'state':'unavailable' };
+
+  aboutToAppear(): void {
+    // 下载页可能在首次收到命令后才挂载。初次 Prop 赋值不会触发 Watch。
+    this.onNavCommand()
+    this.versionMounted_ = true
+    this.syncVersionVisibility_()
+    LauncherSkillBus.bind('runtimeSlots',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.runtimeSkill_(method,args), (): boolean => this.runtimeSkillActive_());
+  }
+  aboutToDisappear(): void {
+    this.versionMounted_ = false
+    this.syncVersionVisibility_()
+    LauncherSkillBus.unbind('runtimeSlots',this)
+  }
+
+  private runtimeSkillActive_(): boolean {
+    return this.hostVisible && this.dlSubTab === 5 && this.skillInteractive();
+  }
+  private slotView_(row: JdkVersionInfo): SettingsSkillData {
+    return { 'major':row.version,'installed':row.installed,'available':row.available,'imported':row.userImported,
+      'repairRequired':row.repairRequired === true,'rollback':row.rollback === true,'updateAvailable':row.updateAvailable,
+      'running':this.isJdkDownloading(row.version),'installedBuild':row.installedTag,'recommendedBuild':row.expectedTag };
+  }
+  private catalogSkillResult_(snapshot: RuntimeSlotInventory): SettingsSkillData {
+    const facts = snapshot.catalog;
+    const fetching = facts.phase === 'refreshing' || facts.phase === 'loadingCache';
+    const current = facts.phase === 'updated' && facts.usable && facts.catalogChannel === facts.requestedChannel;
+    const state = facts.phase === 'failed' ? 'failed' : fetching ? 'initializing' : current ? 'ready' : 'unknown';
+    return {'state':state,'channel':facts.requestedChannel,'checking':fetching,'importing':this.jdkImporting,
+      'catalogSource':facts.origin,'refreshState':facts.phase,'catalogChannel':facts.catalogChannel,
+      'catalogRevision':facts.revision,'recommendationUsable':facts.usable,'refreshSerial':facts.serial,
+      'reason':current?'':facts.phase==='failed'?'trustedCatalogNotUpdated':fetching?'readingCatalog':'noFreshCatalog',
+      'slots':snapshot.slots.map((row: JdkVersionInfo): SettingsSkillData => this.slotView_(row))};
+  }
+  private async runtimeSkill_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (!this.runtimeSkillActive_()) return settingFailure('notInteractive');
+    if (method === 'listJavaRuntimes' && settingKeys(args,[])) {
+      const snapshot=this.readRuntimeCatalog();
+      return snapshot ? this.catalogSkillResult_(snapshot) : {'state':'unknown','reason':'catalogUnavailable'};
+    }
+    if (method === 'readJavaArchiveImport' && settingKeys(args,['reference'])) {
+      return this.importRef_ && this.importRef_ === args['reference'] ? this.importOutcome_ : settingFailure('importExpired');
+    }
+    if (this.jdkImporting || this.jdkChecking || this.slotDialogBusy_ || this.importOutcome_['state'] === 'waiting') return settingFailure('busy');
+    if (method === 'refreshJavaRuntimes' && settingKeys(args,[])) {
+      const before=this.readRuntimeCatalog();
+      if (!before) return {'state':'unknown','reason':'catalogUnavailable'};
+      this.jdkActionEpoch_++;
+      const outcome=await this.onRefreshJdkCatalog();
+      const after=this.readRuntimeCatalog();
+      if (!after || after.catalog.selection !== before.catalog.selection ||
+        (before.catalog.phase !== 'configurationMismatch' && after.catalog.generation !== before.catalog.generation)) return {'state':'unknown','reason':'configurationChanged'};
+      if (after.catalog.serial === before.catalog.serial) return {'state':'unknown','reason':'refreshNotStarted'};
+      if (!outcome || outcome.catalog.channel !== after.catalog.catalogChannel || outcome.catalog.catalogRevision !== after.catalog.revision ||
+        outcome.ok !== (after.catalog.phase === 'updated')) return {'state':'unknown','reason':'refreshUnconfirmed'};
+      return this.catalogSkillResult_(after);
+    }
+    if (method === 'pickJavaRuntimeArchive' && settingKeys(args,[])) {
+      this.jdkActionEpoch_++;
+      const ref = nextSettingsReceipt();
+      this.importRef_ = ref;
+      this.importOutcome_ = {'state':'waiting'};
+      const selection = this.onJdkImport().then((outcome: SettingsSkillData): void => {
+        if (this.importRef_ === ref) this.importOutcome_ = outcome;
+      }).catch((): void => { if (this.importRef_ === ref) this.importOutcome_ = settingFailure('importUnconfirmed'); });
+      LauncherSkillBus.followUserDecision(method, selection);
+      return {'state':'needsUser','reference':ref,'reason':'systemFilePicker'};
+    }
+    if (method !== 'manageJavaRuntime' || !settingKeys(args,['major','operation'])) return settingFailure('invalidArguments');
+    return this.manageRuntimeSlot_(settingText(args,'major'), settingText(args,'operation'), true);
+  }
+
+  /** 两种入口在同一槽位上检查当前状态、请求用户确认，再交给父层执行。 */
+  private async manageRuntimeSlot_(major: string, operation: string, fromSkill: boolean = false): Promise<SettingsSkillData> {
+    if (!this.runtimeSkillActive_() || this.jdkImporting || this.jdkChecking || this.slotDialogBusy_ ||
+      this.importOutcome_['state'] === 'waiting') return settingFailure('busy');
+    const slot = this.jdkVersions.find((v: JdkVersionInfo): boolean => v.version === major);
+    if (!slot || this.isJdkDownloading(major)) return settingFailure('slotUnavailable');
+    const existing = slot.installed || slot.repairRequired === true;
+    if (operation === 'install') {
+      if (existing || !slot.available) return settingFailure('slotUnavailable');
+      this.jdkActionEpoch_++;
+      return this.onJdkDownload(major);
+    }
+    if (!existing || (operation !== 'remove' && operation !== 'replace') ||
+      (operation === 'replace' && !slot.updateAvailable && !slot.available)) return settingFailure('slotUnavailable');
+    const identity = this.readSlotIdentity(major);
+    if (!identity) return settingFailure('slotChanged');
+    this.slotDialogBusy_ = true;
+    const snapshot = JSON.stringify(this.slotView_(slot));
+    try {
+      const verb = operation === 'remove' ? '删除' : slot.userImported ? '改用官方包替换' : '重新安装、更新或修复';
+      if (fromSkill) LauncherSkillBus.awaitingUser('manageJavaRuntime');
+      const decision = await this.getUIContext().getPromptAction().showDialog({title:'管理 Java 运行时',
+        message:verb+' JDK '+major+'？当前构建：'+(slot.installedTag || '本机安装')+'。',
+        buttons:[{text:'取消',color:this.theme.textSecondary as string},{text:'确认',color:this.theme.actionText as string}]})
+        .catch((): undefined => undefined);
+      if (decision?.index !== 1) return {'state':'cancelled'};
+      const current = this.jdkVersions.find((v: JdkVersionInfo): boolean => v.version === major);
+      if (!current || !this.runtimeSkillActive_() || this.jdkImporting || this.jdkChecking ||
+        this.readSlotIdentity(major) !== identity || JSON.stringify(this.slotView_(current)) !== snapshot) return settingFailure('slotChanged');
+      this.jdkActionEpoch_++;
+      if (operation === 'remove') {
+        return this.onJdkDelete(major, identity) ? {'state':'ready','major':major,'removed':true} : settingFailure('removalFailed');
+      }
+      return this.onJdkUpdate(major);
+    } finally { this.slotDialogBusy_ = false; }
+  }
+
+
   @Prop theme: ThemeColors = {} as ThemeColors
   /** 原生主Tab保留组件时，由Index透传可见性，阻止后台动画续播。 */
-  @Prop hostVisible: boolean = true
+  @Prop @Watch('onVersionVisibilityInput_') hostVisible: boolean = true
   @Prop topSafeHeight: number = 0
   @Prop bottomSafeHeight: number = 0
   /** 手机横屏：true 时分类页签走左侧竖向侧边栏，右侧给内容/模组列表更宽空间。 */
@@ -58,7 +197,8 @@ export struct DownloadTab {
   @Prop jdkChannel: string = 'stable'
   @Prop jdkChecking: boolean = false
   @Prop jdkCatalogStatus: string = ''
-  onRefreshJdkCatalog: () => void = () => {}
+  readRuntimeCatalog: () => RuntimeSlotInventory | undefined = (): undefined => undefined
+  onRefreshJdkCatalog: () => Promise<RuntimeRefreshResult | undefined> = async (): Promise<RuntimeRefreshResult | undefined> => undefined
 
   // P1-MODS Phase 1.7：模组浏览页依赖
   @Prop mcDir: string = ''
@@ -83,10 +223,15 @@ export struct DownloadTab {
   @Prop @Watch('onNavCommand') navCommand: number = -1
 
   // 下载页内部状态
-  @State dlSubTab: number = 0
+  @State @Watch('onVersionVisibilityInput_') dlSubTab: number = 0
   @State mcVersionList: McVersion[] = []
   @State mcVersionsLoading: boolean = false
   @State mcVersionsError: string = ''
+  /** 同步结果出现在筛选栏下方；已有行始终可以搜索、滚动或打开。 */
+  @State private versionSyncText_: string = ''
+  private versionMounted_: boolean = false
+  private versionVisible_: boolean = false
+  private versionRequest_: number = 0
   /**
    * 版本筛选 chips —— 4 个独立 boolean，全部可单独切换 / 任意组合，**约束至少选一个**。
    *
@@ -96,17 +241,17 @@ export struct DownloadTab {
    * 至少选一个：handleFilterToggle 里做 guard —— 当前 chip 取消后会让所有都为 false
    * 时直接 return，UI 不变化。
    */
-  @State filterRelease: boolean = true
-  @State filterSnapshot: boolean = false
-  @State filterOld: boolean = false
-  @State filterAprilFools: boolean = false
-  @State versionSearch: string = ''
+  @State @Watch('filterVersionRows_') filterRelease: boolean = true
+  @State @Watch('filterVersionRows_') filterSnapshot: boolean = false
+  @State @Watch('filterVersionRows_') filterOld: boolean = false
+  @State @Watch('filterVersionRows_') filterAprilFools: boolean = false
+  @State @Watch('refilterVersionRows_') versionSearch: string = ''
   /** 输入焦点期间保持全部筛选可见，不把键盘编辑当作列表浏览。 */
   @State private versionSearchFocused_: boolean = false
   /** 显式进入版本配置或JDK操作时复位旧展示方向，业务任务仍由原父回调管理。 */
   @State private versionActionEpoch_: number = 0
   @State private jdkActionEpoch_: number = 0
-  private mcVersionService: McVersionService = new McVersionService()
+  mcVersionService: McVersionService = new McVersionService()
 
   // 回调
   /**
@@ -117,12 +262,13 @@ export struct DownloadTab {
    * VersionConfigPanel.classifyVersion 误判为 release，透传准确类别避免重复推断。
    */
   onSelectGameVersion: (ver: string, category: string) => void = () => {}
-  onJdkDelete: (version: string) => void = () => {}
-  onJdkDownload: (version: string) => void = () => {}
+  readSlotIdentity: (version: string) => string = (): string => ''
+  onJdkDelete: (version: string, identity: string) => boolean = (): boolean => false
+  onJdkDownload: (version: string) => SettingsSkillData = (): SettingsSkillData => settingFailure('notAvailable')
   /** 「更新」：与下载走同一条任务链，但强制重装（否则会被幂等门吞掉，见 JdkInstaller）。 */
-  onJdkUpdate: (version: string) => void = () => {}
+  onJdkUpdate: (version: string) => SettingsSkillData = (): SettingsSkillData => settingFailure('notAvailable')
   /** 「从本地压缩包导入」：由 entry 层弹文件选择器 + 选目标槽位。 */
-  onJdkImport: () => void = () => {}
+  onJdkImport: () => Promise<SettingsSkillData> = async (): Promise<SettingsSkillData> => settingFailure('notAvailable')
   /** 导入进行中（导入不走 registry，故单独一个标志）。 */
   @Prop jdkImporting: boolean = false
   // B-1 修复（2026-05-26）：按版本查询，让 17 / 21 能并发；
@@ -251,9 +397,6 @@ export struct DownloadTab {
     .onClick(() => {
       if (this.dlSubTab === tab.idx) return
       this.dlSubTab = tab.idx
-      if (tab.idx === 0 && this.mcVersionList.length === 0) {
-        this.loadVersionList()
-      }
     })
   }
 
@@ -282,10 +425,6 @@ export struct DownloadTab {
     .onClick(() => {
       if (this.dlSubTab === tab.idx) return
       this.dlSubTab = tab.idx
-      // 切到"版本" tab 时按需加载列表
-      if (tab.idx === 0 && this.mcVersionList.length === 0) {
-        this.loadVersionList()
-      }
     })
   }
 
@@ -366,29 +505,31 @@ export struct DownloadTab {
 
       DownloadAuxiliaryList({
         theme: this.theme, active: this.hostVisible && this.dlSubTab === 0,
-        resetKey: this.versionRetreatKey_(), blocked: this.versionSearchFocused_ || this.mcVersionsLoading,
+        resetKey: this.versionRetreatKey_(), blocked: this.versionSearchFocused_,
         firstEnabled: false, secondEnabled: true,
-        itemCount: this.getFilteredVersions().length,
-        hasResults: !this.mcVersionsLoading && !this.mcVersionsError && this.getFilteredVersions().length > 0,
+        itemCount: this.versionRowCount_, hasResults: this.versionRowCount_ > 0,
+        preserveRows: true, rowScroller: this.versionScroller_,
+        onVisibleRows: (first: number, last: number): void => { this.rememberVersionWindow_(first, last) },
+        onRowsScroll: (): void => { this.interruptRowsOnScroll_() },
+        rowsOverlay: () => { this.VersionDepartingRows_() },
         bottomInset: this.dlContentBottomPad(),
         // 箭头闭包固定父页this；直接传@Builder方法会在子组件中以子实例调用。
         firstLayer: () => { this.EmptyAuxiliary_() }, secondLayer: () => { this.VersionFilters_() },
         items: () => { this.VersionItems_() }, empty: () => { this.VersionEmpty_() },
-      }).layoutWeight(1)
+      }).layoutWeight(1).onAreaChange((_, area) => { this.versionPaneHeight_ = Number(area.height); this.versionGeometryChanged_() })
     }.width('100%').layoutWeight(1)
-    .onAppear(() => { if (this.mcVersionList.length === 0) this.loadVersionList() })
   }
 
-  /** 版本结果或辅助层身份变化时清除旧方向预算；不持久化自动退让状态。 */
+  /** 只有浏览条件或显式操作重置退让；后台请求、失败和增加版本均保留阅读位置。 */
   private versionRetreatKey_(): string {
     return this.versionSearch + ':' + this.filterRelease + ':' + this.filterSnapshot + ':' + this.filterOld
-      + ':' + this.filterAprilFools + ':' + this.mcVersionList.length + ':' + this.mcVersionsLoading
-      + ':' + this.mcVersionsError + ':' + this.versionActionEpoch_
+      + ':' + this.filterAprilFools + ':' + this.versionActionEpoch_
   }
 
   /** 原筛选状态仍由DownloadTab持有，逐层退让不改任何类别选择。 */
   @Builder
   private VersionFilters_() {
+    Column() {
       // 筛选 chips —— 4 个版本类别，全部可单独 / 组合切换，至少保留一个
       // 视觉上沿用原有的圆角胶囊 + 选中态 primary 蓝底；间距 8 vp 与原版一致
       //
@@ -427,29 +568,241 @@ export struct DownloadTab {
           .borderRadius(14)
           .onClick(() => { this.toggleFilter('aprilfools') })
         Blank()
-        Text('刷新')
+        Text(this.mcVersionsError ? '重试' : '刷新')
           .fontSize(12)
           .fontColor(this.theme.actionText)
-          .onClick(() => { this.loadVersionList(true) })
+          .enabled(!this.mcVersionsLoading)
+          .onClick(() => { this.loadVersionList() })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, bottom: 8 })
-
+      Row() {
+        Text('版本清单').fontSize(12).fontColor(this.theme.textSecondary)
+        Blank()
+        Text(this.versionSyncText_).id('version-browser-sync-status')
+          .fontSize(12).fontColor(this.mcVersionsError ? this.theme.errorText : this.theme.textSecondary)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').margin({ top: 6 })
+    }.padding({ left: 16, right: 16, bottom: 8 })
   }
 
-  /** 真实列表项保留版本身份key，首占位由唯一滚动宿主统一生成。 */
+  /** 空闲行不挂定时器。一个首帧调度放行整个视口，行的错峰延迟由合成动画完成。 */
+  private versionRows_: VersionDownloadRowSource = new VersionDownloadRowSource()
+  private versionScroller_: Scroller = new Scroller()
+  @State private versionRowCount_: number = 0
+  @State private versionCues_: Map<string, VersionRowCue> = new Map<string, VersionRowCue>()
+  @State private versionMotionRunning_: boolean = false
+  @State private newVersionIds_: Set<string> = new Set<string>()
+  private versionMotionFrame_: VersionRowsInitialFrame | null = null
+  private versionFirst_: number = -1
+  private versionLast_: number = -1
+  private versionPaneHeight_: number = 0
+  @State private stagedVersionChange_: VersionRowsChange | null = null
+  /** 几帧内几何仍未就绪时先显示正常卡片，仅留待测资料，下次原生布局继续该轮。 */
+  private deferredVersionChange_: VersionRowsChange | null = null
+  private versionMeasureAttempts_: number = 0
+  @State private departingVersions_: VersionVisibleRow[] = []
+  @State private versionExitOffsets_: Map<string, number> = new Map<string, number>()
+  @State private slidingVersions_: boolean = false
+  private versionVisualEpoch_: number = 0
+  /** 只保留本次浏览真正显示过的版本 ID。原生预取的行要等进入视口才消耗首次入场。 */
+  private seenVersionRows_: Set<string> = new Set<string>()
+  private versionUserScrolling_: boolean = false
+  private versionMotionAllowed_: boolean = false
+
+  private rememberVersionWindow_(first: number, last: number): void {
+    this.versionFirst_ = first
+    this.versionLast_ = last
+    this.versionGeometryChanged_()
+  }
+
+  private cancelVersionMotion_(): void {
+    this.versionVisualEpoch_++
+    this.versionMotionFrame_?.cancel()
+    this.versionMotionFrame_ = null
+    this.stagedVersionChange_ = null
+    this.deferredVersionChange_ = null
+    this.versionMeasureAttempts_ = 0
+    if (this.departingVersions_.length) this.departingVersions_ = []
+    this.slidingVersions_ = false
+    this.versionMotionRunning_ = false
+    if (this.versionCues_.size) this.versionCues_ = new Map<string, VersionRowCue>()
+  }
+
+  /** 输入版本号时立即呈现查询结果；主动选择类别才播放交错入场。 */
+  private refilterVersionRows_(): void {
+    this.versionUserScrolling_ = false
+    this.cancelVersionMotion_()
+    const rows = this.getFilteredVersions()
+    this.versionRows_.replace(rows)
+    this.versionRowCount_ = rows.length
+  }
+
+  private filterVersionRows_(): void {
+    const rows = this.getFilteredVersions()
+    const revealed = new Set<string>()
+    rows.forEach((row: McVersion): void => { if (!this.versionRows_.has(row.id)) revealed.add(row.id) })
+    this.changeVersionRows_(rows, false, revealed, true)
+  }
+
+  /** 索引含第 0 个辅助区占位。按 List 的真实矩形读到窗口边缘，未完成布局时等待其回调。 */
+  private visibleVersionRows_(): VersionVisibleRow[] {
+    const visible: VersionVisibleRow[] = []
+    if (this.versionLast_ < 1 || this.versionPaneHeight_ <= 0) return visible
+    try {
+      for (let i = Math.max(1, this.versionFirst_); i <= this.versionRows_.totalCount(); i++) {
+        const rect = this.versionScroller_.getItemRect(i)
+        if (rect.height <= 0 || rect.y >= this.versionPaneHeight_) break
+        if (rect.y + rect.height > 0) {
+          visible.push({ ver: this.versionRows_.getData(i - 1), index: i - 1, y: rect.y, height: rect.height })
+        }
+      }
+    } catch (_) { /* List 未挂载或正卸载，后续布局回调重新测量。 */ }
+    return visible
+  }
+
+  private interruptRowsOnScroll_(): void {
+    this.versionUserScrolling_ = true
+    if (this.stagedVersionChange_ !== null || this.deferredVersionChange_ !== null ||
+      this.departingVersions_.length || this.versionCues_.size) {
+      this.cancelVersionMotion_()
+    }
+  }
+  private versionGeometryChanged_(): void {
+    if (this.deferredVersionChange_ !== null) {
+      this.stagedVersionChange_ = this.deferredVersionChange_
+      this.deferredVersionChange_ = null
+      this.versionMeasureAttempts_ = 0
+    }
+    this.queueVersionMeasure_()
+  }
+
+  /** 同一轮只排一个回调。首屏数据先到时不猜行数，等真实索引与尺寸就绪再分配错峰。 */
+  private queueVersionMeasure_(): void {
+    if (this.stagedVersionChange_ !== null && this.versionMotionFrame_ === null) {
+      this.afterVersionLayout_((): void => { this.measureVersionChange_() })
+    }
+  }
+  private afterVersionLayout_(action: () => void): void {
+    const context = this.getUIContext()
+    this.versionMotionFrame_ = new VersionRowsInitialFrame(context, (): void => {
+      this.versionMotionFrame_ = null
+      action()
+    })
+    try {
+      context.postFrameCallback(this.versionMotionFrame_)
+    } catch (_) {
+      this.cancelVersionMotion_()
+    }
+  }
+
+  /** 先固定前后两次原生布局的坐标，再在下一帧放行动画。视口外只有曾被看见的旧卡片参与退场。 */
+  private measureVersionChange_(): void {
+    const change = this.stagedVersionChange_
+    if (change === null) return
+    const visible = this.visibleVersionRows_()
+    const last = visible.length ? visible[visible.length - 1] : undefined
+    // LazyForEach 可能先布局六项，再补齐同一高度下的其余行。第一批非空矩形并非整屏已就绪。
+    if (last === undefined || (last.index + 1 < this.versionRows_.totalCount() &&
+      last.y + last.height + 8 < this.versionPaneHeight_ - 0.5)) {
+      this.versionMeasureAttempts_++
+      if (this.versionMeasureAttempts_ < 3) {
+        this.queueVersionMeasure_()
+      } else {
+        this.departingVersions_ = []
+        this.stagedVersionChange_ = null
+        this.deferredVersionChange_ = change
+      }
+      return
+    }
+    const before = new Map<string, number>()
+    const after = new Map<string, number>()
+    change.before.forEach((row: VersionVisibleRow): void => { before.set(row.ver.id, row.y) })
+    visible.forEach((row: VersionVisibleRow): void => {
+      after.set(row.ver.id, row.y)
+      this.seenVersionRows_.add(row.ver.id)
+    })
+    this.versionCues_ = versionRowCues(before, after, change.revealed, change.entering)
+    const exits = change.before.filter((row: VersionVisibleRow): boolean => !after.has(row.ver.id))
+    const offsets = new Map<string, number>()
+    if (exits.length) {
+      const above = new Set<string>()
+      for (let i = 0; i < visible[0].index; i++) above.add(this.versionRows_.getData(i).id)
+      exits.forEach((row: VersionVisibleRow): void => {
+        const id = row.ver.id
+        offsets.set(id, !this.versionRows_.has(id) ? -8 : above.has(id) ? -this.versionPaneHeight_ : this.versionPaneHeight_)
+      })
+    }
+    this.versionExitOffsets_ = offsets
+    this.departingVersions_ = exits
+    this.stagedVersionChange_ = null
+    if (!this.versionCues_.size && !exits.length) return
+    const epoch = this.versionVisualEpoch_
+    this.afterVersionLayout_((): void => {
+      this.versionMotionRunning_ = true
+      if (!exits.length) return
+      this.getUIContext().animateTo({ duration: 290, curve: Curve.EaseOut, onFinish: (): void => {
+        if (epoch === this.versionVisualEpoch_) this.departingVersions_ = []
+      } }, (): void => { this.slidingVersions_ = true })
+    })
+  }
+
+  private changeVersionRows_(rows: McVersion[], entering: boolean, revealed: Set<string>, category: boolean): void {
+    this.cancelVersionMotion_()
+    this.versionUserScrolling_ = false
+    if (entering) this.seenVersionRows_.clear()
+    this.versionMotionAllowed_ = !UiMotion.reduced()
+    if (rows.length && this.hostVisible && this.dlSubTab === 0 && (category || entering || revealed.size > 0)
+      && this.versionMotionAllowed_) {
+      let play = true
+      // 后台新增只在顶部做让位；深处读取时由原生 List 保持锚点。主动筛选可以在任意位置播放。
+      if (!category && !entering) {
+        try { play = this.versionScroller_.currentOffset().yOffset <= 1 } catch (_) {}
+      }
+      if (play) {
+        const before: VersionVisibleRow[] = entering ? [] : this.visibleVersionRows_()
+        this.departingVersions_ = before
+        this.stagedVersionChange_ = { before: before, revealed: revealed, entering: entering }
+      }
+    }
+    this.versionRows_.replace(rows)
+    this.versionRowCount_ = rows.length
+    this.queueVersionMeasure_()
+  }
+
+  /** 目录提交与可见行通知在同一轮完成。缓存初次出现和回访可入场，后台无变化时保持行树。 */
+  private publishVersionRows_(versions: McVersion[], entering: boolean): void {
+    const previous = this.mcVersionList
+    const added: Set<string> = new Set<string>()
+    if (!entering && previous.length > 0 && versions !== previous) {
+      const known = new Set<string>(previous.map((row: McVersion): string => row.id))
+      versions.forEach((row: McVersion): void => { if (!known.has(row.id)) added.add(row.id) })
+    }
+    if (versions !== previous) this.mcVersionList = versions
+    const filtered = this.getFilteredVersions()
+    this.newVersionIds_ = added
+    this.changeVersionRows_(filtered, entering || previous.length === 0, added, false)
+  }
+
+  /** 起始姿态无过渡；原生参数只挂在卡片的位移和不透明度上，行的布局与点击立即可用。 */
+  private versionRowAnimation_(id: string): AnimateParam {
+    const cue = this.versionCues_.get(id)
+    return { duration: this.versionMotionRunning_ && cue ? cue.duration : 0,
+      delay: this.versionMotionRunning_ && cue ? cue.delay : 0, curve: Curve.EaseOut }
+  }
+
+  /** 懒列表仅构建实际视口及系统预载行；修改版本展示字段能更新对应行，旧版本键保持稳定。 */
   @Builder
   private VersionItems_() {
-    ForEach(this.getFilteredVersions(), (ver: McVersion) => {
+    LazyForEach(this.versionRows_, (ver: McVersion) => {
       ListItem() { this.VersionItem(ver) }
-    }, (ver: McVersion): string => ver.id)
+    }, (ver: McVersion): string => downloadRowKey(ver))
   }
 
   /** 网络、错误与空结果沿用原操作；没有真实内容时宿主禁止自动退让。 */
   @Builder
   private VersionEmpty_() {
     Column() {
-      if (this.mcVersionsLoading) {
+      if (this.mcVersionList.length === 0 && this.mcVersionsLoading) {
         Column() {
           LoadingProgress().width(40).height(40).color(this.theme.actionText)
           Text('正在获取版本列表...')
@@ -460,7 +813,7 @@ export struct DownloadTab {
         .width('100%')
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
-      } else if (this.mcVersionsError) {
+      } else if (this.mcVersionList.length === 0 && this.mcVersionsError) {
         Column() {
           Text(this.mcVersionsError)
             .fontSize(14)
@@ -473,7 +826,7 @@ export struct DownloadTab {
             .backgroundColor(this.theme.actionPrimary)
             .fontColor(this.theme.textOnPrimary)
             .margin({ top: 16 })
-            .onClick(() => { this.loadVersionList(true) })
+            .onClick(() => { this.loadVersionList() })
           Button('网络检测')
             .type(ButtonType.Capsule)
             .height(36)
@@ -488,7 +841,7 @@ export struct DownloadTab {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
         .padding(32)
-      } else if (this.getFilteredVersions().length === 0) {
+      } else if (this.versionRowCount_ === 0) {
         Column({ space: 12 }) {
           Text('没有匹配的 Minecraft 版本').fontSize(15).fontColor(this.theme.textSecondary)
           Text('可以清除搜索词，或切换上方的版本类别').fontSize(12).fontColor(this.theme.textHint)
@@ -500,6 +853,63 @@ export struct DownloadTab {
 
   @Builder
   VersionItem(ver: McVersion) {
+    VersionScrollEntrance({
+      shouldStage: (): boolean => this.shouldRevealScrolledRow_(ver.id),
+      onFirstVisible: (): boolean => this.markVisibleVersion_(ver.id),
+      content: () => { this.VersionCard_(ver) },
+    }).width('100%')
+      .onClick(() => { this.versionActionEpoch_++; this.onSelectGameVersion(ver.id, this.mcVersionToCategory(ver)) })
+      .opacity(this.versionRowOpacity_(ver.id))
+      .translate({ y: this.versionRowShift_(ver.id) })
+      .animation(this.versionRowAnimation_(ver.id))
+  }
+
+  private shouldRevealScrolledRow_(id: string): boolean {
+    return this.hostVisible && this.dlSubTab === 0 && this.versionMotionAllowed_
+      && this.versionUserScrolling_ && !this.seenVersionRows_.has(id)
+  }
+  private markVisibleVersion_(id: string): boolean {
+    if (!this.hostVisible || this.dlSubTab !== 0) return false
+    const firstOnScroll = this.shouldRevealScrolledRow_(id)
+    this.seenVersionRows_.add(id)
+    this.versionGeometryChanged_()
+    return firstOnScroll
+  }
+
+  /** 等待几何时，新行已有可读起点；旧行在布局切换的一帧由原位置上的展示副本接续。 */
+  private versionRowOpacity_(id: string): number {
+    const change = this.stagedVersionChange_
+    if (change !== null) {
+      if (change.entering || change.revealed.has(id)) return 0.42
+      if (this.departingVersions_.some((row: VersionVisibleRow): boolean => row.ver.id === id)) return 0
+    }
+    return this.versionMotionRunning_ ? 1 : (this.versionCues_.get(id)?.alpha ?? 1)
+  }
+  private versionRowShift_(id: string): number {
+    const change = this.stagedVersionChange_
+    if (change?.entering) return -7
+    if (change?.revealed.has(id)) return -9
+    return this.versionMotionRunning_ ? 0 : (this.versionCues_.get(id)?.y ?? 0)
+  }
+
+  /** 被一批快照推出窗口的正式版已被 LazyForEach 回收，沿原卡片位置绘制到窗口边缘。 */
+  @Builder
+  private VersionDepartingRows_() {
+    if (this.departingVersions_.length > 0) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        ForEach(this.departingVersions_, (row: VersionVisibleRow) => {
+          Column() { this.VersionCard_(row.ver) }.width('100%').padding({ left: 16, right: 16 })
+            .position({ x: 0, y: row.y })
+            .translate({ y: this.slidingVersions_ ? (this.versionExitOffsets_.get(row.ver.id) ?? 0) : 0 })
+            .opacity(this.slidingVersions_ ? 0 : 1)
+        }, (row: VersionVisibleRow): string => this.versionVisualEpoch_ + '/' + row.ver.id)
+      }.width('100%').height('100%').clip(true)
+      .hitTestBehavior(HitTestMode.None).accessibilityLevel('no-hide-descendants')
+    }
+  }
+
+  @Builder
+  private VersionCard_(ver: McVersion) {
     Row() {
       // 版本前的方块图标 —— release / snapshot / old / aprilfools 各有专属
       // PCL2 同款语义：草方块 / 命令方块 / 圆石 / 金块
@@ -525,6 +935,10 @@ export struct DownloadTab {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
       .margin({ left: 12 })
+      if (this.newVersionIds_.has(ver.id)) {
+        Text('新增').fontSize(11).fontColor(this.theme.actionText)
+          .margin({ right: 8 })
+      }
       AppIcon({ name: AppIconName.ArrowRight, iconSize: 16, color: this.theme.textHint })
     }
     .width('100%')
@@ -532,7 +946,6 @@ export struct DownloadTab {
     .backgroundColor(this.theme.bgCard)
     .borderRadius(this.theme.cardRadius)
     .shadow({ radius: this.theme.cardShadowRadius, color: this.theme.cardShadowColor })
-    .onClick(() => { this.versionActionEpoch_++; this.onSelectGameVersion(ver.id, this.mcVersionToCategory(ver)) })
   }
 
   /**
@@ -690,12 +1103,12 @@ export struct DownloadTab {
                   .fontColor(this.theme.textOnPrimary)
                   .enabled(!this.isJdkDownloading(info.version))
                   .margin({ right: 8 })
-                  .onClick(() => { this.jdkActionEpoch_++; this.onJdkUpdate(info.version) })
+                  .onClick(() => { this.manageRuntimeSlot_(info.version, 'replace') })
               }
               Button('删除')
                 .type(ButtonType.Capsule).height(32).fontSize(13)
                 .backgroundColor(this.theme.error).fontColor(this.theme.textOnPrimary)
-                .onClick(() => { this.jdkActionEpoch_++; this.onJdkDelete(info.version) })
+                .onClick(() => { this.manageRuntimeSlot_(info.version, 'remove') })
             } else if (info.available) {
               // B-1 修复（2026-05-26）：每个版本独立判断，下载 17 时 21 按钮仍可点
               Button(this.isJdkDownloading(info.version) ? '下载中' : '下载')
@@ -703,7 +1116,7 @@ export struct DownloadTab {
                 .backgroundColor(this.isJdkDownloading(info.version) ? this.theme.disabled : this.theme.actionPrimary)
                 .fontColor(this.theme.textOnPrimary)
                 .enabled(!this.isJdkDownloading(info.version))
-                .onClick(() => { this.jdkActionEpoch_++; this.onJdkDownload(info.version) })
+                .onClick(() => { this.manageRuntimeSlot_(info.version, 'install') })
             }
           }
           .width('100%').padding(16)
@@ -836,31 +1249,94 @@ export struct DownloadTab {
 
   /**
    * 响应父组件的受控二级 Tab 导航命令。解码 `navCommand % 10` 得到目标子页并切换。
-   * 版本子页（0）按需触发一次版本列表加载。命令为 -1（初始）时不动内部 tab。
+   * 命令为 -1（初始）时沿用当前分类；首次挂载与可见性监听共用版本页入口。
    */
   onNavCommand(): void {
-    if (this.navCommand < 0) return
+    if (this.navCommand < 0 || this.navCommand === this.consumedNavCommand_) return
     let sub = this.navCommand % 10
-    if (sub < 0 || sub > 5) return
+    if (!Number.isInteger(sub) || sub < 0 || sub > 5) return
+    this.consumedNavCommand_ = this.navCommand
     this.dlSubTab = sub
-    if (sub === 0 && this.mcVersionList.length === 0) {
-      this.loadVersionList()
+  }
+
+  /** 父层可在同一轮同时发布主 Tab 可见性和二级导航。离开立即失效，进入等属性发完再核实目标。 */
+  private onVersionVisibilityInput_(): void {
+    if (!this.versionMounted_) return
+    if (!this.hostVisible || this.dlSubTab !== 0) {
+      this.syncVersionVisibility_()
+      return
+    }
+    Promise.resolve().then((): void => { this.syncVersionVisibility_() })
+  }
+
+  /** 主 Tab 保活、二级导航和冷挂载统一按实际可见沿触发；退出即使旧回调失效。 */
+  private syncVersionVisibility_(): void {
+    const visible = this.versionMounted_ && this.hostVisible && this.dlSubTab === 0
+    if (visible === this.versionVisible_) return
+    this.versionVisible_ = visible
+    if (visible) {
+      this.loadVersionList(true)
+    } else {
+      this.versionRequest_++
+      this.mcVersionsLoading = false
+      this.cancelVersionMotion_()
     }
   }
 
-  private loadVersionList(forceRefresh: boolean = false) {
+  /** 同一 ID 的内容也可能被修订。按清单顺序保留未变对象，只向列表发布实际差异。 */
+  private applyVersionList_(versions: McVersion[], entering: boolean): number {
+    const previous = this.mcVersionList
+    // 最常见的是完全相同的条件响应；直接复用整个数组，避免重做索引与过滤。
+    const same = versions.length === previous.length && versions.every((row: McVersion, index: number): boolean =>
+      this.sameVersionRow_(row, previous[index]))
+    if (same) {
+      if (entering) this.publishVersionRows_(previous, true)
+      return 0
+    }
+    const byId = new Map<string, McVersion>()
+    previous.forEach((row: McVersion): void => { byId.set(row.id, row) })
+    let added = 0
+    const next = versions.map((row: McVersion): McVersion => {
+      const old = byId.get(row.id)
+      if (old === undefined) added++
+      return old !== undefined && this.sameVersionRow_(row, old) ? old : row
+    })
+    this.publishVersionRows_(next, entering)
+    return added
+  }
+
+  private sameVersionRow_(left: McVersion, right: McVersion): boolean {
+    return left.id === right.id && left.type === right.type && left.url === right.url
+      && left.releaseTime === right.releaseTime && left.displayDate === right.displayDate
+  }
+
+  /** 先采用当前来源允许的快照，再等待真实条件请求。已离开的请求不能覆盖下一次进入。 */
+  private async loadVersionList(entering: boolean = false): Promise<void> {
+    if (!this.versionVisible_ || this.mcVersionsLoading) return
+    const ticket = ++this.versionRequest_
     this.mcVersionsLoading = true
     this.mcVersionsError = ''
-    this.mcVersionService.getVersionList(forceRefresh).then((result) => {
-      this.mcVersionList = result.versions
-      this.mcVersionsLoading = false
-      hilog.info(0x0000, 'DownloadTab', 'Loaded %{public}d versions', this.mcVersionList.length)
-    }).catch((e: Error) => {
-      this.mcVersionsError = e.message || '获取版本列表失败'
-      this.mcVersionsLoading = false
-      // 失败路径原来只写 UI 不写日志，于是「列表拉不出来」在 hilog 里完全没有痕迹，
-      // 只能靠 McVersionService 那一行 warn 反推。成功路径有日志、失败路径没有是反的。
+    try {
+      const snapshot = this.mcVersionService.peekVersionList()
+      this.applyVersionList_(snapshot?.versions ?? [], entering)
+      const hadSnapshot = this.mcVersionList.length > 0
+      this.versionSyncText_ = hadSnapshot ? '后台校验中…' : '正在获取…'
+      const fresh = await this.mcVersionService.refreshVersionList()
+      if (ticket !== this.versionRequest_) return
+      const added = this.applyVersionList_(fresh.versions, !hadSnapshot)
+      this.versionSyncText_ = !hadSnapshot ? '已载入版本清单'
+        : added > 0 ? '清单新增 ' + added.toString() + ' 个版本' : '已同步'
+      hilog.info(0x0000, 'DownloadTab', 'Loaded %{public}d versions', fresh.versions.length)
+    } catch (e) {
+      if (ticket !== this.versionRequest_) return
+      // 请求期间来源可能收紧，失败时也只保留此刻仍允许展示的缓存。
+      const fallback = this.mcVersionService.peekVersionList()
+      this.applyVersionList_(fallback?.versions ?? [], false)
+      this.mcVersionsError = (e as Error).message || '获取版本列表失败'
+      this.versionSyncText_ = this.mcVersionList.length > 0 ? '刷新失败 · 已保留缓存' : '获取失败'
       hilog.error(0x0000, 'DownloadTab', 'Load version list failed: %{public}s', this.mcVersionsError)
-    })
+    } finally {
+      if (ticket === this.versionRequest_) this.mcVersionsLoading = false
+    }
   }
 }

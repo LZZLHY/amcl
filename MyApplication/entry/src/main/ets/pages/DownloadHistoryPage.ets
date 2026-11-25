@@ -27,6 +27,7 @@ import {
   getDownloadHistoryStore,
   ActivityCategory,
   ActivityStatus,
+  modLoaderDisplayName,
 } from 'feature_core';
 import { formatBytes } from 'feature_core';
 import { formatDurationMs } from 'commons';
@@ -60,6 +61,11 @@ import { ActivityListDataSource, ActivityListRow } from '../components/ActivityL
 import { ActivityFilter, ActivityDayGroup, ActivityDayStats, matchesActivity, groupActivities,
   activityTodayStats, activityCategory, activityCategoryLabel, activityStatusLabel, isAbnormalActivity,
   ActivityStatusBand, activityStatusBands, activityClock, activityDisplayTitle } from '../components/ActivityUiModel';
+
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { result, textArg } from '../launcherskill/LibraryResult';
+import { MessageDestination } from '../runtime/MessageDestination';
+import { getGameExportCoordinator } from '../export/GameExportCoordinator';
 
 const TAG = 'DownloadHistory'
 const ACTIVITY_FILTERS: ActivityFilter[] = [ActivityFilter.ALL, ActivityFilter.GAME, ActivityFilter.DOWNLOAD, ActivityFilter.EXPORT, ActivityFilter.ABNORMAL]
@@ -146,6 +152,8 @@ struct DownloadHistoryPage {
 
   aboutToAppear() {
     this.applyTheme_()
+    LauncherSkillBus.bind('history',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>this.historySkill_(method,args),
+      ():boolean=>this.hostVisible && AppStorage.get<boolean>('appInForeground')===true)
     // 首次路由进入随后必经 onPageShow；这里仅初始化主题。原先两处都读取，
     // 已就绪的存储会在生命周期间兑现微任务，导致同一首屏重复扫描账本、
     // 推进详情世代并重建列表。由显示事件统一读取，返回此页时仍取得最新记录。
@@ -165,7 +173,56 @@ struct DownloadHistoryPage {
   }
 
   /** 页面销毁即取消未完成只读投影，旧finally也不能在销毁后补发刷新。 */
-  aboutToDisappear(): void { this.onPageHide() }
+  aboutToDisappear(): void { LauncherSkillBus.unbind('history',this); this.onPageHide() }
+
+  /** 所有查询均基于实际历史仓库；队列记录、占用统计和持久化历史分别回报。 */
+  private async historySkill_(method:string,args:Record<string,Object>):Promise<Record<string,Object>> {
+    if (!this.hostVisible || this.selectionBusy || this.clearing || this.confirmingClear_ || this.showStorage || this.showQuickShare) return result('needsUser','historyBusy')
+    if (method==='listActivityHistory' && args['refresh']===true) await this.refreshRecords()
+    if (this.refreshing || !this.loaded) return result('initializing')
+    if (!this.hostVisible || this.loadError) return result('failed','historyUnavailable')
+    if (method==='listActivityHistory') {
+      const filter=(textArg(args,'filter') || 'all') as ActivityFilter
+      const query=textArg(args,'query'),offset=args['offset']===undefined?0:args['offset'] as number
+      if (!ACTIVITY_FILTERS.includes(filter) || !Number.isSafeInteger(offset) || offset<0 || query.length>180) return result('failed','invalidArguments')
+      const visible=this.records.filter(r=>matchesActivity(r,query,filter))
+      const today:Record<string,Object>={'total':this.stats.total,'done':this.stats.completed,'failed':this.stats.failed,'interrupted':this.stats.interrupted}
+      return {'state':'ready','count':visible.length,'offset':offset,'localLogBytes':this.ledgerBytes,
+        'today':today,
+        'records':visible.slice(offset,offset+50).map((r):Record<string,Object>=>({'activityId':r.startedAt,'title':activityDisplayTitle(r),'category':activityCategory(r),
+          'status':r.status,'hasEvidence':this.hasEvidence_(r)}))}
+    }
+    if (method==='manageActivityHistory') {
+      const action=textArg(args,'action')
+      if (action==='storage') { this.showStorage=true;return result('needsUser','storagePanel'); }
+      if (action==='shares') {
+        const opened = await this.pushHistoryRoute_('pages/LogShareHistoryPage', {});
+        return opened ? result('needsUser','shareHistory') : result('unknown','destinationUnconfirmed');
+      }
+      if (action==='clear' && this.canClear_()) {
+        LauncherSkillBus.awaitingUser(method);
+        await this.confirmClearAll_()
+        return !this.clearError && !this.records.length && this.loaded ? result('ready') : result('unknown','notCleared')
+      }
+      return result('failed','managementUnavailable')
+    }
+    if (method!=='openHistoryRecord') return result('failed','unsupportedOperation')
+    const record=this.records.find(r=>r.startedAt===args['activityId'])
+    if (!record) return result('failed','recordNotFound')
+    const action=textArg(args,'action')
+    let shown: boolean
+    if (action==='overview') shown = await this.openOverview_(record)
+    else if (action==='log' && this.hasEvidence_(record)) shown = await this.openActivityLog_(record)
+    else if (action==='exportResult' && record.exportTaskId) shown = await this.openGameExport_(record)
+    else if ((action==='share' || action==='customShare') && this.hasEvidence_(record)) {
+      this.doUploadActivity_(record, action === 'customShare' ? 'advanced' : 'quick')
+      shown = this.showQuickShare && this.shareRecords[0]?.startedAt === record.startedAt
+    }
+    else if (action==='error' && isAbnormalActivity(record)) shown = await this.openErrorSheet_(record)
+    else return result('failed','actionUnavailable')
+    return {'state':shown ? 'needsUser' : 'unknown','reason':shown ? 'continueInLauncher' : 'destinationUnconfirmed',
+      'destinationReached':shown,'activityId':record.startedAt}
+  }
 
   private applyTheme_(): void {
     let systemIsDark = (this.currentColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK)
@@ -382,36 +439,56 @@ struct DownloadHistoryPage {
   }
 
   /** 平板侧栏只切换选中活动，手机则进入相同工作区的路由包装。 */
-  private openOverview_(record: DownloadHistoryRecord): void {
-    if (this.selectionBusy) { this.safeToast_('正在发送或导出，请稍后切换活动'); return }
+  private async openOverview_(record: DownloadHistoryRecord): Promise<boolean> {
+    if (this.selectionBusy) { this.safeToast_('正在发送或导出，请稍后切换活动'); return false }
     // 导出记录的主行动是恢复任务结果，读取私有记录后由向导展示其真实请求与终态。
     // 不能把导出当成下载日志，也不依赖当前首页版本或自动重新写入用户保存目标。
-    if (this.cat_(record) === ActivityCategory.GAME_EXPORT) { this.openGameExport_(record); return }
+    if (this.cat_(record) === ActivityCategory.GAME_EXPORT) return this.openGameExport_(record)
     if (this.viewportWidth >= 840) {
-      if (this.selectedId === record.startedAt) return
-      this.selectedId = record.startedAt
-      this.selectedRecords = [record]
-    } else {
-      const params: Record<string, Object> = { 'activityId': record.startedAt, 'view': 'overview',
-        'diagnosisTitle': this.cardTitle_(record) }
-      try {
-        this.getUIContext().getRouter().pushUrl({ url: 'pages/ActivityLogPage', params: params })
-          .catch((): void => { this.safeToast_('无法打开活动详情，请重试') })
-      } catch (e) { this.safeToast_('无法打开活动详情，请重试') }
+      if (this.selectedId !== record.startedAt || this.selectedRecords[0]?.startedAt !== record.startedAt) {
+        this.selectedId = record.startedAt
+        this.selectedRecords = [record]
+      }
+      return this.selectedId === record.startedAt && this.selectedRecords[0]?.startedAt === record.startedAt
+    }
+    return this.pushHistoryRoute_('pages/ActivityLogPage', { 'activityId':record.startedAt, 'view':'overview',
+      'diagnosisTitle':this.cardTitle_(record) })
+  }
+
+  /** 路由交接必须回读目标页和原活动/任务参数；投递 Promise 或同名页面均不能作为完成回执。 */
+  private async pushHistoryRoute_(url: string, params: Record<string,Object>): Promise<boolean> {
+    try {
+      const nav = this.getUIContext().getRouter()
+      await nav.pushUrl({ url:url, params:params })
+      const name = nav.getState().name
+      if (name !== url && 'pages/' + name !== url) return false
+      const actual = nav.getParams() as Record<string,Object> | undefined
+      return Object.keys(params).every((key:string): boolean => actual?.[key] === params[key])
+    } catch (_) {
+      this.safeToast_('无法打开活动目标页面，请重试')
+      return false
     }
   }
 
   /** 历史只传递受控任务身份；目标 URI 留在私有任务记录，路由不会恢复执行授权。 */
-  private async openGameExport_(record: DownloadHistoryRecord): Promise<void> {
+  private async openGameExport_(record: DownloadHistoryRecord): Promise<boolean> {
     const id: string = record.exportTaskId ?? ''
     if (!/^[0-9]+-[a-zA-Z0-9-]+$/.test(id) || !record.mcDir) {
       this.safeToast_('这条导出记录缺少可恢复的任务身份，请从版本管理重新导出')
-      return
+      return false
     }
     try {
-      await this.getUIContext().getRouter().pushUrl({ url: 'pages/GameExportPage',
-        params: { 'mcRoot': record.mcDir, 'versionId': record.versionName, 'taskId': id } })
-    } catch (e) { this.safeToast_('无法打开导出结果：' + (e as Error).message) }
+      const coordinator = getGameExportCoordinator()
+      const restored = await coordinator.restoreTask(id)
+      const task = coordinator.getTask()
+      if (!restored || !task || task.id !== id || task.request.mcRoot !== record.mcDir || !this.hostVisible ||
+        !this.records.some((r:DownloadHistoryRecord): boolean => r.startedAt === record.startedAt && r.exportTaskId === id && r.mcDir === record.mcDir)) {
+        this.safeToast_('原导出任务已不可用或活动已改变')
+        return false
+      }
+      // 历史行的版本名可能是基础游戏版本；导出实例及目录来自原任务快照。
+      return this.pushHistoryRoute_('pages/GameExportPage', { 'mcRoot':task.request.mcRoot, 'versionId':task.request.versionId, 'taskId':id })
+    } catch (e) { this.safeToast_('无法打开导出结果：' + (e as Error).message); return false }
   }
 
   /** 占用与撤回集中在管理菜单，不再用常驻页脚挤占活动列表；取消不产生任何副作用。 */
@@ -426,7 +503,7 @@ struct DownloadHistoryPage {
         { text: '日志占用、保留与空间提醒', color: this.theme.actionText as string },
       ],
     }).then((result: promptAction.ActionMenuSuccessResponse): void => {
-      if (result.index === 0) this.getUIContext().getRouter().pushUrl({ url: 'pages/LogShareHistoryPage' })
+      if (result.index === 0) this.pushHistoryRoute_('pages/LogShareHistoryPage', {})
       else if (result.index === 2) this.showStorage = true
       else if (this.canClear_()) this.confirmClearAll_()
       else this.safeToast_('当前没有可清理的活动，或操作仍在进行中')
@@ -452,9 +529,9 @@ struct DownloadHistoryPage {
   }
 
   /** 快捷按钮只开启公开默认分享，不自动提交作者或启动 AI。 */
-  private doUploadActivity_(record: DownloadHistoryRecord): void {
+  private doUploadActivity_(record: DownloadHistoryRecord, mode: string = 'quick'): void {
     if (this.selectionBusy) return
-    this.shareRecords = [record]; this.shareMode = 'quick'; this.showQuickShare = true
+    this.shareRecords = [record]; this.shareMode = mode; this.showQuickShare = true
   }
 
   private shareVisibilityChanged_(): void { if (this.showQuickShare) this.shareNonce++ }
@@ -466,7 +543,7 @@ struct DownloadHistoryPage {
       { text: '查看原始日志', color: this.theme.actionText as string },
       { text: '查看活动详情', color: this.theme.actionText as string },
     ] }).then((result: promptAction.ActionMenuSuccessResponse): void => {
-      if (result.index === 0) { this.shareRecords = [record]; this.shareMode = 'advanced'; this.showQuickShare = true }
+      if (result.index === 0) this.doUploadActivity_(record, 'advanced')
       else if (result.index === 1) this.openActivityLog_(record)
       else if (result.index === 2) this.openOverview_(record)
     }).catch((): void => {})
@@ -517,26 +594,16 @@ struct DownloadHistoryPage {
    * 沿用项目里已有的做法：把请求写进 AppStorage，Index 用 `@StorageLink` + `@Watch`
    * 消费（与 `pendingLayoutImportUri`、`amcl_open_netdiag_nonce` 同一套路），然后返回。
    */
-  private openErrorSheet_(record: DownloadHistoryRecord): void {
-    AppStorage.setOrCreate('amcl_open_error_sheet_session', record.startedAt)
-    try {
+  private openErrorSheet_(record: DownloadHistoryRecord): Promise<boolean> {
+    return MessageDestination.open(record.startedAt, (): void => {
       this.getUIContext().getRouter().back()
-    } catch (e) {
-      hilog.warn(0x0000, TAG, 'router.back failed: %{public}s', (e as Error).message)
-    }
+      AppStorage.setOrCreate('amcl_open_error_sheet_session', record.startedAt)
+    })
   }
 
   /** 打开该活动的完整日志（活动账本 · L5）。 */
-  private openActivityLog_(record: DownloadHistoryRecord): void {
-    try {
-      this.getUIContext().getRouter().pushUrl({
-        url: 'pages/ActivityLogPage',
-        // 路由参数名会经过属性混淆；跨页面读取必须使用稳定的字符串键。
-        params: { 'activityId': record.startedAt },
-      })
-    } catch (e) {
-      hilog.warn(0x0000, TAG, 'open activity log failed: %{public}s', (e as Error).message)
-    }
+  private openActivityLog_(record: DownloadHistoryRecord): Promise<boolean> {
+    return this.pushHistoryRoute_('pages/ActivityLogPage', { 'activityId':record.startedAt })
   }
 
   /** 全量清理不可撤销，确认前列出条数与占用；任何受保护活动存在时禁用入口。 */
@@ -653,13 +720,12 @@ struct DownloadHistoryPage {
   }
 
   private loaderTag(record: DownloadHistoryRecord): string {
-    if (record.loaderType === 'forge') {
-      return record.loaderVersion ? 'Forge ' + record.loaderVersion : 'Forge'
+    // 用活动落盘的加载器，而不是按当前实例或记录标题推断。
+    const name = modLoaderDisplayName(record.loaderType)
+    if (!name) {
+      return !record.loaderType || record.loaderType === 'vanilla' ? '原版' : '未知加载器'
     }
-    if (record.loaderType === 'fabric') {
-      return record.loaderVersion ? 'Fabric ' + record.loaderVersion : 'Fabric'
-    }
-    return '原版'
+    return record.loaderVersion ? name + ' ' + record.loaderVersion : name
   }
 
   build() {

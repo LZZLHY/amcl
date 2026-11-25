@@ -78,9 +78,19 @@
     },
     {
       "name": "lwjgl-jemalloc",
-      "state": "intentional-fallback",
-      "reason": "The allocator probe must miss JEmalloc and continue to LWJGL StdlibAllocator because no OHOS libjemalloc.so is shipped.",
-      "evidence": "scripts/fixtures/lwjgl-target-manifests/lwjgl-jemalloc-intentional-fallback.json"
+      "state": "provided",
+      "native": {
+        "kind": "bundle-file",
+        "artifact": "entry/libs/arm64-v8a/libamcl_lwjgl_jemalloc.so",
+        "lockSection": "jemalloc-native",
+        "requiredSymbols": ["je_malloc", "je_free", "je_realloc", "je_aligned_alloc"],
+        "libraryName": {
+          "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
+          "key": "org.lwjgl.system.jemalloc.libname",
+          "kind": "modern-hap-absolute",
+          "value": "libamcl_lwjgl_jemalloc.so"
+        }
+      }
     },
     {
       "name": "lwjgl-openal",
@@ -112,8 +122,7 @@
       "native": {
         "kind": "bundle-file",
         "artifact": "entry/libs/arm64-v8a/libSDL3.so",
-        "size": 2257888,
-        "sha256": "853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064",
+        "lockSection": "sdl3-native",
         "requiredSymbols": ["SDL_Init", "SDL_AMCL_AuxHostProtocolV2"],
         "libraryName": {
           "source": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",

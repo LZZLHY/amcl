@@ -7,7 +7,19 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <vector>
+
+// 只在指定的单次 SubmitBatch 上启用分配失败；准备设备、读取回执和断言不参与计数。
+static thread_local bool countNew = false;
+static thread_local int allocationIndex = 0, failIndex = -1;
+void* operator new(std::size_t bytes) {
+    if (countNew && allocationIndex++ == failIndex) throw std::bad_alloc();
+    if (void* data = std::malloc(bytes ? bytes : 1)) return data;
+    throw std::bad_alloc();
+}
+void operator delete(void* data) noexcept { std::free(data); }
+void operator delete(void* data, std::size_t) noexcept { std::free(data); }
 
 namespace {
 using amcl::input::InputStateCore;
@@ -470,9 +482,43 @@ void TestLastActiveBlobExhaustionReturnsOverflowReset() {
     CHECK(h.Obs().queueOverflowResets == before.queueOverflowResets + 1u);
     CHECK(h.Obs().pressureRetirementsBlob == before.pressureRetirementsBlob);
 }
+// 在已有持键、抓取、文本租约和 255 条旧消息时提交两条，第二条需要全局复位。
+// 遍历末端真实分配点（覆盖 RESET 的接收者与入队）。发生拒绝时原接收者仍可逐条取回旧消息及文本。
+int RunResetAllocationTrial(int fail) {
+    Harness h;
+    const auto reader = h.Open(AMCL_INPUT_BACKEND_GLFW_PHYSICAL);
+    h.HoldAndCaptureAndText(); Drain(h.core, reader);
+    CHECK(h.Text(1) == AMCL_INPUT_OK);
+    for (int i = 0; i < 254; ++i) CHECK(h.Motion() == AMCL_INPUT_OK);
+    auto move = Event(AMCL_INPUT_EVENT_POINTER_RELATIVE, h.epoch);
+    move.header.source = AMCL_INPUT_SOURCE_MOUSE; move.payload.pointerRelative.rawDx = 1;
+    const AmclInputEvent batch[] = {move,move};
+    const auto before = h.Obs();
+    allocationIndex = 0; failIndex = fail; countNew = true;
+    const int result = h.core.SubmitBatch(batch, 2);
+    countNew = false; const int measured = allocationIndex;
+    if (fail < 0) {
+        CHECK(result == AMCL_INPUT_OVERFLOW_RESET);
+        const auto received = Drain(h.core, reader);
+        CHECK(received.events.size() == 1 && received.events.front().header.eventType == AMCL_INPUT_EVENT_RESET);
+    } else {
+        CHECK(result == AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED);
+        CHECK(h.Snapshot().heldControlCount == 1 && h.Snapshot().queuedEventCount == 255 && h.Snapshot().blobBytes == 1);
+        const auto after = h.Obs();
+        CHECK(after.lastSequence == before.lastSequence && after.accepted == before.accepted &&
+              after.queueDiscarded == before.queueDiscarded && after.queueOverflowResets == before.queueOverflowResets);
+        const auto received = Drain(h.core, reader);
+        CHECK(received.events.size() == 255 && received.events.front().header.eventType == AMCL_INPUT_EVENT_TEXT_COMMIT);
+        h.AssertLive();
+    }
+    return measured;
+}
 } // namespace
 
 int main() {
+    const int calls = RunResetAllocationTrial(-1);
+    CHECK(calls > 4);
+    for (int point = calls - 4; point < calls; ++point) RunResetAllocationTrial(point);
     TestPresentedQualification();
     TestLocalRetirement(AMCL_INPUT_BACKEND_CONSUMER_RETIRE);
     TestLocalRetirement(AMCL_INPUT_BACKEND_CONSUMER_ABANDON);

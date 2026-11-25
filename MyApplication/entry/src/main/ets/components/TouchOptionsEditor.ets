@@ -8,6 +8,8 @@ import { TouchConfiguration, normalizeTouchPreferences, TOUCH_ACTION_NAMES, TOUC
 import { AppIconName } from 'commons'
 import { AppIcon } from './AppIcon'
 import { EditorPalette } from './TouchEditorTheme'
+import { InputSettingsColumns, InputSettingsGroup } from './GameSettingsNavigation'
+import { touchFlagDraft, touchNumberDraft, touchChoiceDraft, touchBindingDraft } from '../runtime/TouchOptionDraft';
 
 /** 带说明的开关行。基础类型 Prop 随父草稿同步，不在子组件保存第二份业务配置。 */
 @Component
@@ -15,6 +17,7 @@ export struct TouchOptionToggle {
   /** 宿主提供的实例显示palette，不写入用户布局或输入配置。 */
   @Prop palette: EditorPalette = new EditorPalette();
   @Prop label: string = ''
+  @Prop wide: boolean = false
   @Prop description: string = ''
   @Prop value: boolean = false
   onChange: (value: boolean) => void = (_value: boolean): void => {}
@@ -23,7 +26,7 @@ export struct TouchOptionToggle {
   build() {
     Row({ space: 12 }) {
       Column({ space: 3 }) {
-        Text(this.label).fontSize(14).fontColor(this.palette.text).width('100%')
+        Text(this.label).fontSize(this.wide ? 16 : 14).fontColor(this.palette.text).width('100%')
         if (this.description.length > 0) {
           Text(this.description).fontSize(12).fontColor(this.palette.muted).width('100%')
         }
@@ -42,6 +45,7 @@ export struct TouchOptionSlider {
   /** 宿主提供的实例显示palette，不写入用户布局或输入配置。 */
   @Prop palette: EditorPalette = new EditorPalette();
   @Prop label: string = ''
+  @Prop wide: boolean = false
   @Prop value: number = 0
   @Prop minimum: number = 0
   @Prop maximum: number = 100
@@ -63,14 +67,21 @@ export struct TouchOptionSlider {
   build() {
     Column({ space: 2 }) {
       Row({ space: 8 }) {
-        Text(this.label).fontSize(14).fontColor(this.palette.muted).layoutWeight(1)
-        Text(this.displayValue()).fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor(this.palette.text)
+        Text(this.label).fontSize(this.wide ? 16 : 14).fontWeight(FontWeight.Medium).fontColor(this.palette.text).layoutWeight(1)
+        Text(this.displayValue()).fontSize(this.wide ? 15 : 13).fontWeight(FontWeight.Medium)
+          .fontColor(this.palette.accent).padding({left:9,right:9,top:2,bottom:2})
+          .backgroundColor(this.palette.surfaceActive).borderRadius(16)
       }.width('100%')
       Slider({ value: this.value, min: Math.min(this.minimum,this.value), max: Math.max(this.maximum,this.value), step: this.step })
         .blockColor(this.palette.text).blockBorderColor(this.palette.accent).blockBorderWidth(1)
         .selectedColor(this.palette.accentFill).trackColor(this.palette.stroke)
         .width('100%').onChange((value: number, mode: SliderChangeMode): void => { this.onChange(value,mode) })
+      // 导入方案可能超出常用范围，端点与实际滑轨同步，避免把自定义数值画在线外。
+      Row() {
+        Text(Number(Math.min(this.minimum,this.value).toFixed(2)).toString()+this.suffix).fontSize(11).fontColor(this.palette.muted)
+        Blank()
+        Text(Number(Math.max(this.maximum,this.value).toFixed(2)).toString()+this.suffix).fontSize(11).fontColor(this.palette.muted)
+      }.width('100%')
       if (this.value < this.minimum || this.value > this.maximum) {
         Button('改用常用范围').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').fontColor(this.palette.accent)
           .backgroundColor(this.palette.surface).onClick((): void => {
@@ -87,6 +98,7 @@ export struct TouchOptionChoice {
   /** 宿主提供的实例显示palette，不写入用户布局或输入配置。 */
   @Prop palette: EditorPalette = new EditorPalette();
   @Prop label: string = ''
+  @Prop wide: boolean = false
   @Prop selected: boolean = false
   onChoose: () => void = (): void => {}
 
@@ -94,7 +106,7 @@ export struct TouchOptionChoice {
   build() {
     Row() {
       Button() {
-        Text(this.label).fontSize(14).fontWeight(this.selected ? FontWeight.Medium : FontWeight.Normal)
+        Text(this.label).fontSize(this.wide ? 16 : 14).fontWeight(this.selected ? FontWeight.Medium : FontWeight.Normal)
           .fontColor(this.selected ? this.palette.accent : this.palette.muted)
       }.type(ButtonType.Normal).borderRadius(6).width('100%').constraintSize({ minHeight: 44 }).padding({ left: 4, right: 4, top: 4, bottom: 4 })
         .backgroundColor(this.selected ? this.palette.surfaceActive : this.palette.surface)
@@ -111,6 +123,8 @@ export struct TouchOptionsEditor {
   @Prop palette: EditorPalette = new EditorPalette();
   @State showBindings: boolean = false
   /** 导航由宿主目录提供时隐藏旧分区选择，数据仍共用原value/onChange。 */
+  /** 跟随宿主可用窗口断点，表单中的业务状态始终由草稿持有。 */
+  @Prop wide: boolean = false
   @Prop showSectionPicker: boolean = true
   @Prop joystickDeadZone: number = 0.18
   @Prop sourceSensitivity: number = 1
@@ -140,44 +154,22 @@ export struct TouchOptionsEditor {
 
   /** 布尔选项走显式字段，不用动态对象索引绕过ArkTS类型或配置校验。 */
   private flag(name: string, enabled: boolean): void {
-    const next: TouchConfiguration = normalizeTouchPreferences(this.value) ?? new TouchConfiguration()
-    switch (name) {
-      case 'scroll': next.menuTwoFingerScroll=enabled; break
-      case 'sprint': next.joystickSprint=enabled; break
-      case 'bindings': next.followGameBindings=enabled; break
-      case 'swap': next.hotbarSwapDoubleTap=enabled; break
-      case 'drop': next.hotbarDropHold=enabled; break
-      case 'gyroX': next.gyroscopeInvertX=enabled; break
-      case 'gyroY': next.gyroscopeInvertY=enabled; break
-      default: return
-    }
-    this.commit(next,'')
+    const next=touchFlagDraft(this.value,name,enabled);
+    if(next) this.commit(next,'')
   }
 
 
 
   /** 一次滑条拖动使用同一undoKey与真实阶段；End/Click后下一次拖动创建新的撤销点。 */
   private number(name: string, value: number, mode: SliderChangeMode): void {
-    const next: TouchConfiguration = normalizeTouchPreferences(this.value) ?? new TouchConfiguration()
-    if (name === 'menuSpeed') next.menuSensitivity=value/100
-    else if (name === 'menuHold') next.menuHoldMs=value
-    else if (name === 'sprint') next.joystickSprintThreshold=value/100
-    else if (name === 'hold') next.holdMs=value
-    else if (name === 'gyro') next.gyroscopeSensitivity=value/100
-    else return
-    this.commit(next,'touch-' + name,mode)
+    const next=touchNumberDraft(this.value,name,value);
+    if(next) this.commit(next,'touch-' + name,mode)
   }
 
   /** 删除某项覆盖代表恢复自动；值0代表明确解除绑定，两者在保存和运行时不可混同。 */
   private changeBinding(index: number, unbind: boolean): void {
-    const next: TouchConfiguration = normalizeTouchPreferences(this.value) ?? new TouchConfiguration()
-    const overrides: Record<string,number> = {}
-    for (const name of Object.keys(next.actionOverrides)) {
-      if (name !== TOUCH_ACTION_NAMES[index]) overrides[name] = next.actionOverrides[name]
-    }
-    if (unbind) overrides[TOUCH_ACTION_NAMES[index]] = 0
-    next.actionOverrides = overrides
-    this.commit(next,'')
+    const next=touchBindingDraft(this.value,index,unbind);
+    if(next) this.commit(next,'')
   }
 
   /** 显示语义键名，用户不需要输入GLFW数字。 */
@@ -190,11 +182,8 @@ export struct TouchOptionsEditor {
 
   /** 模式选择可直接看见全部选项；单击不会循环经过用户不需要的中间模式。 */
   private choose(name: string,value: string): void {
-    const next: TouchConfiguration=normalizeTouchPreferences(this.value) ?? new TouchConfiguration()
-    if(name==='menu') next.menuMode=value==='direct' ? 'direct' : 'touchpad'
-    else if(name==='joystick') next.joystickCenter=value==='fixed' ? 'fixed' : 'floating'
-    else if(name==='gyro') next.gyroscopeMode=value==='aim' ? 'aim' : value==='always' ? 'always' : 'off'
-    this.commit(next,'')
+    const next=touchChoiceDraft(this.value,name,value);
+    if(next) this.commit(next,'')
   }
 
   /** 模板先停留在预览态，只有显式确认才交给宿主生成一次可撤销的草稿修改。 */
@@ -343,14 +332,15 @@ export struct TouchOptionsEditor {
     }.width('100%')
   }
 
-  build() {
-    Column({space:12}) {
-      if (this.showSectionPicker) { this.SectionPicker() }
-      if(this.section==='menu') {
+  /** 左列只放该类最常调整的设置。窄屏把同一组顺序排列，不复制业务回调。 */
+  @Builder
+  Primary_() {
+    if (this.section==='menu') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'操作方式'}) {
         Row({space:4}) {
-          TouchOptionChoice({ palette: this.palette,  label:'直接操作', selected:this.value.menuMode==='direct',
+          TouchOptionChoice({palette:this.palette,wide:this.wide,  label:'直接操作', selected:this.value.menuMode==='direct',
             onChoose:(): void => { this.choose('menu','direct') } }).layoutWeight(1)
-          TouchOptionChoice({ palette: this.palette,  label:'触摸板', selected:this.value.menuMode==='touchpad',
+          TouchOptionChoice({palette:this.palette,wide:this.wide,  label:'触摸板', selected:this.value.menuMode==='touchpad',
             onChoose:(): void => { this.choose('menu','touchpad') } }).layoutWeight(1)
         }.width('100%').padding(4).backgroundColor(this.palette.surface).borderRadius(this.palette.radiusSmall)
         // 文案按实际策略显示，避免把需要手势识别的模式说明成落指立即按住。
@@ -364,56 +354,39 @@ export struct TouchOptionsEditor {
           Text('滑动只移动指针；轻点点击，长按后持续拖动，抬手松开。')
             .fontSize(12).fontColor(this.palette.muted).width('100%')
         }
-        TouchOptionToggle({ palette: this.palette, label:'双指滚动',description:'菜单与背包中的双指手势',value:this.value.menuTwoFingerScroll,
+        TouchOptionToggle({palette:this.palette,wide:this.wide, label:'双指滚动',description:'菜单与背包中的双指手势',value:this.value.menuTwoFingerScroll,
           onChange:(v: boolean): void => { this.flag('scroll',v) }})
-        // 悬浮鼠标与触摸板共用menuSensitivity；直接模式也必须能查看、调整其保存值。
-        // 这里只恢复已有参数入口，不额外叠加增益，也不改变直接触屏的绝对定位。
-        TouchOptionSlider({ palette: this.palette, label:this.value.menuMode === 'direct' ? '悬浮鼠标速度' : '触摸板与悬浮鼠标速度',value:this.value.menuSensitivity*100,minimum:30,maximum:300,step:5,suffix:'%',
-          onChange:(v: number,mode: SliderChangeMode): void => { this.number('menuSpeed',v,mode) }})
-        if(this.value.menuMode==='touchpad' || this.value.menuTwoFingerScroll) {
-          TouchOptionSlider({ palette: this.palette, label:'长按开始拖动',value:this.value.menuHoldMs,minimum:150,maximum:1000,step:50,suffix:'ms',
-            onChange:(v: number,mode: SliderChangeMode): void => { this.number('menuHold',v,mode) }})
-        }
-        Text('悬浮鼠标提供左右键拖动、滚轮和 Shift，便于精细操作。')
-          .fontSize(12).fontColor(this.palette.muted).width('100%')
       }
-      if(this.section==='move') {
-        TouchOptionSlider({palette:this.palette,label:'移动摇杆死区',value:this.joystickDeadZone*100,minimum:1,maximum:50,step:1,suffix:'%',
-          onChange:(value: number,mode: SliderChangeMode): void => { this.onDeadZone(value/100,mode) }})
+    } else if (this.section==='move') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'移动摇杆'}) {
         Row({space:4}) {
-          TouchOptionChoice({ palette: this.palette,  label:'固定中心', selected:this.value.joystickCenter==='fixed',
+          TouchOptionChoice({palette:this.palette,wide:this.wide,  label:'固定中心', selected:this.value.joystickCenter==='fixed',
             onChoose:(): void => { this.choose('joystick','fixed') } }).layoutWeight(1)
-          TouchOptionChoice({ palette: this.palette,  label:'落指浮动', selected:this.value.joystickCenter==='floating',
+          TouchOptionChoice({palette:this.palette,wide:this.wide,  label:'落指浮动', selected:this.value.joystickCenter==='floating',
             onChoose:(): void => { this.choose('joystick','floating') } }).layoutWeight(1)
         }.width('100%').padding(4).backgroundColor(this.palette.surface).borderRadius(this.palette.radiusSmall)
-        TouchOptionToggle({ palette: this.palette, label:'推远时疾跑',description:'推到阈值后触发',value:this.value.joystickSprint,
-          onChange:(v: boolean): void => { this.flag('sprint',v) }})
-        if(this.value.joystickSprint) {
-          TouchOptionSlider({ palette: this.palette, label:'推远阈值',value:this.value.joystickSprintThreshold*100,minimum:50,maximum:150,step:5,suffix:'%',
-            onChange:(v: number,mode: SliderChangeMode): void => { this.number('sprint',v,mode) }})
-        }
+        TouchOptionSlider({palette:this.palette,wide:this.wide,label:'移动摇杆死区',value:this.joystickDeadZone*100,minimum:1,maximum:50,step:1,suffix:'%',
+          onChange:(value: number,mode: SliderChangeMode): void => { this.onDeadZone(value/100,mode) }})
       }
-      if(this.section==='actions') { this.ActionBindings_() }
-      if(this.section==='gesture') {
-        TouchOptionToggle({ palette: this.palette, label:'同格双击交换副手',description:'在快捷栏同一格内双击',value:this.value.hotbarSwapDoubleTap,
+    } else if (this.section==='gesture') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'快捷栏手势'}) {
+        TouchOptionToggle({palette:this.palette,wide:this.wide, label:'同格双击交换副手',description:'在快捷栏同一格内双击',value:this.value.hotbarSwapDoubleTap,
           onChange:(v: boolean): void => { this.flag('swap',v) }})
-        TouchOptionToggle({ palette: this.palette, label:'长按快捷栏丢弃物品',description:'使用下方的长按时长',value:this.value.hotbarDropHold,
+        TouchOptionToggle({palette:this.palette,wide:this.wide, label:'长按快捷栏丢弃物品',description:'使用下方的长按时长',value:this.value.hotbarDropHold,
           onChange:(v: boolean): void => { this.flag('drop',v) }})
         if(this.value.hotbarDropHold) {
-          TouchOptionSlider({ palette: this.palette, label:'快捷栏丢弃长按时长',value:this.value.holdMs,minimum:200,maximum:1500,step:50,suffix:'ms',
+          TouchOptionSlider({palette:this.palette,wide:this.wide, label:'快捷栏丢弃长按时长',value:this.value.holdMs,minimum:200,maximum:1500,step:50,suffix:'ms',
             onChange:(v: number,mode: SliderChangeMode): void => { this.number('hold',v,mode) }})
         }
       }
-      if(this.section==='gyro') {
-        Text('最终倍率：' + (this.value.gyroscopeSensitivity*this.sourceSensitivity).toFixed(2) + '×；Y方向：' +
-          (this.value.gyroscopeInvertY !== this.sourceInvertY ? '反转' : '正常') + '。来源与陀螺仪各自保存，两次Y反转抵消。')
-          .fontSize(12).fontColor(this.palette.muted).width('100%')
+    } else if (this.section==='gyro') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'辅助瞄准'}) {
         Row({space:4}) {
-          TouchOptionChoice({ palette: this.palette, label:'关闭',selected:this.value.gyroscopeMode==='off',
+          TouchOptionChoice({palette:this.palette,wide:this.wide, label:'关闭',selected:this.value.gyroscopeMode==='off',
             onChoose:(): void => { this.choose('gyro','off') }}).layoutWeight(1)
-          TouchOptionChoice({ palette: this.palette, label:'按住使用输出时',selected:this.value.gyroscopeMode==='aim',
+          TouchOptionChoice({palette:this.palette,wide:this.wide, label:'按住使用输出时',selected:this.value.gyroscopeMode==='aim',
             onChoose:(): void => { this.choose('gyro','aim') }}).layoutWeight(1)
-          TouchOptionChoice({ palette: this.palette, label:'游戏内持续',selected:this.value.gyroscopeMode==='always',
+          TouchOptionChoice({palette:this.palette,wide:this.wide, label:'游戏内持续',selected:this.value.gyroscopeMode==='always',
             onChoose:(): void => { this.choose('gyro','always') }}).layoutWeight(1)
         }.width('100%').padding(4).backgroundColor(this.palette.surface).borderRadius(this.palette.radiusSmall)
         Row({space:8}) {
@@ -424,21 +397,64 @@ export struct TouchOptionsEditor {
         }.width('100%').constraintSize({minHeight:44}).padding(10)
           .backgroundColor(this.gyroscopeStatus==='active' ? this.palette.surfaceActive : this.palette.surface)
           .borderRadius(this.palette.radiusSmall)
-        if(this.value.gyroscopeMode!=='off') {
-          TouchOptionSlider({ palette: this.palette, label:'陀螺仪倍率',value:this.value.gyroscopeSensitivity*100,minimum:10,maximum:300,step:5,suffix:'%',
-            onChange:(v: number,mode: SliderChangeMode): void => { this.number('gyro',v,mode) }})
-          TouchOptionToggle({ palette: this.palette, label:'横向反转',value:this.value.gyroscopeInvertX,onChange:(v: boolean): void => { this.flag('gyroX',v) }})
-          TouchOptionToggle({ palette: this.palette, label:'纵向反转',value:this.value.gyroscopeInvertY,onChange:(v: boolean): void => { this.flag('gyroY',v) }})
-        }
         Text(this.gyroscopeStatus==='unavailable' ? '纯触摸仍可使用；切换为关闭后重新启用，将在进入游戏时再次检查。' :
           '菜单、编辑器和后台暂停；启用后进入游戏会检查设备陀螺仪。')
           .fontSize(12).fontColor(this.palette.muted).width('100%')
       }
-      if (this.section === 'move' || this.section === 'gesture' || this.section === 'gyro') {
+    } else if (this.section==='actions') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'专用键位'}) { this.ActionBindings_() }
+    }
+  }
+
+  /** 参数和专用键位保持其所依赖模式的条件；关闭一项不会重置隐藏的原始值。 */
+  @Builder
+  Secondary_() {
+    if (this.section==='menu') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'指针与拖动'}) {
+        // 悬浮鼠标与触摸板共用menuSensitivity；直接模式也必须能查看、调整其保存值。
+        // 这里只恢复已有参数入口，不额外叠加增益，也不改变直接触屏的绝对定位。
+        TouchOptionSlider({palette:this.palette,wide:this.wide, label:this.value.menuMode === 'direct' ? '悬浮鼠标速度' : '触摸板与悬浮鼠标速度',value:this.value.menuSensitivity*100,minimum:30,maximum:300,step:5,suffix:'%',
+          onChange:(v: number,mode: SliderChangeMode): void => { this.number('menuSpeed',v,mode) }})
+        if(this.value.menuMode==='touchpad' || this.value.menuTwoFingerScroll) {
+          TouchOptionSlider({palette:this.palette,wide:this.wide, label:'长按开始拖动',value:this.value.menuHoldMs,minimum:150,maximum:1000,step:50,suffix:'ms',
+            onChange:(v: number,mode: SliderChangeMode): void => { this.number('menuHold',v,mode) }})
+        }
+        Text('悬浮鼠标提供左右键拖动、滚轮和 Shift，便于精细操作。')
+          .fontSize(12).fontColor(this.palette.muted).width('100%')
+      }
+    } else if (this.section==='move') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'疾跑'}) {
+        TouchOptionToggle({palette:this.palette,wide:this.wide, label:'推远时疾跑',description:'推到阈值后触发',value:this.value.joystickSprint,
+          onChange:(v: boolean): void => { this.flag('sprint',v) }})
+        if(this.value.joystickSprint) {
+          TouchOptionSlider({palette:this.palette,wide:this.wide, label:'推远阈值',value:this.value.joystickSprintThreshold*100,minimum:50,maximum:150,step:5,suffix:'%',
+            onChange:(v: number,mode: SliderChangeMode): void => { this.number('sprint',v,mode) }})
+        }
+      }
+    } else if (this.section==='gyro' && this.value.gyroscopeMode!=='off') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'响应与方向'}) {
+          TouchOptionSlider({palette:this.palette,wide:this.wide, label:'陀螺仪倍率',value:this.value.gyroscopeSensitivity*100,minimum:10,maximum:300,step:5,suffix:'%',
+            onChange:(v: number,mode: SliderChangeMode): void => { this.number('gyro',v,mode) }})
+          TouchOptionToggle({palette:this.palette,wide:this.wide, label:'横向反转',value:this.value.gyroscopeInvertX,onChange:(v: boolean): void => { this.flag('gyroX',v) }})
+          TouchOptionToggle({palette:this.palette,wide:this.wide, label:'纵向反转',value:this.value.gyroscopeInvertY,onChange:(v: boolean): void => { this.flag('gyroY',v) }})
+        Text('最终倍率：' + (this.value.gyroscopeSensitivity*this.sourceSensitivity).toFixed(2) + '×；Y方向：' +
+          (this.value.gyroscopeInvertY !== this.sourceInvertY ? '反转' : '正常') + '。来源与陀螺仪各自保存，两次Y反转抵消。')
+          .fontSize(12).fontColor(this.palette.muted).width('100%')
+      }
+    }
+    if (this.section==='move' || this.section==='gesture' || this.section==='gyro') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide,label:'键位'}) {
         Button(this.showBindings ? '收起专用键位' : '专用键位与覆盖 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
           .onClick((): void => { this.showBindings = !this.showBindings })
         if (this.showBindings) { this.ActionBindings_() }
       }
-    }.width('100%').alignItems(HorizontalAlign.Start).backgroundColor(this.palette.panel)
+    }
+  }
+
+  build() {
+    Column({space:10}) {
+      if (this.showSectionPicker) { this.SectionPicker() }
+      InputSettingsColumns({wide:this.wide,primary:():void=>{this.Primary_()},secondary:():void=>{this.Secondary_()}})
+    }.width('100%').alignItems(HorizontalAlign.Start)
   }
 }

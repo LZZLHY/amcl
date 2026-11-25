@@ -153,6 +153,24 @@ const char *ActionName(amcl::mgconfig::ConfigAction action) {
 } // namespace
 
 extern "C" void prepareMobileGluesRuntime() {
+    // Vulkan 路径的 NativeWindow 队列深度由交换链层的 minImageCount 决定，XComponent
+    // 设的 5 会被覆盖；HWC 异步合成本身要占住在飞 buffer，3 张容易让生产端等空闲 buffer。
+    // 这里要 5 张；外部已设置时不覆盖，便于同机做 3/4/5 对照。失败只回落默认 3。
+    constexpr char kFramesInFlightEnv[] = "MOBILEGL_MAGMA_FRAMESINFLIGHT";
+    const char *framesInFlight = std::getenv(kFramesInFlightEnv);
+    if (framesInFlight == nullptr || framesInFlight[0] == '\0') {
+        if (setenv(kFramesInFlightEnv, "5", /*overwrite=*/1) != 0) {
+            OH_LOG_WARN(LOG_APP, "setenv(%{public}s) failed: %{public}s",
+                        kFramesInFlightEnv, std::strerror(errno));
+        } else {
+            OH_LOG_INFO(LOG_APP, "%{public}s=5 (swapchain drives BufferQueue size)",
+                        kFramesInFlightEnv);
+        }
+    } else {
+        OH_LOG_INFO(LOG_APP, "%{public}s kept at %{public}s",
+                    kFramesInFlightEnv, framesInFlight);
+    }
+
     const std::string mgDir = "/data/storage/el2/base/files/MG";
     if (mkdir(mgDir.c_str(), 0755) != 0 && errno != EEXIST) {
         OH_LOG_ERROR(LOG_APP, "mkdir(%{public}s) failed: %{public}s",

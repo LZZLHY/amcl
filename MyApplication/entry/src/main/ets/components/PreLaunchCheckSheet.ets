@@ -1,3 +1,7 @@
+import { LaunchAttemptObserver } from '../runtime/LaunchAttemptObserver';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { result, textArg } from '../launcherskill/LibraryResult';
+import { util } from '@kit.ArkTS';
 /**
  * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
  * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
@@ -49,7 +53,11 @@ export struct PreLaunchCheckSheet {
   /** JDK 是否已安装（由父组件用 JdkManager.isInstalled 注入，避免本组件耦合服务实例） */
   checkJdkInstalled: (jdkVersion: string) => boolean = () => false;
   /** 所有必过项通过 → 真正启动（父组件 navigate / 创建 JVM） */
-  onProceed: () => void = () => {};
+  onProceed: (attempt?: LaunchAttemptObserver) => void = () => {};
+  /** 可选回执绑定打开本面板的原启动操作；普通手动流程没有观察者。 */
+  observer?: LaunchAttemptObserver
+  onDismissed: (attempt?: LaunchAttemptObserver) => void = () => {};
+  private originalObserver_: LaunchAttemptObserver | undefined = undefined
   /** 失败项的一键修复（'open_jdk_manager' / 'open_versions' 等需要跳转的动作） */
   onFix: (actionKey: string) => void = () => {};
   /**
@@ -70,7 +78,7 @@ export struct PreLaunchCheckSheet {
    * 用户在 "JDK 版本匹配" 警告里点"改用自动 JDK"：父组件把当前版本的单版本 JDK 覆盖改为自动、
    * 重新路由出兼容的 JDK，并返回新的 JDK 版本号（供本 Sheet 用新值重跑校验）。返回 '' 表示无变化。
    */
-  switchJdkToAuto: () => string = () => '';
+  switchJdkToAuto: () => Promise<string> = async (): Promise<string> => '';
 
   /** 各项校验的实时状态（顺序与 PreLaunchValidator.pendingChecks() 一致） */
   @State private checks: PreLaunchCheck[] = PreLaunchValidator.pendingChecks();
@@ -88,8 +96,67 @@ export struct PreLaunchCheckSheet {
   /** 用户是否已对"JDK 版本不匹配"点了"保留并继续"（接受后不再 warn 阻断）。 */
   @State private jdkWarnAccepted: boolean = false;
 
+  private skillChoice_: string = '';
+  private skillSignature_: string = '';
+
+  private checkActions_(): string[] {
+    const actions:string[]=['cancel'];
+    if (this.phase==='jdkWarn') return ['cancel','automaticJdk','keepJdk'];
+    if (this.phase!=='failed') return actions;
+    actions.push('retry');
+    if (this.isJitFailed() && !DistributionPolicy.isStore()) actions.push('jitHelp');
+    if (this.isJdkMissingFailed()) actions.push('installJdk','jdkManager');
+    const failed=this.firstFailed();
+    if (failed && failed.fixActionKey && !this.isJdkMissingFailed()) actions.push('fix');
+    return actions;
+  }
+
+  /** 同一张预检表上的选择只允许作用于本次尝试、当前阶段与所用 JDK。 */
+  private async skillCheck_(method:string,args:Record<string,Object>):Promise<Record<string,Object>> {
+    if (this.aborted || textArg(args,'instance')!==this.version) return result('failed','launchChanged');
+    const actions=this.checkActions_();
+    const signature=JSON.stringify([this.version,this.gameDir,this.currentJdk,this.phase,this.checks.map(c=>[c.id,c.status,c.fixActionKey])]);
+    if (method==='getLaunchChecks') {
+      this.skillSignature_=signature; this.skillChoice_=util.generateRandomUUID();
+      return {'state':'ready','stage':this.phase,'instance':this.version,'jdk':this.currentJdk,'choiceRef':this.skillChoice_,'actions':actions,
+        'checks':this.checks.map((c):Record<string,Object>=>({'check':c.id,'title':c.title,'status':c.status,'fix':c.fixActionKey}))};
+    }
+    const action=textArg(args,'choice');
+    if (method!=='chooseLaunchCheckAction' || !this.skillChoice_ || this.skillChoice_!==textArg(args,'choiceRef') || signature!==this.skillSignature_ || !actions.includes(action)) return result('failed','checkChanged');
+    this.skillChoice_='';
+    if (action==='cancel') { this.onClose();return result('cancelled'); }
+    if (action==='jitHelp') { this.openNoJitDoc();return result('needsUser','jitGuide'); }
+    if (action==='jdkManager') { this.onFix('open_jdk_manager');return result('needsUser','jdkManager'); }
+    if (action==='retry') this.runAll();
+    if (action==='installJdk') this.startJdkDownloadFlow();
+    if (action==='keepJdk') { this.jdkWarnAccepted=true;this.runAll(); }
+    if (action==='automaticJdk' && !await this.switchAndRecheck_()) return result('failed','jdkSelectionNotSaved');
+    if (action==='fix') this.fixFailedCheck_();
+    return {'state':'accepted','choice':action};
+  }
+
+  private async switchAndRecheck_():Promise<boolean> {
+    const instance=this.version;
+    const version=await this.switchJdkToAuto();
+    if (this.aborted || this.version!==instance || version.length===0) return false;
+    this.currentJdk=version;
+    this.jdkWarnAccepted=false;this.runAll();
+    return true;
+  }
+
+  private fixFailedCheck_():void {
+    const failed=this.firstFailed();
+    if (!failed) return;
+    if (this.canRepairInSheet(failed.fixActionKey)) this.startRepairFlow();
+    else if (failed.fixActionKey==='jdk_mismatch') this.switchAndRecheck_();
+    else this.onFix(failed.fixActionKey);
+  }
+
   aboutToAppear() {
     this.aborted = false;
+    LauncherSkillBus.bind('launchChecks',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>this.skillCheck_(method,args),
+      ():boolean=>!this.aborted && AppStorage.get<boolean>('appInForeground')===true);
+    this.originalObserver_ = this.observer;
     this.currentJdk = this.jdkVersion;
     this.jdkWarnAccepted = false;
     this.runAll();
@@ -97,6 +164,8 @@ export struct PreLaunchCheckSheet {
 
   aboutToDisappear() {
     this.aborted = true;
+    LauncherSkillBus.unbind('launchChecks',this);
+    this.onDismissed(this.originalObserver_);
   }
 
   // ============================================================
@@ -123,6 +192,7 @@ export struct PreLaunchCheckSheet {
     let next = this.checks.slice();
     next[index] = c;
     this.checks = next;
+    this.originalObserver_?.check(c.id, c.status, c.fixActionKey);
     if (c.status === 'fail') {
       AppLogger.error('PreLaunchCheckSheet', '启动前检查失败：' + c.id + '，版本=' + this.version
         + '\n' + c.detail, null, LOG_DOMAIN_LAUNCH);
@@ -146,6 +216,7 @@ export struct PreLaunchCheckSheet {
    * 所以它们在这里是一步两格。
    */
   private async runAll(): Promise<void> {
+    this.originalObserver_?.beginChecks();
     this.phase = 'running';
     this.checks = PreLaunchValidator.pendingChecks();
 
@@ -213,7 +284,7 @@ export struct PreLaunchCheckSheet {
     this.phase = 'passed';
     await this.sleep(500);
     if (this.aborted) return;
-    this.onProceed();
+    this.onProceed(this.originalObserver_);
   }
 
   private firstFailed(): PreLaunchCheck | null {
@@ -521,20 +592,7 @@ export struct PreLaunchCheckSheet {
           .borderRadius(24)
           .textAlign(TextAlign.Center)
           .onClick(() => {
-            let f = this.firstFailed();
-            if (f !== null) {
-              if (this.canRepairInSheet(f.fixActionKey)) {
-                this.startRepairFlow();        // 就地修复，不跳转下载页
-              } else if (f.fixActionKey === 'jdk_mismatch') {
-                // 就地改回自动路由并重跑 —— 与 jdkWarn 那条分支同一个动作。
-                let nv = this.switchJdkToAuto();
-                if (nv.length > 0) this.currentJdk = nv;
-                this.jdkWarnAccepted = false;
-                this.runAll();
-              } else {
-                this.onFix(f.fixActionKey);     // JDK / 版本管理等需跳转
-              }
-            }
+            this.fixFailedCheck_();
           })
       }
 
@@ -611,10 +669,7 @@ export struct PreLaunchCheckSheet {
           .borderRadius(24)
           .textAlign(TextAlign.Center)
           .onClick(() => {
-            let nv = this.switchJdkToAuto();
-            if (nv.length > 0) this.currentJdk = nv;
-            this.jdkWarnAccepted = false;
-            this.runAll();
+            this.switchAndRecheck_();
           })
 
         // 保留此 JDK 继续（调试）

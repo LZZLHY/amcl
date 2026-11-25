@@ -59,13 +59,13 @@ void Cleanup(const std::string& directory)
 }
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
-    char base[] = "/tmp/amcl-game-exit-posix-XXXXXX";
-    Check(mkdtemp(base) != nullptr, "mkdtemp");
+    Check(argc == 2 && argv[1][0] == '/', "test harness supplies its own output directory");
+    const std::string base = argv[1];
     const int launcher = static_cast<int>(getpid());
-    for (int scenario = 0; scenario < 5; ++scenario) {
-        const std::string directory = std::string(base) + "/case" + std::to_string(scenario);
+    for (int scenario = 0; scenario < 7; ++scenario) {
+        const std::string directory = base + "/case" + std::to_string(scenario);
         Check(mkdir(directory.c_str(), 0700) == 0, "create case directory");
         const pid_t child = fork();
         Check(child >= 0, "fork test process");
@@ -126,9 +126,31 @@ int main()
                 Check(amclGameExitAuthorize(directory.c_str(), launcher, other) < 0, "wrong lock inode rejected");
                 amclGameJvmExitHook(0);
             }
+            if (scenario >= 5) {
+                Check(amclPhoneExitPrepare(directory.c_str(), 42) && amclPhoneExitArmed() &&
+                      !amclGameExitAuthorizedForCurrentProcess(), "phone setup does not authorize independent exit");
+                if (scenario == 5) {
+                    amclPhoneGameJvmExitHook(0);
+                    _exit(25); // JVM 退出回调允许未合格的原路径继续。
+                }
+                amclPhoneExitMarkJavaShutdown();
+                std::thread([] {
+                    for (int attempt = 0; attempt < 5000; ++attempt) {
+                        if (amclPhoneRestartPending()) {
+                            Check(amclPhoneRestartClaim() && !amclPhoneRestartClaim(), "one live UI claim");
+                            Check(amclPhoneRestartDecline(), "real decline wakes JVM exit thread");
+                            return;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                    _exit(93);
+                }).detach();
+                amclPhoneGameJvmExitHook(0);
+            }
             _exit(91);
         }
-        Check(Wait(child) == (scenario == 0 ? (300 & 255) : 0), "raw requested exit status retained by kernel");
+        const int status = scenario == 0 ? (300 & 255) : scenario == 5 ? 25 : 0;
+        Check(Wait(child) == status, "raw requested exit status retained by kernel");
         const std::string record = Read(directory + "/game-exits/42.json");
         if (scenario < 2) {
             Check(record.find("\"pid\":" + std::to_string(child)) != std::string::npos, "record belongs to actual owner PID");
@@ -140,9 +162,14 @@ int main()
                   "real pipe acknowledgement or monotonic timeout diagnosed honestly");
         } else if (scenario == 2) Check(record == "old", "existing final evidence untouched");
         else if (scenario == 3) Check(record.empty() && Read(directory + "/game-exits/42.json.tmp") == "old", "existing temp untouched");
-        else Check(record.empty(), "invalid authority produced no record");
+        else if (scenario == 6) {
+            const std::string identity = "\"pid\":" + std::to_string(child) + ",\"parentPid\":" + std::to_string(child);
+            Check(record.find(identity) != std::string::npos && record.find("\"source\":\"phone-jvm-exit\"") != std::string::npos,
+                  "phone record binds current PID and explicit source");
+            Check(Read(directory + "/game-exits/42.handoff.log").find("declined") != std::string::npos,
+                  "phone declines request through actual pipe");
+        } else Check(record.empty(), "invalid authority or skipped Java shutdown produced no exit record");
         Cleanup(directory);
     }
-    rmdir(base);
-    std::cout << "PASS 5 POSIX game exit process cases: fd, flock, fork identity, record, pipe acknowledgement/timeout, raw exit status\n";
+    std::cout << "PASS 7 POSIX game exit cases (including phone decline and unqualified halt)\n";
 }

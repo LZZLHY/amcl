@@ -3,19 +3,19 @@
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
-const source = fs.readFileSync(new URL('./device-automation/capture-runtime-process.mjs', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../tests/runtime-jit/capture-runtime-process.mjs', import.meta.url), 'utf8');
 const start = source.indexOf('function sample() {');
 const end = source.indexOf('\nfunction finish(', start);
 assert.ok(start >= 0 && end > start, '生产采样入口发生变化时测试必须拒绝静默失效');
-const factory = new Function('hdc', 'summary', 'console', source.slice(start, end) + '\nreturn sample;');
+const factory = new Function('deviceShell', 'summary', 'console', source.slice(start, end) + '\nreturn sample;');
 
 // 只替换设备命令边界，不在测试里复制 header/错误判定；不访问任何真实设备或文件输出。
 function observe(stdout, status = 0, timedOut = false) {
   const summary = { samples: [], observationFailures: 0, retainedLines: 0 };
-  factory({ shell(command) {
+  factory(command => {
     assert.equal(command, 'ps -A -o PID,PPID,NAME');
     return { stdout, stderr: '', status, timedOut };
-  } }, summary, { log() {} })();
+  }, summary, { log() {} })();
   return summary;
 }
 for (const result of [

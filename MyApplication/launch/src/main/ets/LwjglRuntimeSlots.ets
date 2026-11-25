@@ -31,7 +31,7 @@ const LWJGL_322_JARS: LwjglModernJar[] = [
   { name: 'lwjgl.jar', size: 553506, sha256: '72a1b0b2816b21eaf6835739be7e23e1f6e96c118b648a44dcf9af9ff47a7f1b' }
 ];
 const LWJGL_2_JARS: LwjglModernJar[] = [
-  { name: 'lwjgl.jar', size: 1913154, sha256: 'ce1295ec22b109fb66735f62a65e50f74d7569e0e3eed9d3c392706c8ffd92e7' }
+  { name: 'lwjgl.jar', size: 1913402, sha256: '3bbc0fa3df402219b3051d91dcde1cfee80fcdbefd659c2372024d22ebd50c66' }
 ];
 
 /** 返回完整副本，防止 classpath 调用方排序或改写摘要污染下一次启动。 */
@@ -78,7 +78,7 @@ export function lwjglRuntimeSlot(slotDirectory: string, javaFeature: number = 0)
   if (directory === 'lwjgl-ohos-2') {
     return { id: 'legacy2', version: '2.9.4', deploymentDirectory: directory,
       resourceDirectory: 'lwjgl2', javaFeature: 0,
-      marker: 'amcl.lwjgl.legacy-slot\nversion=2.9.4\nmanifest=6cf4e4af464a4d26ddd8f839991850112775e724e20c626258f0991df2a01aad\n',
+      marker: 'amcl.lwjgl.legacy-slot\nversion=2.9.4\nmanifest=5895d26e343cca60297e5083f9017bcbdb9772ebefd7d5e4c04a259216cefd0b\n',
       jars: copyJars(LWJGL_2_JARS, 'lwjgl2') };
   }
   throw new Error('未知 LWJGL 运行槽目录：' + slotDirectory);

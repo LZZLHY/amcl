@@ -35,6 +35,18 @@ function fixture(rejectCall = 0, acceptedCallback = () => {}) {
   return { model: entry.model, packets, total: () => packets.reduce((a, b) => a + b, 0) };
 }
 
+// 手指向上转动虚拟滚轮输出正格，原触点反向拖满一格才输出负格。
+{
+  const f = fixture();
+  assert.equal(f.model.moveContact(1, 0, -11), false);
+  assert.deepEqual(f.packets, []);
+  f.model.moveContact(1, 0, -12);
+  assert.deepEqual(f.packets, [1]);
+  assert.equal(f.model.moveContact(1, 0, -1), false);
+  f.model.moveContact(1, 0, 0);
+  assert.deepEqual(f.packets, [1, -1]);
+}
+
 // 端口同步回入时，原循环只能确认原包；同编号新接触不能被旧扣量污染。
 {
   let f;
@@ -44,9 +56,9 @@ function fixture(rejectCall = 0, acceptedCallback = () => {}) {
     assert.equal(f.model.beginContact(1, 'wheel', 0, 0, 20), true);
   });
   f.model.moveContact(1, 0, 600);
-  assert.deepEqual(f.packets, [32]);
+  assert.deepEqual(f.packets, [-32]);
   f.model.moveContact(1, 0, 12, 20);
-  assert.deepEqual(f.packets, [32, 1]);
+  assert.deepEqual(f.packets, [-32, -1]);
 }
 
 // 同接触在途新增MOVE只累计一次；禁止先多滚再反向补偿，列表边界下两者不等价。
@@ -54,17 +66,18 @@ function fixture(rejectCall = 0, acceptedCallback = () => {}) {
   let f;
   f = fixture(0, (_steps, calls) => { if (calls === 1) f.model.moveContact(1, 0, 876); });
   f.model.moveContact(1, 0, 600);
-  assert.deepEqual(f.packets, [32, 32, 9]);
-  assert.equal(f.total(), 73);
+  assert.deepEqual(f.packets, [-32, -32, -9]);
+  assert.equal(f.total(), -73);
 }
 
 // 同一长行程在单个合并样本和多个小样本下，必须产生相同已接受格数。
-for (const direction of [1, -1]) {
+for (const wheelDirection of [1, -1]) {
   const merged = fixture(), split = fixture();
-  merged.model.moveContact(1, 0, direction * 600);
-  for (let y = 12; y <= 600; y += 12) split.model.moveContact(1, 0, direction * y);
-  assert.deepEqual(merged.packets, [direction * 32, direction * 18]);
-  assert.equal(merged.total(), direction * 50);
+  const fingerDirection = -wheelDirection;
+  merged.model.moveContact(1, 0, fingerDirection * 600);
+  for (let y = 12; y <= 600; y += 12) split.model.moveContact(1, 0, fingerDirection * y);
+  assert.deepEqual(merged.packets, [wheelDirection * 32, wheelDirection * 18]);
+  assert.equal(merged.total(), wheelDirection * 50);
   assert.equal(merged.total(), split.total());
   merged.model.endContact(1); split.model.endContact(1);
 }
@@ -73,10 +86,10 @@ for (const direction of [1, -1]) {
 {
   const f = fixture(2);
   f.model.moveContact(1, 0, 600);
-  assert.equal(f.total(), 32);
+  assert.equal(f.total(), -32);
   f.model.moveContact(1, 0, 612);
-  assert.deepEqual(f.packets, [32, 19]);
-  assert.equal(f.total(), 51);
+  assert.deepEqual(f.packets, [-32, -19]);
+  assert.equal(f.total(), -51);
 }
 
 // UP与取消都不自动续滚；即使旧包拒收或有不足一格余量，也不能带进新接触。
@@ -85,12 +98,12 @@ for (const cancelled of [false, true]) {
   f.model.moveContact(1, 0, 607);
   if (cancelled) assert.equal(f.model.cancelAll(), true);
   else f.model.endContact(1);
-  assert.equal(f.total(), 32);
+  assert.equal(f.total(), -32);
   assert.equal(f.model.beginContact(2, 'wheel', 0, 0), true);
   f.model.moveContact(2, 0, 11);
-  assert.equal(f.total(), 32);
+  assert.equal(f.total(), -32);
   f.model.moveContact(2, 0, 12);
-  assert.equal(f.total(), 33);
+  assert.equal(f.total(), -33);
 }
 
 // 小幅位移保持余量；无效坐标不污染有效基线，也不能触发失控循环。
@@ -102,14 +115,14 @@ for (const cancelled of [false, true]) {
   f.model.moveContact(1, 0, 7);
   assert.equal(f.total(), 0);
   f.model.moveContact(1, 0, 13);
-  assert.equal(f.total(), 1);
+  assert.equal(f.total(), -1);
   assert.equal(f.model.moveContact(99, 0, 600), false);
-  assert.equal(f.total(), 1);
+  assert.equal(f.total(), -1);
   f.model.endContact(1);
   assert.equal(f.model.beginContact(2, 'wheel', 0, Number.MAX_VALUE), false);
   f.model.startWheel(2, Number.MAX_VALUE);
   assert.equal(f.model.beginContact(2, 'wheel', 0, 0), true);
   f.model.moveContact(2, 0, 12);
-  assert.equal(f.total(), 2, '异常DOWN不得占用滚轮或污染后续合法基线');
+  assert.equal(f.total(), -2, '异常DOWN不得占用滚轮或污染后续合法基线');
 }
 console.log('[virtual-mouse-wheel] PASS merged/split direction, partial rejection, UP/CANCEL and numeric boundaries');

@@ -92,7 +92,18 @@ export class InputConfigurationProgress {
   completedProfileRevision: number = 0
   capabilityIssue: string = ''
 }
-export type InputConfigurationProgressReader = () => InputConfigurationProgress
+/** reader 可以填入观察者私有草稿；不传时仍返回独立值。 */
+export type InputConfigurationProgressReader = (scratch?: InputConfigurationProgress) => InputConfigurationProgress
+
+/** 回执字段均为标量。比较实际进度可发现触控异步 ACK，又不必为不变的心跳构造整份报告。 */
+function equalProgress(a: InputConfigurationProgress, b: InputConfigurationProgress): boolean {
+  return a.stage === b.stage && a.reason === b.reason && a.operationId === b.operationId &&
+    a.candidateId === b.candidateId && a.token === b.token && a.desiredCandidateId === b.desiredCandidateId &&
+    a.targetProfileId === b.targetProfileId && a.targetProfileRevision === b.targetProfileRevision &&
+    a.terminalRejection === b.terminalRejection && a.completedOperationId === b.completedOperationId &&
+    a.completedProfileId === b.completedProfileId && a.completedProfileRevision === b.completedProfileRevision &&
+    a.capabilityIssue === b.capabilityIssue
+}
 
 /** 原运行代拥有的激活报告；sessionId=0明确Preparing，不借新session补旧操作身份。 */
 export class InputPolicyActivationSnapshot {
@@ -256,6 +267,8 @@ class ConfigurationSubscriber {
   applied: number = 0
   failures: number = 0
   progress: InputConfigurationProgressReader | undefined = undefined
+  observed: InputConfigurationProgress | undefined = undefined
+  scratch: InputConfigurationProgress | undefined = undefined
   appliedProfileId: string = ''
   appliedProfileRevision: number = 0
 }
@@ -266,6 +279,7 @@ export class InputConfigurationDelivery {
   private profile: LayoutProfile | undefined = undefined
   private revision: number = 0
   private applying: boolean = false
+  private statusDirty: boolean = false
   private subscribers: ConfigurationSubscriber[] = []
   private definitions: InputConfigurationDefinitionListener[] = []
   private saved: boolean = false
@@ -320,10 +334,12 @@ export class InputConfigurationDelivery {
     subscriber.listener = listener
     subscriber.progress = progress
     this.subscribers.push(subscriber)
+    this.statusDirty = true
     this.reconcile()
   }
 
   remove(listener: InputConfigurationListener): void {
+    this.statusDirty = true
     this.subscribers = this.subscribers.filter((item: ConfigurationSubscriber): boolean => item.listener !== listener)
   }
 
@@ -333,6 +349,12 @@ export class InputConfigurationDelivery {
 
   reconcile(): void {
     if (this.applying || this.profile === undefined) return
+    // 仅在有待投递域时创建可重入遍历快照。
+    let pending: boolean = false
+    for (const item of this.subscribers) {
+      if (item.applied !== this.revision) { pending = true; break }
+    }
+    if (!pending) return
     this.applying = true
     const revision: number = this.revision
     const profile: LayoutProfile = this.profile
@@ -346,6 +368,7 @@ export class InputConfigurationDelivery {
         if (item.applied === revision || this.subscribers.indexOf(item) < 0) continue
         let applied: boolean = false
         try { applied = item.listener(cloneLayout(profile), revision) !== false } catch (_) { applied = false }
+        this.statusDirty = true
         if (applied) { item.applied = revision; item.appliedProfileId = profile.profileId ?? ''; item.appliedProfileRevision = profile.profileRevision ?? 0 }
         else {
           item.failures++
@@ -356,6 +379,34 @@ export class InputConfigurationDelivery {
         }
       }
     } finally { this.applying = false }
+  }
+
+  /** 在原维护边界比较各域的纯缓存。只有值发生变化才需回调 UI；read 抛错及恢复也是变化。 */
+  consumeStatusChange(): boolean {
+    // 嵌套维护不得抢先消费尚未写回的 listener 结果。原发布者在整轮提交后投递。
+    if (this.applying) return false
+    let dirty = this.statusDirty
+    this.statusDirty = false
+    for (const item of this.subscribers) {
+      if (item.progress === undefined) continue
+      try {
+        if (item.scratch === undefined) item.scratch = new InputConfigurationProgress()
+        const value = item.progress(item.scratch)
+        if (item.observed !== undefined && equalProgress(item.observed, value)) continue
+        if (value === item.scratch) {
+          item.scratch = item.observed
+          item.observed = value
+        } else {
+          // 兼容忽略草稿、返回可变对象的旧 reader，变化时才冻结值。
+          item.observed = JSON.parse(JSON.stringify(value)) as InputConfigurationProgress
+        }
+        dirty = true
+      } catch (_) {
+        if (item.observed !== undefined) dirty = true
+        item.observed = undefined
+      }
+    }
+    return dirty
   }
 
   /** 返回值副本，读 progress 缓存但不重试 listener；旧 Applied 缓存不能盖掉新 delivery 的 pending。 */

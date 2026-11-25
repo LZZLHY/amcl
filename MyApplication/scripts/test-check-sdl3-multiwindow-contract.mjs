@@ -5,7 +5,8 @@
 // merely "the gate failed": it names the rule that must turn red, so deleting a
 // rule or accidentally satisfying it from a comment cannot keep this test green.
 
-import { analyzeFiles, RULE_IDS, parsePatchText, applySparsePatch } from './check-sdl3-multiwindow-contract.mjs';
+import { fileURLToPath } from 'node:url';
+import { analyzeFiles, RULE_IDS, parsePatchText, applySparsePatch, loadPatchSeries } from './check-sdl3-multiwindow-contract.mjs';
 
 let failures = 0;
 function check(name, condition, detail = '') {
@@ -1362,6 +1363,20 @@ const patchFiles = parsePatchText(patch, '<green-fixture.patch>');
 const patchReport = analyzeFiles(patchFiles, { mode: 'patch-series', input: '<fixture>' });
 check('green patch fixture passes every rule', patchReport.ok,
   `failed=${failedIds(patchReport).join(', ')}`);
+
+// 生产补丁的 Cocoa 上下文会在多行注释的中间结束。完整 SDL_video.c 应保住后面的创建标志函数；
+// 即便其他函数和注释还含相同属性，撤掉该函数对 FLAGS_NUMBER 的真实读取也必须让本规则失败。
+const current = loadPatchSeries(fileURLToPath(new URL('../prebuilt/sdl3/patches/series', import.meta.url)));
+const videoPath = 'src/video/SDL_video.c';
+const video = current.files.get(videoPath);
+check('production patch series keeps full locked SDL_video.c context', !video.includes('#error AMCL_UNAVAILABLE_PATCH_CONTEXT'));
+check('production patch series recognizes requested flags', !failedIds(analyzeFiles(current.files, current)).includes('requested-flags'));
+const missingRead = video.replace(/(SDL_WindowFlags\s+SDL_GetWindowCreateFlags\([^)]*\)\s*\{[\s\S]*?SDL_GetNumberProperty\(props,\s*)SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER/,
+  '$1SDL_PROP_WRONG_FLAGS /* SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER */');
+check('mutated the live flags read in the locked helper', missingRead !== video);
+const missingFlags = new Map(current.files).set(videoPath, missingRead);
+check('production patch series rejects missing flags read despite comment decoy',
+  failedIds(analyzeFiles(missingFlags, current)).includes('requested-flags'));
 
 // 稀疏重放只覆盖声明范围，不把非相邻 hunk 当成相邻函数；偏移必须完整精确且唯一。
 const sparsePath = 'src/video/openharmony/SDL_fixture.c';

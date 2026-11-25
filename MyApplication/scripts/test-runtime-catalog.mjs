@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { generateKeyPairSync,sign,verify,createPublicKey } from 'node:crypto';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+import { loadActionComponent } from './lib/unified-actions-fixture.mjs';
 import { legacyRuntimeCatalogText } from './lib/legacy-runtime-catalog-fixture.mjs';
 
 // 负对照只替换明确提交中的真实生产 Repository，不删除条件或拼造一份“错误实现”。
@@ -188,6 +189,49 @@ if(sourceRef===undefined||requireRelayRoute){
   count++;
 }
 const previousCache=files.get('/app/runtime-catalog/stable.json');remote=envelopes(c);
+if (sourceRef === undefined) {
+  // 从上述已验签落盘的生产目录冷起第二个仓库；网络断开时必须保留旧槽，
+  // 但 Skill 读取与显式刷新都不能把缓存或内置记录报作本次网络刷新成功。
+  const sample={...context,filesDir:'/catalog-readback'};
+  for (const [path,data] of [...files]) {
+    if (path.startsWith('/app/runtime-catalog/')) files.set(sample.filesDir+path.slice('/app'.length),data);
+  }
+  const cached=makePureEtsLoader(sdkDependencies)(repositoryPath).RuntimeCatalogRepository.instance(sample);
+  await cached.configure('stable','github',false);
+  const skillValues=makePureEtsLoader()('entry/src/main/ets/launcherskill/SettingsSkillValues.ets');
+  const Tab=loadActionComponent('entry/src/main/ets/pages/tabs/DownloadTab.ets','DownloadTab',{
+    methods:['runtimeSkill_','runtimeSkillActive_','catalogSkillResult_','slotView_'],
+    dependencies:{'../../launcherskill/SettingsSkillValues':skillValues,
+      '../../launcherskill/LauncherSkillBus':makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets')}
+  });
+  const tab=new Tab();
+  const inspect=()=>({catalog:cached.observation('stable','github',false),
+    slots:cached.definitions().map(runtime=>({version:String(runtime.javaMajor),installed:false,available:false,
+      userImported:false,repairRequired:false,rollback:false,updateAvailable:false,installedTag:'',expectedTag:'',path:'/private'}))});
+  Object.assign(tab,{hostVisible:true,dlSubTab:5,skillInteractive:()=>true,jdkChannel:'stable',jdkChecking:false,
+    jdkImporting:false,slotDialogBusy_:false,importOutcome_:{state:'unavailable'},jdkActionEpoch_:0,
+    isJdkDownloading:()=>false,readRuntimeCatalog:inspect,onRefreshJdkCatalog:()=>cached.refresh()});
+  const call=name=>tab.runtimeSkill_(name,{});
+  const warm=await call('listJavaRuntimes');
+  assert.equal(warm.state,'unknown');assert.equal(warm.catalogSource,'verifiedSnapshot');assert.ok(warm.slots.length>0);
+  try {
+    responseForUrl=()=>({statusCode:503,body:'test-internal-error-private'});
+    const failure=await call('refreshJavaRuntimes');
+    assert.equal(failure.refreshState,'failed');assert.equal(failure.state,'failed');assert.equal(failure.catalogSource,'verifiedSnapshot');
+    assert.equal(failure.catalogRevision,next.catalogRevision);assert.deepEqual(failure.slots,warm.slots);
+    assert.ok(!JSON.stringify(failure).includes('test-internal-error-private'));
+    assert.equal((await call('listJavaRuntimes')).state,'failed');
+    // 所有平台约束的真实过滤均不匹配，本机也没有额外已装槽。只有已确认刷新才是成功空表。
+    sdkDependencies['@kit.BasicServicesKit'].deviceInfo.sdkApiVersion=0;
+    const failedEmpty=await call('listJavaRuntimes');assert.deepEqual(failedEmpty.slots,[]);assert.equal(failedEmpty.state,'failed');
+    responseForUrl=()=>({statusCode:200,body:envelopes(next)});
+    const empty=await call('refreshJavaRuntimes');
+    assert.equal(empty.state,'ready');assert.equal(empty.refreshState,'updated');assert.equal(empty.catalogSource,'network');assert.deepEqual(empty.slots,[]);
+    tab.onRefreshJdkCatalog=async()=>undefined;
+    assert.equal((await call('refreshJavaRuntimes')).reason,'refreshNotStarted');
+    count+=4;
+  } finally { responseForUrl=null;sdkDependencies['@kit.BasicServicesKit'].deviceInfo.sdkApiVersion=20; }
+}
 assert.equal((await repository.refresh()).ok,false);assert.equal(files.get('/app/runtime-catalog/stable.json'),previousCache);count++;
 const newest=structuredClone(next);newest.catalogRevision++;remote=envelopes(newest);failRename=true;
 assert.equal((await repository.refresh()).ok,false);assert.equal(repository.snapshot().catalogRevision,next.catalogRevision);assert.equal(files.get('/app/runtime-catalog/stable.json'),previousCache);count++;

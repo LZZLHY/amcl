@@ -17,12 +17,17 @@ let text=fs.readFileSync(path.join(PROJECT_ROOT,relative),'utf8');
 if(getArg('--source'))text=fs.readFileSync(getArg('--source'),'utf8');
 const ast=compiler.createSourceFile(relative,text,compiler.ScriptTarget.Latest,true);
 const owner=ast.statements.find(n=>n.name?.getText(ast)==='McGamePage');assert.ok(owner);
-const method=owner.members.find(n=>n.name?.getText(ast)==='publishStoredInputSurfaceContext');assert.ok(method);
-const compiled=compiler.transpileModule('class Subject{'+method.getText(ast)+'}\nmodule.exports=Subject;',
+// 发布与固定档判定都执行当前页面的真实方法；显示设备和前端租约由宿主提供边界输入。
+const methods=['publishStoredInputSurfaceContext','resolveFixedRefreshRate'].map(name=>{
+  const member=owner.members.find(n=>n.name?.getText(ast)===name);
+  assert.ok(member,'缺少真实页面方法 '+name);
+  return member.getText(ast);
+});
+const compiled=compiler.transpileModule('class Subject{'+methods.join('\n')+'}\nmodule.exports=Subject;',
   {compilerOptions:{target:compiler.ScriptTarget.ES2020,module:compiler.ModuleKind.CommonJS},reportDiagnostics:true});
 assert.equal((compiled.diagnostics??[]).filter(d=>d.category===compiler.DiagnosticCategory.Error).length,0,'actual Mc method must compile');
 const game=makePureEtsLoader()('gamecontrol/src/main/ets/InputSurfaceContext.ets');
-const history=[],nativeResults=[],frameHints=[],densities=[],diagnosticLines=[],diagnosticWarnings=[];
+const history=[],nativeResults=[],frameHints=[],hintArguments=[],densities=[],diagnosticLines=[],diagnosticWarnings=[];
 let inputTraceEnabled=true,diagnosticFailure=false;
 const napi={publishInputSurfaceContext:(...values)=>{
   history.push(values);
@@ -31,10 +36,16 @@ const napi={publishInputSurfaceContext:(...values)=>{
   const rows=execution.stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));assert.equal(rows.length,history.length);
   const last=rows.at(-1);nativeResults.push(last);return last.accepted;
 },setDisplayDensity:d=>densities.push(d),gate0InputTelemetryEnabled:()=>false,
-refreshOhosFrameRateHint:hz=>{frameHints.push(hz);return true;}};
-const dependencies={...game,testNapi:napi,DiagnosticPolicy:{inputTraceEnabled:()=>inputTraceEnabled},TAG:'host',LOG_DOMAIN_LAUNCH:0};
+refreshOhosFrameRateHint:(...args)=>{hintArguments.push(args);frameHints.push(args[0]);return true;}};
+const gameDisplay={id:0,supportedRefreshRates:[60,90,120]};
+const display={getDisplayByIdSync:id=>{assert.equal(id,gameDisplay.id);return gameDisplay;},
+  getDefaultDisplaySync:()=>{throw Error('此场景仅提供游戏所在屏的报告');}};
+const frontendLease={id:1};let frontendActive=true;
+const dependencies={...game,testNapi:napi,display,deviceInfo:{sdkApiVersion:26},DiagnosticPolicy:{inputTraceEnabled:()=>inputTraceEnabled},TAG:'host',LOG_DOMAIN_LAUNCH:0};
 const module={exports:{}};new Function('module',...Object.keys(dependencies),compiled.outputText)(module,...Object.values(dependencies));
 const subject=new module.exports();Object.assign(subject,{nativeSurfaceContextGeneration:0,nativeSurfaceContextMetadata:'',
+  gameDisplayId:-1,requestedFixedRefreshRate:0,supportedFixedRefreshRate:0,
+  frontendLease,sessionHost:{accepts:lease=>{assert.equal(lease,frontendLease);return frontendActive;}},
   surfaceContextDiagnosticFingerprint_:'',launchLogger_:()=>({warn:(...values)=>diagnosticWarnings.push(values),
     info:(...values)=>{if(diagnosticFailure)throw new Error('explicit logger boundary failure');diagnosticLines.push(values);}})});
 const store=new game.InputSurfaceContextStore(),lease=store.beginPublisher('real-page'),value=new game.InputSurfaceContextCandidate();
@@ -95,6 +106,13 @@ assert.equal(diagnosticLines.length,beforeStable.lines+1,'LOGGER_FAILURE_RETRIED
 const beforeDisabled=frameHints.length,linesDisabled=diagnosticLines.length;inputTraceEnabled=false;
 for(let i=0;i<8;i++)subject.publishStoredInputSurfaceContext(context,'window-heartbeat');
 assert.equal(frameHints.length,beforeDisabled+8,'NATIVE_REFRESH_NOT_GATED_BY_OBSERVER');assert.equal(diagnosticLines.length,linesDisabled);
+// 固定档位只由当前前端请求，失效前端保留原有单参数刷新。这两个分支都要观测 Native 调用。
+subject.requestedFixedRefreshRate=90;
+subject.publishStoredInputSurfaceContext(context,'display-change');
+assert.deepEqual(hintArguments.at(-1),[92,90],'当前租约向 Native 传游戏显示器支持的固定档');
+frontendActive=false;
+subject.publishStoredInputSurfaceContext(context,'window-heartbeat');
+assert.deepEqual(hintArguments.at(-1),[92],'已退役的前端只保留默认刷新路径');
 fs.writeFileSync(path.join(output,getArg('--label')??'positive.json'),JSON.stringify({scope:'actual Mc publisher → actual ingress/core; not SDK/device acceptance',
-  history,nativeResults,frameHints,densities,diagnosticLines,diagnosticWarnings},null,2)+'\n');
+  history,nativeResults,frameHints,hintArguments,densities,diagnosticLines,diagnosticWarnings},null,2)+'\n');
 console.log('PASS actual Mc/native metadata: same-generation current Hz/validbit, no stream events/reset/held loss, forged input rejected, failed-cache retry');

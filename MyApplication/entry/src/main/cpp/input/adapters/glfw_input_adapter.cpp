@@ -5,6 +5,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -460,10 +461,13 @@ struct GlfwInputAdapter::Impl {
         bool hasAggregateRollback = false;
         bool restoreDuringDispatch = false;
         uint64_t previousLastSequence = 0u;
-        std::map<Contributor, int32_t> previousKeyContributors;
-        std::map<int32_t, KeyAggregate> previousKeys;
-        std::map<Contributor, ButtonContributor> previousButtonContributors;
-        std::map<int32_t, ButtonAggregate> previousButtons;
+        struct HeldRollback {
+            std::map<Contributor, int32_t> previousKeyContributors;
+            std::map<int32_t, KeyAggregate> previousKeys;
+            std::map<Contributor, ButtonContributor> previousButtonContributors;
+            std::map<int32_t, ButtonAggregate> previousButtons;
+        };
+        std::optional<HeldRollback> savedHeld;
         bool previousHasSurfacePublication = false;
         AmclInputSurfacePayload previousSurfacePublication{};
         uint64_t previousSurfacePublicationEpoch = 0u;
@@ -761,10 +765,15 @@ struct GlfwInputAdapter::Impl {
         flight.hasAggregateRollback = true;
         flight.restoreDuringDispatch =
             ClearsHeldControlsDuringDispatch(event);
-        flight.previousKeyContributors = keyContributors;
-        flight.previousKeys = keys;
-        flight.previousButtonContributors = buttonContributors;
-        flight.previousButtons = buttons;
+        // 相对位移只会推进序号并使前一绝对位置授权失效，不改变任一持有项。
+        // 保留这两个标量的原有撤销路径，避免每个鼠标样本复制四张与它无关的树。
+        if (event.header.eventType != AMCL_INPUT_EVENT_POINTER_RELATIVE) {
+            flight.savedHeld.emplace();
+            flight.savedHeld->previousKeyContributors = keyContributors;
+            flight.savedHeld->previousKeys = keys;
+            flight.savedHeld->previousButtonContributors = buttonContributors;
+            flight.savedHeld->previousButtons = buttons;
+        }
         flight.previousHasSurfacePublication = hasSurfacePublication;
         flight.previousSurfacePublication = surfacePublication;
         flight.previousSurfacePublicationEpoch = surfacePublicationEpoch;
@@ -802,11 +811,12 @@ struct GlfwInputAdapter::Impl {
         if ((restoreCommitted || restorePartialDispatch) &&
             inFlight.hasAggregateRollback) {
             lastSequence = inFlight.previousLastSequence;
-            keyContributors = std::move(inFlight.previousKeyContributors);
-            keys = std::move(inFlight.previousKeys);
-            buttonContributors =
-                std::move(inFlight.previousButtonContributors);
-            buttons = std::move(inFlight.previousButtons);
+            if (inFlight.savedHeld) {
+                keyContributors = std::move(inFlight.savedHeld->previousKeyContributors);
+                keys = std::move(inFlight.savedHeld->previousKeys);
+                buttonContributors = std::move(inFlight.savedHeld->previousButtonContributors);
+                buttons = std::move(inFlight.savedHeld->previousButtons);
+            }
             hasSurfacePublication =
                 inFlight.previousHasSurfacePublication;
             surfacePublication = inFlight.previousSurfacePublication;
@@ -823,48 +833,48 @@ struct GlfwInputAdapter::Impl {
     }
 
     void MarkEmissionDeliveredForRollbackLocked(const Emission& emission) {
-        if (!inFlight.active || !inFlight.restoreDuringDispatch) return;
+        if (!inFlight.active || !inFlight.restoreDuringDispatch || !inFlight.savedHeld) return;
         if (const auto* key = std::get_if<GlfwKeySinkEvent>(&emission);
             key && key->action == GlfwInputAction::kRelease) {
-            for (auto it = inFlight.previousKeyContributors.begin();
-                 it != inFlight.previousKeyContributors.end();) {
+            for (auto it = inFlight.savedHeld->previousKeyContributors.begin();
+                 it != inFlight.savedHeld->previousKeyContributors.end();) {
                 if (it->second == key->key) {
-                    it = inFlight.previousKeyContributors.erase(it);
+                    it = inFlight.savedHeld->previousKeyContributors.erase(it);
                 } else {
                     ++it;
                 }
             }
-            inFlight.previousKeys.erase(key->key);
+            inFlight.savedHeld->previousKeys.erase(key->key);
         } else if (const auto* button =
                        std::get_if<GlfwButtonSinkEvent>(&emission);
                    button && button->action == GlfwInputAction::kRelease) {
             if (backend == AMCL_INPUT_BACKEND_SDL3_PHYSICAL &&
                 button->deviceId != 0u) {
-                for (auto it = inFlight.previousButtonContributors.begin();
-                     it != inFlight.previousButtonContributors.end(); ++it) {
+                for (auto it = inFlight.savedHeld->previousButtonContributors.begin();
+                     it != inFlight.savedHeld->previousButtonContributors.end(); ++it) {
                     if (it->first.deviceId == button->deviceId &&
                         it->second.mapped == button->button) {
-                        inFlight.previousButtonContributors.erase(it);
+                        inFlight.savedHeld->previousButtonContributors.erase(it);
                         auto aggregate =
-                            inFlight.previousButtons.find(button->button);
-                        if (aggregate != inFlight.previousButtons.end() &&
+                            inFlight.savedHeld->previousButtons.find(button->button);
+                        if (aggregate != inFlight.savedHeld->previousButtons.end() &&
                             aggregate->second.contributorCount != 0u &&
                             --aggregate->second.contributorCount == 0u) {
-                            inFlight.previousButtons.erase(aggregate);
+                            inFlight.savedHeld->previousButtons.erase(aggregate);
                         }
                         break;
                     }
                 }
             } else {
-                for (auto it = inFlight.previousButtonContributors.begin();
-                     it != inFlight.previousButtonContributors.end();) {
+                for (auto it = inFlight.savedHeld->previousButtonContributors.begin();
+                     it != inFlight.savedHeld->previousButtonContributors.end();) {
                     if (it->second.mapped == button->button) {
-                        it = inFlight.previousButtonContributors.erase(it);
+                        it = inFlight.savedHeld->previousButtonContributors.erase(it);
                     } else {
                         ++it;
                     }
                 }
-                inFlight.previousButtons.erase(button->button);
+                inFlight.savedHeld->previousButtons.erase(button->button);
             }
         }
     }
@@ -893,7 +903,8 @@ struct GlfwInputAdapter::Impl {
                                          const PreparedMapping& mapping,
                                          std::vector<Emission>& emissions,
                                          const std::vector<uint8_t>* textBytes =
-                                             nullptr);
+                                             nullptr,
+                                         std::optional<Emission>* relativeSlot = nullptr);
     int32_t AbandonIncarnation(uint64_t expectedIncarnation,
                                uint32_t* discardedByCall,
                                std::vector<Emission>* releases,
@@ -934,7 +945,7 @@ MappingKind GlfwInputAdapter::Impl::MappingRequiredLocked(
 GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
         const AmclInputEvent& event, const PreparedMapping& mapping,
         std::vector<Emission>& emissions,
-        const std::vector<uint8_t>* textBytes) {
+        const std::vector<uint8_t>* textBytes, std::optional<Emission>* relativeSlot) {
     if (event.header.abiVersion != AMCL_INPUT_EVENT_ABI_VERSION ||
         event.header.structSize < sizeof(AmclInputEvent) ||
         event.header.sequence == 0u || event.header.sequence <= lastSequence) {
@@ -1020,7 +1031,7 @@ GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
                         event.payload.physicalKey.lockState,
                         event.header.deviceId, event.header.sequence,
                         event.header.monotonicTimeNs,
-                        aggregate->second.scanCodeSource});
+                        aggregate->second.scanCodeSource, event.payload.physicalKey.textDemandIdentity});
                     keys.erase(aggregate);
                 }
                 return GlfwAdapterStatus::kOk;
@@ -1037,7 +1048,7 @@ GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
                     event.payload.physicalKey.lockState,
                     event.header.deviceId, event.header.sequence,
                     event.header.monotonicTimeNs,
-                    aggregate->second.scanCodeSource});
+                    aggregate->second.scanCodeSource, event.payload.physicalKey.textDemandIdentity});
                 return GlfwAdapterStatus::kOk;
             }
             if (action == AMCL_INPUT_ACTION_REPEAT) {
@@ -1070,7 +1081,7 @@ GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
                     event.payload.physicalKey.modifiersSnapshot,
                     event.payload.physicalKey.lockState,
                     event.header.deviceId, event.header.sequence,
-                    event.header.monotonicTimeNs, mapped.scanCodeSource});
+                    event.header.monotonicTimeNs, mapped.scanCodeSource, event.payload.physicalKey.textDemandIdentity});
             }
             return GlfwAdapterStatus::kOk;
         }
@@ -1208,20 +1219,24 @@ GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
                 surfacePublication.publicationGeneration,
                 event.header.deviceClass});
             return GlfwAdapterStatus::kOk;
-        case AMCL_INPUT_EVENT_POINTER_RELATIVE:
+        case AMCL_INPUT_EVENT_POINTER_RELATIVE: {
             if (!std::isfinite(event.payload.pointerRelative.rawDx) ||
                 !std::isfinite(event.payload.pointerRelative.rawDy)) {
                 return GlfwAdapterStatus::kMalformedEvent;
             }
-            emissions.emplace_back(GlfwRelativeSinkEvent{
+            const GlfwRelativeSinkEvent motion{
                 event.payload.pointerRelative.rawDx,
                 event.payload.pointerRelative.rawDy,
                 event.header.deviceId, event.header.sequence,
                 event.header.monotonicTimeNs,
                 (event.header.flags &
                  AMCL_INPUT_EVENT_FLAG_HARDWARE_RAW) != 0u,
-                event.header.deviceClass});
+                event.header.deviceClass};
+            // 普通泵用调用栈保存唯一的相对位移；启动或退休批仍沿原集合保持记录顺序。
+            if (relativeSlot) relativeSlot->emplace(motion);
+            else emissions.emplace_back(motion);
             return GlfwAdapterStatus::kOk;
+        }
         case AMCL_INPUT_EVENT_POINTER_WHEEL:
             if (!std::isfinite(event.payload.pointerWheel.x) ||
                 !std::isfinite(event.payload.pointerWheel.y) ||
@@ -1410,7 +1425,7 @@ GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
             }
             emissions.emplace_back(GlfwTextSessionSinkEvent{
                 text.textSessionId, text.change, text.reason,
-                event.header.sequence, event.header.monotonicTimeNs});
+                event.header.sequence, event.header.monotonicTimeNs, text.textDemandIdentity});
             return GlfwAdapterStatus::kOk;
         }
         case AMCL_INPUT_EVENT_TEXT_COMMIT: {
@@ -1427,7 +1442,7 @@ GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
             }
             emissions.emplace_back(GlfwTextCommitSinkEvent{
                 textSessionId, *textBytes, event.header.sequence,
-                event.header.monotonicTimeNs});
+                event.header.monotonicTimeNs, event.payload.textCommit.textDemandIdentity});
             return GlfwAdapterStatus::kOk;
         }
         case AMCL_INPUT_EVENT_TEXT_EDITING: {
@@ -1450,7 +1465,7 @@ GlfwAdapterStatus GlfwInputAdapter::Impl::ProcessEventLocked(
                 textSessionId, *textBytes,
                 event.payload.textEditing.selectionStart,
                 event.payload.textEditing.selectionLength,
-                event.header.sequence, event.header.monotonicTimeNs});
+                event.header.sequence, event.header.monotonicTimeNs, event.payload.textEditing.textDemandIdentity});
             return GlfwAdapterStatus::kOk;
         }
         case AMCL_INPUT_EVENT_TEXT_CANDIDATES: {
@@ -2263,14 +2278,15 @@ GlfwPumpResult GlfwInputAdapter::Pump(uint32_t maxEvents, uint64_t maxOrder) {
                         Impl::InFlight& flight = impl_->inFlight;
                         flight.stage = Impl::InFlight::Stage::kCommitted;
                         flight.hasAggregateRollback = true;
+                        flight.savedHeld.emplace();
                         flight.restoreDuringDispatch = true;
                         flight.previousLastSequence = impl_->lastSequence;
-                        flight.previousKeyContributors =
+                        flight.savedHeld->previousKeyContributors =
                             impl_->keyContributors;
-                        flight.previousKeys = impl_->keys;
-                        flight.previousButtonContributors =
+                        flight.savedHeld->previousKeys = impl_->keys;
+                        flight.savedHeld->previousButtonContributors =
                             impl_->buttonContributors;
-                        flight.previousButtons = impl_->buttons;
+                        flight.savedHeld->previousButtons = impl_->buttons;
                     }
                     impl_->ClearAggregatesLocked(0u, 0u, releases);
                     impl_->absoluteAuthorization = {};
@@ -2412,6 +2428,7 @@ GlfwPumpResult GlfwInputAdapter::Pump(uint32_t maxEvents, uint64_t maxOrder) {
         }
 
         std::vector<Emission> emissions;
+        std::optional<Emission> relativeSlot;
         GlfwInputSink sink{};
         GlfwAdapterStatus eventStatus = GlfwAdapterStatus::kOk;
         valid = false;
@@ -2427,9 +2444,9 @@ GlfwPumpResult GlfwInputAdapter::Pump(uint32_t maxEvents, uint64_t maxOrder) {
                 impl_->BeginRollbackCheckpointLocked(event);
                 eventStatus = impl_->ProcessEventLocked(
                     event, mapping, emissions,
-                    IsBlobText(event.header.eventType) ? &textBytes : nullptr);
+                    IsBlobText(event.header.eventType) ? &textBytes : nullptr, &relativeSlot);
                 if (eventStatus == GlfwAdapterStatus::kOk) {
-                    if (emissions.empty()) {
+                    if (!relativeSlot && emissions.empty()) {
                         impl_->inFlight = {};
                     } else {
                         impl_->inFlight.stage =
@@ -2444,7 +2461,7 @@ GlfwPumpResult GlfwInputAdapter::Pump(uint32_t maxEvents, uint64_t maxOrder) {
         }
 
 #if defined(AMCL_GLFW_INPUT_ADAPTER_TESTING)
-        if (!emissions.empty()) {
+        if (relativeSlot || !emissions.empty()) {
             RunAdapterTestHook(
                 GlfwInputAdapterTestSeam::kAfterCommitBeforeDispatch);
         }
@@ -2452,7 +2469,9 @@ GlfwPumpResult GlfwInputAdapter::Pump(uint32_t maxEvents, uint64_t maxOrder) {
 
         std::lock_guard<std::recursive_mutex> emissionLease(
             impl_->callbackMutex);
-        for (const Emission& emission : emissions) {
+        const size_t emissionCount = relativeSlot ? 1 : emissions.size();
+        for (size_t i = 0; i < emissionCount; ++i) {
+            const Emission& emission = relativeSlot ? *relativeSlot : emissions[i];
             valid = false;
             {
                 std::lock_guard<std::mutex> state(impl_->stateMutex);
@@ -2482,7 +2501,7 @@ GlfwPumpResult GlfwInputAdapter::Pump(uint32_t maxEvents, uint64_t maxOrder) {
             }
             impl_->callbackCondition.notify_all();
         }
-        if (!emissions.empty()) {
+        if (emissionCount != 0) {
             std::lock_guard<std::mutex> state(impl_->stateMutex);
             if (impl_->incarnation == incarnation &&
                 impl_->inFlight.active &&

@@ -157,6 +157,14 @@ int main(){
     CHECK(window.cursorX>beforeStateOnly);window.cursorPosCb=moved;
     // 实际gyro四函数：schema拒绝、只读context、原lease的policy/resource退休、同值幂等。
     const auto contextBefore=ohos_touch_gyro_lease_context();CHECK(!contextBefore.empty());
+    // 对照公开给前端的同一身份语义：刷新率可变，密度位/窗口几何/来源代次必须真实匹配。
+    AmclLookResourceV1 a{},b{};
+    CHECK(sameGyroResource(a,b));
+    b.context.refreshRateHz=120; b.context.validFields|=AMCL_INPUT_SURFACE_CONTEXT_FIELD_REFRESH_RATE;
+    CHECK(sameGyroResource(a,b));
+    b.context.density=-0.0f;CHECK(!sameGyroResource(a,b));
+    b.context.density=0.0f; ++b.context.leftPx;CHECK(!sameGyroResource(a,b));
+    b.context.leftPx=0; ++b.sessionEpoch;CHECK(!sameGyroResource(a,b));
     CHECK(ohos_begin_touch_gyro_lease(16).empty());const auto lease=ohos_begin_touch_gyro_lease(17);CHECK(!lease.empty());
     CHECK(!ohos_retire_touch_gyro_lease("GYRO1:999999")&&!ohos_retire_touch_gyro_lease("GYRO1:01")&&
         !ohos_retire_touch_gyro_lease("GYRO1:18446744073709551616")&&!ohos_retire_touch_gyro_lease("other-source"));

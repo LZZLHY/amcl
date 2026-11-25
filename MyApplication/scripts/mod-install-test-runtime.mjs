@@ -45,7 +45,7 @@ export const cryptoFramework = {
 export function productionPathPolicy() {
   const filename=path.join(root,'feature_core/src/main/ets/modloader/MavenUtils.ets');
   const source=ts.createSourceFile(filename,fs.readFileSync(filename,'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
-  const names=['containsControlCharacter','safeBaseName','safeRelPath'];
+  const names=['containsControlCharacter','safeBaseName','safeRelPath','parseMavenName'];
   const selected=source.statements.filter(n=>(ts.isFunctionDeclaration(n)&&names.includes(n.name?.text))
     ||(ts.isVariableStatement(n)&&n.declarationList.declarations.every(d=>d.name.getText(source).startsWith('MAX_SAFE_'))));
   const text=selected.map(n=>n.getText(source)).join('\n');

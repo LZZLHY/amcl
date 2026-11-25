@@ -11,8 +11,8 @@ static SDL_Window* mouse_focus;
 static SDL_Window* keyboard_focus;
 static int submitted_commands=0, last_kind=0, result=1;
 static bool active=true;
-static Uint64 fullscreen_sequence=0, visibility_sequence=0;
-static int fullscreen_status=0,visibility_window=0,shown_events=0,errors=0;
+static Uint64 visibility_sequence=0;
+static int visibility_window=0,shown_events=0,errors=0;
 static bool visibility_pending=false,visibility_shown=true;
 struct Snapshot {Uint64 completed=0;int status=0,lastError=0;};
 struct AmclDesktopHostV1 {

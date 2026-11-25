@@ -5,7 +5,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "amcl-prebuilts",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "curl_sha256": "PENDING",
@@ -28,7 +28,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "authlib-injector",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "asset_url": "https://github.com/yushijinhun/authlib-injector/releases/download/v1.2.8/authlib-injector-1.2.8.jar",
@@ -48,7 +48,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "cacert",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "sha256": "b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171",
@@ -65,7 +65,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "dyncall-native",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "source": "https://dyncall.org/r1.0/dyncall-1.0.tar.gz",
@@ -81,7 +81,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "gl4es",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "144d0dc79855b392e5256dd15fb2dbdedb17141a",
@@ -98,8 +98,30 @@
       "authority": {
         "normalization": "lf",
         "path": "deps.lock",
+        "section": "jemalloc-native",
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+      },
+      "declared": {
+        "commit": "81034ce1f1373e37dc865038e1bc8eeecf559ce8",
+        "hap_sha256": "12026c1f4170e46db2234639ee695dfd2d49fee3e1ec385d07af6755af1ec21c",
+        "hap_size": "322072",
+        "repo": "https://github.com/jemalloc/jemalloc.git",
+        "sha256": "12026c1f4170e46db2234639ee695dfd2d49fee3e1ec385d07af6755af1ec21c",
+        "size": "322072",
+        "source_sha256": "3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92",
+        "tag": "5.3.1"
+      },
+      "id": "deps-lock:jemalloc-native",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
         "section": "jna-runtime",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "manifest": "prebuilt/jna/manifest.json",
@@ -115,7 +137,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "libdrm",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "repo": "https://gitlab.freedesktop.org/mesa/drm.git",
@@ -132,7 +154,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-jars",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "lwjgl-egl_sha256": "364e3902337832f7629c6fb7c2b776164f704e295837bd694e27866a488f5732",
@@ -140,6 +162,7 @@
         "lwjgl-glfw_sha256": "2bfd995b5dcc6f707e1f14c10f9b53b7ca43b49e26293b811746acdc44d7a174",
         "lwjgl-host-natives-linux_sha256": "eb88f7341461174ec2084c41c0e1bfeeed957158e59ed55d9c34a13efcbe2665",
         "lwjgl-host-natives-windows_sha256": "8e48cf335d308a84d7e782f001a5a89fdc9a30766e82a9056f30300bdff70d01",
+        "lwjgl-jemalloc_sha256": "c5d535f251e5960070c2b9dc0cf8e373c8c2f14046c211f5c0a51fa6c970a164",
         "lwjgl-nanovg_sha256": "a124e9aa149355fb735b00a5cd9c42dcc43b6501ca1060cc00f4e1db16001284",
         "lwjgl-openal_sha256": "ec67efd3ec98fd4a6f1cb2fa41e6c9a1493ee167d23ca27d394597b9a06d020c",
         "lwjgl-opengl_sha256": "b8c655fce5ccb5780287a5bae15cf32353582e76c44f1c77ea2d8fd27f1e1a67",
@@ -154,7 +177,7 @@
         "lwjgl-vulkan_sha256": "373282b9e652ddc36c7cbacb659c889ce071c9fcf7c50ed7077f367c2648fbf3",
         "lwjgl_sha256": "980072f45e9ece70d77ce8c8c4299075b2f36fa25c3b17b4e98090f7de75d639",
         "maven_base": "https://repo1.maven.org/maven2/org/lwjgl",
-        "modules": "lwjgl,lwjgl-glfw,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd,lwjgl-nanovg,lwjgl-openal,lwjgl-vulkan,lwjgl-egl,lwjgl-opengles,lwjgl-freetype,lwjgl-shaderc,lwjgl-spvc,lwjgl-vma,lwjgl-sdl,lwjgl-spng",
+        "modules": "lwjgl,lwjgl-glfw,lwjgl-opengl,lwjgl-stb,lwjgl-tinyfd,lwjgl-nanovg,lwjgl-openal,lwjgl-vulkan,lwjgl-egl,lwjgl-opengles,lwjgl-freetype,lwjgl-shaderc,lwjgl-spvc,lwjgl-vma,lwjgl-sdl,lwjgl-spng,lwjgl-jemalloc",
         "version": "3.4.2"
       },
       "id": "deps-lock:lwjgl-jars",
@@ -167,7 +190,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-jars-322",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "lwjgl-glfw_sha256": "ef279cdaeede4ca344e756a56f85a85cbd039f7931011975672dc1b900b59c8f",
@@ -191,7 +214,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-natives",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
@@ -225,7 +248,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-natives-322",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "e41032b23adb2d494e2c492777e99e5d9697a860",
@@ -246,7 +269,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "asset": "jdk17-ohos-full-v5.zip",
@@ -264,7 +287,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-21",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "asset": "jdk21-ohos-full-v7.zip",
@@ -282,7 +305,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-25",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "asset": "jdk25-ohos-full-v2.zip",
@@ -300,7 +323,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-8",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "asset": "jdk8-ohos-full-v4.zip",
@@ -318,7 +341,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mesa-zink",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de",
@@ -338,14 +361,14 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mobilegl",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "base_commit": "0d2fceab0eb0776b8e9c10903b50572579de8cc3",
-        "branch": "amcl/ohos",
-        "commit": "234a95b88e8f1a5a91ae542a37b566d9631434af",
-        "libmobilegl_stripped_sha256": "97aa55fbb70f4164bd14c911dfca4901cce4ab291d28cdb15c7541af37fe88fc",
-        "libmobilegl_unstripped_sha256": "5fcddd5616e31327bd9e145aafab49dac1c3a2941311e7da7cb00fd0fb188981",
+        "branch": "amcl/ohos-hwc",
+        "commit": "b8139cdd1240143e9a50410184d69635dc263d24",
+        "libmobilegl_stripped_sha256": "c9560e3cf59dcede87828dba8cf50f6fe320c188c5c4ae56feea44466f202661",
+        "libmobilegl_unstripped_sha256": "3ff36a411902b1a0cb32b905e1bc4774461c8f56d73695bc28e47124181b18db",
         "repo": "https://github.com/LZZLHY/MobileGL.git",
         "spirv_headers_commit": "2a611a970fdbc41ac2e3e328802aed9985352dca",
         "spirv_tools_commit": "33e02568181e3312f49a3cf33df470bf96ef293a",
@@ -363,7 +386,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mobileglues",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "android_plugin_branch": "dev",
@@ -400,7 +423,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openal-soft",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
@@ -418,7 +441,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "PENDING",
@@ -436,7 +459,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk-21",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
@@ -454,7 +477,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk-25",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
@@ -472,18 +495,18 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "sdl3-native",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "base_commit": "de51952c2ea538241909789926f4d01845ad1bb0",
         "branch": "sdl3-harmonyos",
         "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
-        "hap_sha256": "7c2a09fa6d4e4172a147fd105cfa203e433b2e11049734e7622bd845892d6c29",
-        "hap_size": "1861448",
-        "patchset_sha256": "da5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9",
+        "hap_sha256": "d48d772c9cb9f1b2d34a415c2646b2b9ead601ffd4043a5bd5459eb53b3a7bf8",
+        "hap_size": "1876096",
+        "patchset_sha256": "d93acd64e6f581e31b5b04f1fb36f176eaba9f31b3bc2cfa9acd60f2e3895e15",
         "repo": "https://github.com/icculus/SDL.git",
-        "sha256": "853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064",
-        "size": "2257888",
+        "sha256": "fb11b0f89187d18212f7003a5c0c82ac292e4547d4bf1081fd39f2590c619678",
+        "size": "2276192",
         "upstream": "https://github.com/libsdl-org/SDL.git"
       },
       "id": "deps-lock:sdl3-native",
@@ -496,7 +519,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "shaderc-native",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "301b4ede53d59b68bf55f95bb26412d9233c8187",
@@ -515,7 +538,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "spvc-native",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "commit": "11e6d02d379319a4b570f3eb65d4b19ea7b543bf",
@@ -534,7 +557,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "zstd-jni",
-        "sha256": "dc38690c93211d89682074b5c3583e8469ccd3341a09ccfe2bc19d9ef9d1d612"
+        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
       },
       "declared": {
         "artifacts_sha256": "1081e7b42823c44ea32152bdef659592c190bb6efbe1c99c0cf0d65375c1b7cf",
@@ -600,7 +623,7 @@
       "rebuildValidation": "not-performed-by-this-tool",
       "remoteAvailability": "not-checked",
       "source": {
-        "commit": "234a95b88e8f1a5a91ae542a37b566d9631434af",
+        "commit": "b8139cdd1240143e9a50410184d69635dc263d24",
         "repository": "https://github.com/LZZLHY/MobileGL.git"
       }
     },
@@ -2841,6 +2864,24 @@
     {
       "authority": {
         "normalization": "lf",
+        "path": "prebuilt/jemalloc/build-provenance.json",
+        "sha256": "f3dc6fd326c33df568d29b4dcd397d6a811ce3961ae8d636f1c63ebfeed5cb9b"
+      },
+      "declarations": {
+        "commit": "81034ce1f1373e37dc865038e1bc8eeecf559ce8",
+        "license": "COPYING",
+        "source": "https://github.com/jemalloc/jemalloc/releases/download/5.3.1/jemalloc-5.3.1.tar.bz2"
+      },
+      "files": [],
+      "id": "metadata:prebuilt/jemalloc/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
         "path": "prebuilt/jna/manifest.json",
         "sha256": "25832ce2edc66fc9eda599896ef3f0a4fe409db55fa89bfa9feca56ed1b46cbf"
       },
@@ -2944,7 +2985,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/lwjgl3/jdk-views/manifest.json",
-        "sha256": "81ff314ccc575f4fad1468ef3a563191359e1da8b1eba8ff9818e21cd35dc54e"
+        "sha256": "339495506d44150c97ade4e434d52f7a027728e84d9c40f08c77aebbbe2f145d"
       },
       "declarations": {},
       "files": [],
@@ -3028,10 +3069,10 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/mobilegl/dist/build-provenance.json",
-        "sha256": "99d4fda1c47555169ca035b978b033031ce13fc6647654b97b610e911a67fee3"
+        "sha256": "01bc74199e7e04cd27ff86c335bfec62a66dd8790ed96f50da2f5c641db35ce5"
       },
       "declarations": {
-        "commit": "234a95b88e8f1a5a91ae542a37b566d9631434af"
+        "commit": "b8139cdd1240143e9a50410184d69635dc263d24"
       },
       "files": [],
       "id": "metadata:prebuilt/mobilegl/dist/build-provenance.json",
@@ -3132,7 +3173,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/sdl3/build-provenance.json",
-        "sha256": "43d3a9fbce3cc0d4605bac71148b233a6d728d40581ee866a8fe6d5de072325f"
+        "sha256": "be6a0c2af24cd2b5d243fc9a7653b125a9146bb311fe78730920c3ea93cb3888"
       },
       "declarations": {},
       "files": [],
@@ -3150,7 +3191,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/sdl3/patches/series",
-        "sha256": "088ed1eca0713187cab085dbf041882883a8ad3e62b97ea8291b228e41165bb0"
+        "sha256": "ee3c4bc7759a8157c5b3bc0df00fca9ad5d9dc33c0e5fa5b2316c9dc53a5ed33"
       },
       "id": "metadata:prebuilt/sdl3/patches/series",
       "kind": "patch-series",
@@ -3334,6 +3375,42 @@
           "order": 30,
           "path": "prebuilt/sdl3/patches/0030-openharmony-auxiliary-sdl-role.patch",
           "sha256": "464894148deddb717bfe628a106e6c05ef816801f892368130d3ad7c1c83819d"
+        },
+        {
+          "normalization": "none",
+          "order": 31,
+          "path": "prebuilt/sdl3/patches/0031-openharmony-phone-clipboard-write.patch",
+          "sha256": "22f00522615f7956f65281a610abe2a3703c57ed3f61103e6f8443b80a880641"
+        },
+        {
+          "normalization": "none",
+          "order": 32,
+          "path": "prebuilt/sdl3/patches/0034-mobile-gamepad-joystick-subsystem.patch",
+          "sha256": "2ff6f0a91f11b5440f868d8f79a94208af344954ce6ff496dcd5f095c2d651d3"
+        },
+        {
+          "normalization": "none",
+          "order": 33,
+          "path": "prebuilt/sdl3/patches/0032-openharmony-desktop-fullscreen-sync.patch",
+          "sha256": "5729e6c37dab7f8b01c9d9efe72a92d4a21aa20a3255170d81de1bc9eba78bfe"
+        },
+        {
+          "normalization": "none",
+          "order": 34,
+          "path": "prebuilt/sdl3/patches/0033-openharmony-presented-text-input-demand.patch",
+          "sha256": "4eac8db5ff11e31a83eb9a763aef2096d822d306c71b2d37c37376b340deb2f7"
+        },
+        {
+          "normalization": "none",
+          "order": 35,
+          "path": "prebuilt/sdl3/patches/0035-openharmony-carried-menu-cursor-position.patch",
+          "sha256": "bcee2db73a84ab68530cf23d9772f3c87f7930d43928d67505ce886c3da76273"
+        },
+        {
+          "normalization": "none",
+          "order": 36,
+          "path": "prebuilt/sdl3/patches/0036-openharmony-gamepad-change-query.patch",
+          "sha256": "8da4f822f5e6aadf4520630f36d82ad827f40e0fdc9b42e89e7ce9d07dd83892"
         }
       ]
     },
@@ -3341,7 +3418,7 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/sdl3/tests/fixtures/e293db30d/manifest.json",
-        "sha256": "d2437c1307f0fba8e7159781e05472961e310c5cdf76882efac72aac16ee663b"
+        "sha256": "224b9903252cca00223223988909442b545258d07ddf0e013edb4b5f59bfa19e"
       },
       "declarations": {
         "license": "Zlib"
@@ -3354,6 +3431,10 @@
         {
           "sha256": "4381c2503c333f3aa8732cb6b071b6d3fe95595947b59b987b4bd32dc919338c",
           "size": 71515
+        },
+        {
+          "sha256": "940c827a99a09c1f55d06b1976980a7f7c61e1448ee2f29c89b011b207d43455",
+          "size": 198801
         },
         {
           "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
@@ -3618,5 +3699,5 @@
   },
   "schemaVersion": 1,
   "scope": "declared-public-dependency-inputs",
-  "sourceCommit": "da25a1c48592c59e7240b262521a7ca17713d83a"
+  "sourceCommit": "bb8eface1eaffb4c57a6b74e0421cb0c63461afa"
 }

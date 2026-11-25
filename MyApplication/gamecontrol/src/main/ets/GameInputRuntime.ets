@@ -163,10 +163,10 @@ export class GameInputRuntime implements InputEnd {
   }
 
   /** 外部 heartbeat/新事件也是重试配置的机会，不要求持续开一个空转高频 timer。 */
-  reconcile(): void {
-    this.gamepad.reconcileConnectionCleanup()
+  reconcile(maintainedStore?: LayoutStore): void {
     this.gamepad.reconcileLookExecution()
-    this.store?.reconcileInputConfiguration()
+    // 独立运行及前一步维护失败时仍可重试；同一拍已经推进的原仓库无需再次投递。
+    if (this.store !== maintainedStore) this.store?.reconcileInputConfiguration()
     this.applyConfiguration()
     this.schedule()
   }
@@ -222,7 +222,7 @@ export class GameInputRuntime implements InputEnd {
       // 精确token/子流清理也会调用Native，并可同步切换activation及安装新轴事实。
       // 原timer在每个可回入副作用之后仍须核原代次，不能借新look状态继续advance或配置。
       if (this.admissionExhausted || activation !== this.admissionEpoch || !this.active) return
-      this.advance()
+      this.advance(true)
       if (this.admissionExhausted || activation !== this.admissionEpoch || !this.active) return
       this.applyConfiguration()
       if (this.admissionExhausted || activation !== this.admissionEpoch || !this.active) return
@@ -230,11 +230,11 @@ export class GameInputRuntime implements InputEnd {
     }, 16) as number
   }
 
-  private advance(): void {
+  private advance(cleanupDone: boolean = false): void {
     if (this.gamepad.usesSharedLookExecution()) {
       // Native owner在样本/动作/维护边界采自身MONOTONIC，不能把ACTIVE uptime的ns
       // 当作同一时钟再积分一次。后台/未抓取不推进，新动作由原Native提交批次封prefix。
-      if (this.active && this.grabbed) this.gamepad.advanceMappedLook(0, 0)
+      if (this.active && this.grabbed) this.gamepad.advanceMappedLook(0, 0, cleanupDone)
       return
     }
     const now: number = this.readClock()
@@ -243,7 +243,7 @@ export class GameInputRuntime implements InputEnd {
     if (!this.active || !this.grabbed || previous < 0 || !Number.isFinite(now) || now < previous) return
     // 事件线程卡顿只计算最多50ms，禁止恢复时补发数秒相机旋转。
     // 与dt使用同一次单调时钟采样，跨NAPI后仍保留毫秒→纳秒的明确单位边界。
-    this.gamepad.advanceMappedLook(Math.min(50, now - previous) / 1000, Math.trunc(now * 1000000))
+    this.gamepad.advanceMappedLook(Math.min(50, now - previous) / 1000, Math.trunc(now * 1000000), cleanupDone)
   }
 
   /** 平台时钟异常不逃出timer回调；下次有效采样重新建立基线，不使用墙钟兜底。 */

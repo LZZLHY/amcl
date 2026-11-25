@@ -32,6 +32,7 @@
 
 // 弹窗和动画统一使用本组件的 UIContext；导出也由当前 Sheet 内嵌承接，不再创建路由页面。
 import { AppTitleAction } from './AppTitleAction';
+import { VersionRenameConfirmation } from '../runtime/LauncherManagementAccess';
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { curves } from '@kit.ArkUI';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -45,7 +46,7 @@ import { readModpackSnapshot, ModpackSnapshot, ModpackMissingItem } from 'mods';
 import { ModpackInstallTask, reopenModpackRepair, createModpackFileResolver, resolveCurseForgeFileSourcePreference,
   CurseForgeFileSourceMode } from 'mods';
 import { getDownloadTaskRegistry, getRelayClient } from 'feature_core';
-import { resolveInstalledMcVersion } from 'mods';
+import { resolveInstalledGameId } from 'mods';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
@@ -56,8 +57,8 @@ import { VersionListDataSource } from './VersionListDataSource';
 // getInstalledBadgeInfo 进一步把 vanilla 子类（snapshot/aprilfools/old）的徽章
 // 文案 + 配色也纳入统一接口（修 "26.2-snapshot-8" 显示为 "原版" 草绿的 bug）。
 import {
-  inferLoaderKey, inferLoaderInfo, getLoaderInfo, getInstalledBadgeInfo,
-  resolveInstalledLoaderKey, resolveInstalledLoaderInfo, getInstalledBadgeInfoResolved,
+  getLoaderInfo, resolveInstalledLoaderKey, resolveInstalledLoaderInfo,
+  getInstalledBadgeInfoResolved, resolveInstalledVersionCategory,
 } from '../components/LoaderCatalog';
 import { countFilesWithExtensions, validateVersionName } from 'commons';
 import { ResourceKind } from 'mods';
@@ -65,6 +66,8 @@ import { InstalledResourcesSheet } from './InstalledResourcesSheet';
 import { SavesManagerSheet } from './SavesManagerSheet';
 import { VersionFileBrowser } from './VersionFileBrowser';
 import { GameArchiveIO } from './GameArchiveIO';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { result, textArg } from '../launcherskill/LibraryResult';
 import { GameExportSheet } from './GameExportSheet';
 import { GameResolutionSettings, GameResolutionPreferenceSnapshot } from './GameResolutionSettings';
 import { VersionDetailOptionRow, VersionDetailDivider, VersionDetailChoiceRow } from './VersionDetailOptionRow';
@@ -89,7 +92,7 @@ export struct VersionManagerSheet {
   @Prop currentVersion: string = ''
   @Prop @Watch('onAvailableVersionsChange') availableVersions: string[] = []
   @Prop orphanVersionDirs: string[] = []
-  @Prop versionIsolation: boolean = true
+  @Prop @Watch('onDetailSourceChanged_') versionIsolation: boolean = true
   /**
    * 当前 .minecraft 是否位于「沙箱外」（外部 Download/com.amcl.launcher）。
    * 由父级 Index 传入（= storageLocation === EXTERNAL）。
@@ -105,7 +108,7 @@ export struct VersionManagerSheet {
    * ApplicationContext 而非 UIAbilityContext），filesDir 不一定指向
    * 正确的沙盒目录，会让 fs.listFileSync 静默命中空目录、计数全 0。
    */
-  @Prop mcDir: string = ''
+  @Prop @Watch('onDetailSourceChanged_') mcDir: string = ''
   /** detail step 展示用，未传时回退 "—" */
   @Prop mcXmx: number = 0
   @Prop selectedJdkVersion: string = ''
@@ -205,6 +208,7 @@ export struct VersionManagerSheet {
    *   - renameError:  即时校验错误（空串 = 无错；非空时在输入框下方红字提示并禁用确定）
    */
   @State private showRename: boolean = false
+  private renameConfirmation_: VersionRenameConfirmation | undefined = undefined
   @State private renameInput: string = ''
   @State private renameError: string = ''
 
@@ -249,7 +253,7 @@ export struct VersionManagerSheet {
   private exportVersionId_: string = ''
   private exportVersionIsolation_: boolean = true
 
-  onSelectVersion: (ver: string) => void = () => {}
+  onSelectVersion: (ver: string) => Promise<boolean> = async (): Promise<boolean> => false
   onDeleteVersion: (ver: string) => void = () => {}
   onAddNew: () => void = () => {}
   onCleanupOrphans: () => void = () => {}
@@ -263,14 +267,9 @@ export struct VersionManagerSheet {
    */
   onRegisterExportDismiss: (handler: ((back?: boolean) => void) | undefined) => void = () => {}
   /**
-   * 重命名版本目录。父组件应执行实际的文件系统操作（见 FileUtils.renameVersion），
-   * 并在成功后重扫版本列表 / 同步当前选中版本 / 持久化偏好。
-   *
-   * @returns true = 重命名成功（sheet 据此把详情切到新名 + 关闭浮层）；
-   *          false = 失败（父组件已 toast 具体原因，sheet 保持浮层让用户改）。
-   * 默认实现 no-op 返回 false，方便老调用方平滑迁移。
+   * 打开输入框时由父页绑定源目录身份，确认回调仅提交最初看到的实例。
    */
-  onRenameVersion: (oldVer: string, newVer: string) => boolean = () => false
+  onPrepareRename: (version: string) => VersionRenameConfirmation | undefined = () => undefined
   /** v2 之后内部不再触发；保留为公开 API */
   onOpenVersionDetail: (ver: string) => void = () => {}
   /**
@@ -291,7 +290,7 @@ export struct VersionManagerSheet {
    * 持久化某版本的【单版本 JDK 选择】。父组件接 PreferenceManager.setVersionOverride
    * （只改 jdkVersion 字段，其余保持）+ 刷新 jdkReady。choice ∈ '' | 'auto' | 具体版本。默认 no-op。
    */
-  onSaveVersionJdk: (ver: string, choice: string) => void = () => {}
+  onSaveVersionJdk: (ver: string, choice: string) => Promise<boolean> = async (): Promise<boolean> => false
 
   /** 原偏好owner提供已确认比例与继承后的有效政策，详情面板不自行读取Preferences。 */
   loadVersionResolution: (ver: string) => GameResolutionPreferenceSnapshot = () => new GameResolutionPreferenceSnapshot()
@@ -309,7 +308,7 @@ export struct VersionManagerSheet {
    * 持久化某版本的【单版本游戏语言】。父组件接 PreferenceManager.setVersionOverride
    * （只改 gameLanguage 字段，其余保持）。code ∈ '' | 具体 code。默认 no-op。
    */
-  onSaveVersionGameLang: (ver: string, code: string) => void = () => {}
+  onSaveVersionGameLang: (ver: string, code: string) => Promise<boolean> = async (): Promise<boolean> => false
 
   /**
    * 读取某版本的"单版本自定义 JVM 参数"。父组件接 PreferenceManager.getVersionOverride。
@@ -337,7 +336,7 @@ export struct VersionManagerSheet {
    * 父组件持久化（PreferenceManager.versionOrder）并即时应用到 availableVersions。
    * 仅在未启用 loader 过滤时可拖拽（过滤子集拖拽语义不清晰）。
    */
-  onReorderVersions: (newOrder: string[]) => void = () => {}
+  onReorderVersions: (newOrder: string[]) => Promise<boolean> = async (): Promise<boolean> => false
 
   /**
    * v3 深链：按 initialStep 决定打开本 sheet 时落在哪一步。
@@ -346,6 +345,8 @@ export struct VersionManagerSheet {
   aboutToAppear() {
     this.orderVersions = this.availableVersions.slice()
     this.refreshVersionRows_()
+    LauncherSkillBus.bind('versionPanel',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>this.runVersionSkill_(method,args),
+      ():boolean=>AppStorage.get<boolean>('appInForeground')===true && !this.managerNavigationBlocked_())
     if (this.initialStep === 'resources') {
       let ver = this.initialResourceVersion.length > 0 ? this.initialResourceVersion : this.currentVersion
       this.detailVersion = ver
@@ -356,15 +357,26 @@ export struct VersionManagerSheet {
       this.loadModpackSnapshot_(ver)
       this.currentStep = 'resources'
       this.pageMotion_.reset(2)
-    } else if (this.initialStep === 'detail') {
+    } else if (['detail','saves','files','jdk','jvm','language','resolution'].includes(this.initialStep)) {
       let ver = this.initialResourceVersion.length > 0 ? this.initialResourceVersion : this.currentVersion
       this.detailVersion = ver
       this.resetDetailCounts()
       this.refreshDetailResStat(ver)
       this.loadModpackSnapshot_(ver)
       this.loadVersionJvmArgsState(ver)
-      this.currentStep = 'detail'
-      this.pageMotion_.reset(1)
+      // 具名入口使用同一个详情实例和内嵌编辑器，初始化时不修改首页的选择。
+      this.currentStep = this.initialStep
+      this.mountStep_('detail')
+      if (this.currentStep === 'files' || this.currentStep === 'saves') {
+        this.pageMotion_.reset(this.currentStep === 'files' ? 4 : 3)
+      } else if (this.currentStep !== 'detail' && this.canRunGame) {
+        this.detailEditorKind_=this.currentStep
+        this.detailEditorMounted_=true
+        this.pageMotion_.reset(2)
+      } else {
+        this.currentStep='detail'
+        this.pageMotion_.reset(1)
+      }
     } else {
       this.currentStep = 'list'
       this.pageMotion_.reset(0)
@@ -384,6 +396,8 @@ export struct VersionManagerSheet {
 
   /** 关闭展示层只清理订阅和宿主保护，不取消后台导出，也不清理协调器持有的工作目录。 */
   aboutToDisappear(): void {
+    this.closeRename()
+    LauncherSkillBus.unbind('versionPanel',this)
     this.pageMotion_.dispose()
     if (this.exportTaskUnsubscribe_ !== null) this.exportTaskUnsubscribe_()
     this.exportTaskUnsubscribe_ = null
@@ -397,6 +411,18 @@ export struct VersionManagerSheet {
     else if (step === 'resources') this.resourcesMounted_ = true
     else if (step === 'saves') this.savesMounted_ = true
     else if (step === 'files') this.filesMounted_ = true
+  }
+
+  /** 已打开的详情按最新目录重算资源数量；更换存储根时也更新同名实例的整合包和导出状态。 */
+  private onDetailSourceChanged_(field: string): void {
+    // 两个存储根可以有同名实例，切根后即使版本名列表相同也要重新应用加载器筛选。
+    if (field === 'mcDir') this.refreshVersionRows_()
+    if (this.detailVersion.length === 0) return
+    this.refreshDetailResStat(this.detailVersion)
+    if (field === 'mcDir') {
+      this.loadModpackSnapshot_(this.detailVersion)
+      this.refreshDetailExportTask_()
+    }
   }
 
   /** 筛选与完整列表变化只发布现有主键视图，LazyForEach 决定实际需要构造哪些行。 */
@@ -630,6 +656,8 @@ export struct VersionManagerSheet {
         this.FilterChip('vanilla', '原版')
         this.FilterChip('fabric', 'Fabric')
         this.FilterChip('forge', 'Forge')
+        this.FilterChip('neoforge', 'NeoForge')
+        this.FilterChip('quilt', 'Quilt')
         Row({ space: 4 }) {
           Text('时间').fontSize(11).fontWeight(500).fontColor(this.theme.textSecondary)
           AppIcon({ name: AppIconName.ChevronDown, iconSize: 11, color: this.theme.textSecondary })
@@ -744,11 +772,13 @@ export struct VersionManagerSheet {
         }
         // 图标 —— PCL2 同款方块图标：草方块/命令方块/金块/圆石/铁砧/Fabric/Quilt/NeoForge
         // 不再用旧的 AppIcon SymbolGlyph + 主题色背景：方块贴图自带颜色识别度，
-        // 包一层背景反而冲突。版本类别由 classifyVersion(versionId) 推断。
+        // 类别取实际已装版本身份，与同一行的加载器徽章一致。
         // cornerRadius=0：3D 方块边角是图本身的视觉特征（草方块的草边、铁砧的金属角），
         // 切圆角会把这些细节剪掉，反而失去立体感
         VersionBlockIcon({
           versionId: ver,
+          category: resolveInstalledVersionCategory(this.mcDir, ver),
+          iconIdPrefix: 'version-list-icon-' + ver,
           iconSize: 40,
           cornerRadius: 0,
           overrideImagePath: getModpackIconPath(this.mcDir, ver),
@@ -1003,6 +1033,7 @@ export struct VersionManagerSheet {
       Stack() {
         Column().width(56).height(56).borderRadius(14).backgroundColor(this.theme.primaryLight)
         VersionBlockIcon({ versionId: this.detailVersion, iconSize: 42, cornerRadius: 0,
+          category: resolveInstalledVersionCategory(this.mcDir, this.detailVersion), iconIdPrefix: 'version-detail-icon',
           overrideImagePath: getModpackIconPath(this.mcDir, this.detailVersion) })
       }.width(56).height(56)
       Column({ space: 5 }) {
@@ -1209,6 +1240,8 @@ export struct VersionManagerSheet {
         Column().width(56).height(56).backgroundColor('#FFFFFF20').borderRadius(14)
         VersionBlockIcon({
           versionId: this.detailVersion,
+          category: resolveInstalledVersionCategory(this.mcDir, this.detailVersion),
+          iconIdPrefix: 'version-detail-icon',
           iconSize: 44,
           cornerRadius: 0,
           overrideImagePath: getModpackIconPath(this.mcDir, this.detailVersion),
@@ -1312,20 +1345,24 @@ export struct VersionManagerSheet {
   }
 
   /** 精确收据可定位原安装计划；旧收据仍保留复制清单，不猜测其来源文件版本。 */
-  private repairModpack_(): void {
+  private repairModpack_(): Record<string,Object> {
     let snap = this.detailModpackSnap_
     let context = this.getAbilityCtx()
-    if (snap === null || snap.installId === undefined || context === null) return
+    if (snap === null || snap.installId === undefined || context === null) return result('failed','invalidPackReceipt')
     let id = 'modpack:' + snap.installId
     let registry = getDownloadTaskRegistry()
+    // 旧任务卡可以提供前台导航，但不能作为本次补齐的独立受理证明。
+    if (registry.getAdapter(id)!==null) {
+      this.onClose();this.onOpenDownloadTask(id)
+      return {'state':'needsUser','reason':'existingTaskRequiresReview','taskId':id}
+    }
     // 用户从已安装实例主动要求补齐时可以开启新一轮，仍由任务层核对正式收据与旧执行状态。
     try {
       reopenModpackRepair(context.filesDir, snap.installId, this.mcDir, this.detailVersion)
     } catch (error) {
       this.safeToast((error as Error).message, 2000)
-      return
+      return result('failed','repairReopenRejected')
     }
-    if (registry.getAdapter(id) === null) {
       // 从已安装实例补齐也要捕获开关意图；恢复计划会单调保留更严格约束，不能因
       // 此入口没有经过在线详情而重新允许MCIM正文。CF元数据仍走既有许可通道。
       let officialOnly = resolveCurseForgeFileSourcePreference(this.modSource, getRelayClient().isEnabled())
@@ -1338,9 +1375,10 @@ export struct VersionManagerSheet {
       registry.enqueue(task).catch((error: Error): void => {
         this.getUIContext().getPromptAction().showToast({ message: error.message })
       })
-    }
+    const owned=registry.getAdapter(id)===task
     this.onClose()
     this.onOpenDownloadTask(id)
+    return {'state':owned?'accepted':'unknown','taskId':id,'activityId':owned?task.view.startedAtMs:0}
   }
 
   /** 整合包来源 → 展示标签。 */
@@ -1680,18 +1718,51 @@ export struct VersionManagerSheet {
   }
 
   /** 在文件管理中打开版本目录下的子目录（sub='' 为版本根）。 */
-  private async openFolder(sub: string): Promise<void> {
-    if (this.openingFolder || !this.isExternalStorage) return
+  /** 复用当前版本详情的原生回调；机器不能传入目录路径、外部链接或 JVM 命令行。 */
+  private async runVersionSkill_(method:string,args:Record<string,Object>):Promise<Record<string,Object>> {
+    const instance=textArg(args,'instance')
+    if (!instance || this.detailVersion!==instance || !this.availableVersions.includes(instance)) return result('failed','instanceChanged')
+    if (method==='getInstancePack' || method==='repairInstancePack' || method==='copyInstancePackMissing') {
+      if (this.currentStep!=='detail') return result('needsUser','showInstanceDetail')
+      this.loadModpackSnapshot_(instance)
+      const snap=this.detailModpackSnap_
+      if (!snap) return result('failed','noPackReceipt')
+      if (method==='getInstancePack') return {'state':'ready','instance':instance,'source':snap.source,'pack':snap.name,'packVersion':snap.packVersion,
+        'gameVersion':snap.gameVersion,'loader':snap.loaderType,'loaderVersion':snap.loaderVersion,'installedAt':snap.installedAt,
+        'missing':snap.missing.map((m):Record<string,Object>=>({'name':m.name,'reason':m.reason})), 'canRepair':!!snap.installId && snap.missing.length>0}
+      if (method==='copyInstancePackMissing') {
+        return await this.copyModpackMissing_(snap)?result('ready'):result('failed','clipboardUnavailable')
+      }
+      if (!snap.installId || !snap.missing.length) return result('failed','noRepairablePlan')
+      return this.repairModpack_()
+    }
+    if (method==='setInstanceLanguage') {
+      const language=textArg(args,'language')
+      if (!this.canRunGame || (language!=='inherit' && !GAME_LANGUAGES.some(item=>item.code===language))) return result('failed','invalidLanguage')
+      const chosen=language==='inherit'?'':language
+      if (!await this.onSaveVersionGameLang(instance,chosen)) return result('failed','languageNotSaved')
+      return this.detailVersion===instance && this.loadVersionGameLang(instance)===chosen?{'state':'ready','language':language}:result('failed','languageNotSaved')
+    }
+    if (method==='openInstanceSystemFolder') {
+      const sub=textArg(args,'folder')
+      if (!this.isExternalStorage || !['root','mods','saves','resourcepacks','shaderpacks'].includes(sub)) return result('failed','folderUnavailable')
+      return await this.openFolder(sub==='root'?'':sub)?result('needsUser','systemFileManager'):result('failed','systemFolderUnavailable')
+    }
+    return result('failed','unsupportedOperation')
+  }
+
+  private async openFolder(sub: string): Promise<boolean> {
+    if (this.openingFolder || !this.isExternalStorage) return false
     let base = this.verDir()
     if (base.length === 0) {
       this.safeToast('目录无效', 1500)
-      return
+      return false
     }
     let dir = sub.length > 0 ? (base + '/' + sub) : base
     let ctx = this.getAbilityCtx()
     if (ctx === null) {
       this.safeToast('上下文不可用', 1500)
-      return
+      return false
     }
     this.openingFolder = true
     try {
@@ -1699,9 +1770,11 @@ export struct VersionManagerSheet {
       if (!r.launched && r.message.length > 0) {
         this.safeToast(r.message, 3000)
       }
+      return r.launched
     } catch (e) {
       hilog.warn(0x0000, TAG, 'openFolder failed: %{public}s', (e as Error).message)
       this.safeToast('打开失败：' + (e as Error).message, 2000)
+      return false
     } finally {
       this.openingFolder = false
     }
@@ -1711,14 +1784,13 @@ export struct VersionManagerSheet {
   //  Step transitions / 行为 helpers
   // ============================================================
 
-  private handleSelectVersion(ver: string): void {
+  private async handleSelectVersion(ver: string): Promise<void> {
     if (ver === this.currentVersion) {
       // 已是当前版本：仅做轻提示，不重复触发上层 onSelectVersion
       this.flashSwitched('已是当前版本')
       return
     }
-    this.onSelectVersion(ver)
-    this.flashSwitched('已切换到 ' + ver + ' ✓')
+    if (await this.onSelectVersion(ver)) this.flashSwitched('已切换到 ' + ver + ' ✓')
   }
 
   /** 切换确认使用当前 UIContext 的短提示；选中行仍由原 currentVersion 回传更新。 */
@@ -1792,22 +1864,26 @@ export struct VersionManagerSheet {
   }
 
   /** 选择立即应用原回调并返回详情；只有当前子页可发事件，动画中的迟到点击忽略。 */
-  private applyJdkChoice_(value: string): void {
+  private async applyJdkChoice_(value: string): Promise<void> {
     if (this.currentStep !== 'jdk' || this.pageMotion_.moving) return
     if (value !== '' && value !== 'auto' && !this.supportedJdkVersions.includes(value)) return
     try {
-      if (value !== this.versionJdk) this.onSaveVersionJdk(this.detailVersion, value)
+      const instance = this.detailVersion;
+      if (value !== this.versionJdk && !await this.onSaveVersionJdk(instance,value)) { this.safeToast('设置保存失败，请重试',1800); return; }
+      if (this.detailVersion !== instance || this.currentStep !== 'jdk') return;
       this.versionJdk = value
       this.backToDetail()
     } catch (_) { this.safeToast('Java 运行时设置失败，请重试', 1800) }
   }
 
   /** 语言写入下一次启动策略；搜索只过滤视图，不改变任何已保存值。 */
-  private applyLanguageChoice_(value: string): void {
+  private async applyLanguageChoice_(value: string): Promise<void> {
     if (this.currentStep !== 'language' || this.pageMotion_.moving) return
     if (value !== '' && !GAME_LANGUAGES.some((item: GameLanguageOption): boolean => item.code === value)) return
     try {
-      if (value !== this.versionGameLang) this.onSaveVersionGameLang(this.detailVersion, value)
+      const instance = this.detailVersion;
+      if (value !== this.versionGameLang && !await this.onSaveVersionGameLang(instance,value)) { this.safeToast('设置保存失败，请重试',1800); return; }
+      if (this.detailVersion !== instance || this.currentStep !== 'language') return;
       this.versionGameLang = value
       this.backToDetail()
     } catch (_) { this.safeToast('游戏语言设置失败，请重试', 1800) }
@@ -1899,7 +1975,7 @@ export struct VersionManagerSheet {
   }
 
   /** 把整合包缺失清单（名称 — 原因 — 下载地址）复制到剪贴板。 */
-  private copyModpackMissing_(snap: ModpackSnapshot): void {
+  private async copyModpackMissing_(snap: ModpackSnapshot): Promise<boolean> {
     let parts: string[] = ['整合包「' + snap.name + '」缺失清单（共 ' + snap.missing.length + ' 项）:']
     for (let m of snap.missing) {
       let line = '- ' + m.name + ' — ' + m.reason
@@ -1908,10 +1984,12 @@ export struct VersionManagerSheet {
     }
     try {
       let data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, parts.join('\n'))
-      pasteboard.getSystemPasteboard().setData(data)
+      await pasteboard.getSystemPasteboard().setData(data)
       this.getUIContext().getPromptAction().showToast({ message: '缺失清单已复制', duration: 1500 })
+      return true
     } catch (e) {
       this.getUIContext().getPromptAction().showToast({ message: '复制失败', duration: 1500 })
+      return false
     }
   }
 
@@ -2006,13 +2084,18 @@ export struct VersionManagerSheet {
   //
   //  本组件只负责浮层 UI 与即时校验；真正的文件系统操作（目录 + 内部
   //  <id>.jar / <id>.json + json 的 id 字段，原子带回滚）由父组件
-  //  onRenameVersion → FileUtils.renameVersion 执行，父组件成功后重扫列表 +
+  //  原确认回调 → FileUtils.renameVersion 执行，父组件成功后重扫列表 +
   //  同步当前选中版本 + 持久化。这样保持本组件纯展示、不直接碰文件系统。
   // ============================================================
 
   /** 打开重命名浮层：预填当前详情版本名，清空错误（与原名相同时"确定"本就禁用）。 */
   private openRename(): void {
     if (this.detailVersion.length === 0) return
+    this.renameConfirmation_ = this.onPrepareRename(this.detailVersion)
+    if (!this.renameConfirmation_) {
+      this.getUIContext().getPromptAction().showToast({message:'实例已改变或正在使用，请刷新后重试'})
+      return
+    }
     this.renameInput = this.detailVersion
     this.renameError = ''
     this.showRename = true
@@ -2020,6 +2103,7 @@ export struct VersionManagerSheet {
 
   /** 关闭重命名浮层并清空即时错误。 */
   private closeRename(): void {
+    this.renameConfirmation_ = undefined
     this.showRename = false
     this.renameError = ''
   }
@@ -2047,11 +2131,13 @@ export struct VersionManagerSheet {
     if (err.length > 0) { this.renameError = err; return }
     if (newVer === oldVer) { this.renameError = '新名称与原名称相同'; return }
 
-    if (this.onRenameVersion(oldVer, newVer)) {
+    if (this.showRename && this.renameConfirmation_?.(oldVer, newVer)) {
       this.detailVersion = newVer
       this.loadModpackSnapshot_(newVer)
       this.loadVersionJvmArgsState(newVer)
       this.closeRename()
+    } else {
+      this.renameError = '未能重命名，请检查名称或重新打开原实例'
     }
   }
 
@@ -2156,14 +2242,8 @@ export struct VersionManagerSheet {
     if (this.filterLoader.length === 0) return this.orderVersions
     let out: string[] = []
     for (let v of this.orderVersions) {
-      // 走 LoaderCatalog → detectLoaderFromId 单一事实源识别 loader，不再自写 indexOf。
-      // 'vanilla' = 无 loader；其余精确匹配 chip。注意：与旧 indexOf('forge') 不同，
-      // neoforge 不再被 'forge' 子串误命中（旧实现 Forge 过滤会顺带带出 neoforge），
-      // 这是更正确的行为（neoforge 当前 supported=false，实际几乎不会安装）。
-      let key = resolveInstalledLoaderKey(this.mcDir, v)
-      if (this.filterLoader === 'vanilla') {
-        if (key === 'vanilla') out.push(v)
-      } else if (key === this.filterLoader) {
+      // 按已装加载器精确筛选，Forge 与 NeoForge 分开。
+      if (resolveInstalledLoaderKey(this.mcDir, v) === this.filterLoader) {
         out.push(v)
       }
     }
@@ -2175,7 +2255,13 @@ export struct VersionManagerSheet {
    * onItemDragMove 已逐帧把顺序排到位，这里只需提交最终结果。
    */
   private persistOrder_(): void {
-    this.onReorderVersions(this.orderVersions.slice())
+    const submitted = this.orderVersions.slice();
+    this.onReorderVersions(submitted).then((saved: boolean): void => {
+      if (!saved && JSON.stringify(this.orderVersions) === JSON.stringify(submitted)) {
+        this.orderVersions = this.availableVersions.slice();
+        this.safeToast('顺序保存失败，请重试',1800);
+      }
+    });
   }
 
   /** 清理拖拽态（无论成功/取消都调用），把被提起的原行恢复不透明。 */
@@ -2189,7 +2275,8 @@ export struct VersionManagerSheet {
   DragPreview(ver: string) {
     Row() {
       AppIcon({ name: AppIconName.DragHandle, iconSize: 16, color: this.theme.actionText })
-      VersionBlockIcon({ versionId: ver, iconSize: 32, cornerRadius: 0, overrideImagePath: getModpackIconPath(this.mcDir, ver) })
+      VersionBlockIcon({ versionId: ver, iconSize: 32, cornerRadius: 0,
+        category: resolveInstalledVersionCategory(this.mcDir, ver), overrideImagePath: getModpackIconPath(this.mcDir, ver) })
         .width(32).height(32).margin({ left: 10 })
       Text(ver)
         .fontSize(15).fontWeight(600).fontColor(this.theme.textPrimary)
@@ -2260,14 +2347,15 @@ export struct VersionManagerSheet {
 
   private detailMcVersion(): string {
     // 整合包/重命名版本名拿不到版本号，走快照/内容解析；最后才回退名字
-    let mc = resolveInstalledMcVersion(this.mcDir, this.detailVersion)
+    let mc = resolveInstalledGameId(this.mcDir, this.detailVersion)
     return mc || this.detailVersion || '—'
   }
 
   private detailLoaderText(): string {
-    let key = resolveInstalledLoaderKey(this.mcDir, this.detailVersion)
-    if (key === 'vanilla') return '原版 Vanilla'
-    return getLoaderInfo(key).displayName + ' Loader'
+    const key = resolveInstalledLoaderKey(this.mcDir, this.detailVersion)
+    if (key !== 'vanilla') return getLoaderInfo(key).displayName + ' Loader'
+    const label = getInstalledBadgeInfoResolved(this.mcDir, this.detailVersion).displayName
+    return label === '原版' ? '原版 Vanilla' : label
   }
 
   private detailHeroIcon(): AppIconName {

@@ -82,7 +82,11 @@ export function evaluateDesktopCompletionSources(callbacks, page, ability) {
   const guard = launch.search(/\bif\s*\(\s*snapshot\s*\.\s*windowId\s*<=\s*0\s*\|\|\s*snapshot\s*\.\s*contextGeneration\s*<=\s*0\s*\|\|\s*snapshot\s*\.\s*width\s*<=\s*0\s*\|\|\s*snapshot\s*\.\s*height\s*<=\s*0\s*\)\s*\{\s*throw\s+new\s+Error\s*\(/);
   if (prepare < 0 || guard <= prepare || native <= guard || !nativeAwaited) issues.push('Desktop launch must require valid Window before launch preparation');
   if (!bodyAfter(pageCode, 'private startMC()').includes('this.sessionHost.runLaunch(')) issues.push('Session launch single-flight gate disconnected');
-  for (const phase of ['onBackground()', 'onDestroy()']) if (!bodyAfter(ability, phase).includes('testNapi.desktopGamepadFocus(false)')) issues.push(`${phase}: native gamepad reset missing`);
+  // 后台仅清动作并保留已发布的连接，销毁时同步撤销连接可见性。
+  for (const [phase, reset] of [['onBackground()', 'testNapi.desktopGamepadFocus(false)'],
+    ['onDestroy()', 'testNapi.desktopGamepadFocus(false, false)']]) {
+    if (!bodyAfter(ability, phase).includes(reset)) issues.push(`${phase}: native gamepad reset missing`);
+  }
   return issues;
 }
 /**
@@ -181,7 +185,8 @@ export function checkDesktopSources(root = PRODUCT_ROOT, sdlRepo = '') {
   for (const [path, needles] of [
     ['entry/src/main/ets/gameability/GameAbility.ets', ['desktopGameProcessState', 'initializeGameProcess']],
     ['entry/src/main/ets/window/DesktopSystemBridge.ets', ['desktopCompleteCommand', 'desktopPublishState', 'windowWillClose', 'moveWindowToGlobal', 'requestPermissionsFromUser', 'sdkApiVersion >= 26', 'getDefaultDisplaySync']],
-    ['entry/src/main/cpp/glfw/glfw_callbacks.cpp', ['amclDesktopHostResolve', 'clipboardRead', 'clipboardWrite', 'gamepadRead']],
+    ['entry/src/main/cpp/glfw/glfw_callbacks.cpp', ['amclDesktopHostResolve', 'amclResolveGamepadReader()', 'glfwGetGamepadState']],
+    ['entry/src/main/cpp/glfw/glfw_clipboard.cpp', ['amclDesktopHostResolve', 'clipboardRead', 'clipboardWrite']],
     // 完整探针主体移入可执行的共享核心，同时检查生产入口确实调用它，不能只查死头文件。
     ['entry/src/main/cpp/platform/native_gl.cpp', ['QueryGL', 'ProbeNativeGlContext(SystemEgl(), state.resources', 'SystemGraphicsBootstrapConfigured', 'libGLv4.so']],
     ['entry/src/main/cpp/platform/native_gl_probe_core.h', ['EGL_OPENGL_API', 'glReadPixels', 'cleanupFailure', 'resources.ownsCurrent']],
@@ -192,7 +197,12 @@ export function checkDesktopSources(root = PRODUCT_ROOT, sdlRepo = '') {
     ['scripts/build-sdl3-ohos.ps1', ['SDL_AMCL_DESKTOP_HOST:BOOL=ON', 'check-desktop-runtime.mjs']],
   ]) for (const needle of needles) if (!read(path).includes(needle)) issues.push(`${path}: missing ${needle}`);
   const sdl = addedFile(patch, 'src/video/openharmony/SDL_amcldesktop.c');
-  for (const needle of ['amclDesktopHostResolve', 'SDL_AttachVirtualJoystick', 'fullscreen_sequence', 'GetDisplayUsableBounds', 'SetClipboardText']) if (!sdl.includes(needle)) issues.push(`SDL desktop adapter missing ${needle}`);
+  for (const needle of ['amclDesktopHostResolve', 'fullscreen_sequence', 'GetDisplayUsableBounds', 'SetClipboardText']) if (!sdl.includes(needle)) issues.push(`SDL desktop adapter missing ${needle}`);
+  // 发布时核对 SDL 实际应用的手柄 reader 与宿主同一 ABI，而非从历史桌面补丁推断设备资格。
+  if (sdlRepo && normalize(read('entry/src/main/cpp/platform/gamepad_reader.h')) !==
+    normalize(readFileSync(join(sdlRepo, 'src/video/openharmony/gamepad_reader.h'), 'utf8'))) issues.push('Applied SDL gamepad reader ABI differs');
+  if (sdlRepo && normalize(read('entry/src/main/cpp/platform/gamepad_change_query.h')) !==
+    normalize(readFileSync(join(sdlRepo, 'src/video/openharmony/gamepad_change_query.h'), 'utf8'))) issues.push('Applied SDL gamepad change query differs');
   return issues;
 }
 export function evaluateDesktopManifest(manifest, metadata, validation) {

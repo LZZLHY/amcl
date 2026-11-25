@@ -1,5 +1,5 @@
 // ohos_frame_rate_hint.cpp - HarmonyOS display-aware XComponent frame-rate
-// hint.
+// hint plus a VSync-based panel-rate pinner.
 
 #include "ohos_frame_rate_hint.h"
 #include "input_foreground_gate.h"
@@ -7,11 +7,13 @@
 
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <hilog/log.h>
+#include <native_vsync/native_vsync.h>
 #include <window_manager/oh_display_manager.h>
 
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <strings.h>
 
@@ -32,9 +34,10 @@ static_assert(MakeFrameRatePolicy(120).min == 30 &&
 static_assert(MakeFrameRatePolicy(120, 144, 60, 90).min == 60 &&
                   MakeFrameRatePolicy(120, 144, 60, 90).expected == 60,
               "contradictory overrides must normalize to a valid range");
-static_assert(MakeFrameRatePolicy(120, 0, 0, 0, 75).max == 75 &&
+static_assert(MakeFrameRatePolicy(120, 0, 0, 0, 75).min == 30 &&
+                  MakeFrameRatePolicy(120, 0, 0, 0, 75).max == 75 &&
                   MakeFrameRatePolicy(120, 0, 0, 0, 75).expected == 75,
-              "a known game cap must be the effective scheduler ceiling");
+              "the legacy cap only restricts the scheduler ceiling");
 static_assert(MakeFrameRatePolicy(120, 0, 0, 0, 0, false).min == 30 &&
                   MakeFrameRatePolicy(120, 0, 0, 0, 0, false).max == 30,
               "inactive components must use the conservative policy");
@@ -56,10 +59,33 @@ struct FrameRateController {
     int32_t runtimeCap = 0;
     bool haveAppliedPolicy = false;
     FrameRatePolicy appliedPolicy = {0, 0, 0};
+    // 专用VSync只续约用户主动选择的面板投票，游戏帧仍由原有渲染循环生产。
+    int32_t supportedFixedRate = 0;
+    OH_NativeVSync *pinner = nullptr;
+    int32_t pinnerRate = 0;
+    uintptr_t pinnerGeneration = 0;
+    uint64_t pinnerFrames = 0;
+    bool pinnerRearmFailed = false;
 };
 
 std::mutex g_frameRateMutex;
 FrameRateController g_frameRateController;
+
+struct DestroyFrameRatePinner {
+    void operator()(OH_NativeVSync *vsync) const {
+        OH_NativeVSync_Destroy(vsync);
+    }
+};
+
+using RetiredFrameRatePinner = std::unique_ptr<OH_NativeVSync, DestroyFrameRatePinner>;
+
+// 一次控制器事务可各自移交一个旧投票和一个启动失败的投票。按成员逆序析构，
+// 先释放锁再销毁VSync；SDK销毁可能等待一个同样需要该锁的回调。
+struct FrameRateUpdate {
+    RetiredFrameRatePinner previous;
+    RetiredFrameRatePinner failedStart;
+    std::lock_guard<std::mutex> lock{g_frameRateMutex};
+};
 
 FrameRateOverride ReadFrameRateOverride(const char *name) {
     const char *raw = std::getenv(name);
@@ -131,13 +157,91 @@ bool IsSingleSourceBit(uint32_t sourceBit) {
     return sourceBit != 0 && (sourceBit & (sourceBit - 1U)) == 0;
 }
 
-bool ApplyControllerLocked(const char *lifecycleStage, bool force,
-                           bool forceInactive = false,
+// 零区间撤回固定档位请求，解除旧投票后再释放其Native句柄。
+void ClearFrameRatePinnerVoteLocked(OH_NativeVSync *vsync) {
+    OH_NativeVSync_ExpectedRateRange reset = {0, 0, 0};
+    (void)OH_NativeVSync_SetExpectedFrameRateRange(vsync, &reset);
+}
+
+void OnFrameRatePinnerFrame(long long, void *token) {
+    std::lock_guard<std::mutex> lock(g_frameRateMutex);
+    FrameRateController &state = g_frameRateController;
+    if (state.pinner == nullptr || state.pinnerRearmFailed ||
+        reinterpret_cast<uintptr_t>(token) != state.pinnerGeneration) {
+        return;
+    }
+    ++state.pinnerFrames;
+    if (OH_NativeVSync_RequestFrame(state.pinner, OnFrameRatePinnerFrame, token) != 0) {
+        // 回调内立即撤回投票，下一次控制器事务接管句柄回收和重试。
+        ClearFrameRatePinnerVoteLocked(state.pinner);
+        state.pinnerRearmFailed = true;
+        OH_LOG_WARN(LOG_APP,
+                    "event=frame-rate-pinner-rearm-failed frames=%{public}llu",
+                    static_cast<unsigned long long>(state.pinnerFrames));
+    }
+}
+
+void StopFrameRatePinnerLocked(FrameRateUpdate &update, const char *reason) {
+    FrameRateController &state = g_frameRateController;
+    if (state.pinner == nullptr) {
+        return;
+    }
+    if (!state.pinnerRearmFailed) {
+        ClearFrameRatePinnerVoteLocked(state.pinner);
+    }
+    update.previous.reset(state.pinner);
+    state.pinner = nullptr;
+    state.pinnerRate = 0;
+    OH_LOG_INFO(LOG_APP,
+                "event=frame-rate-pinner-stopped reason=%{public}s frames=%{public}llu",
+                SafeStage(reason), static_cast<unsigned long long>(state.pinnerFrames));
+}
+
+bool EnsureFrameRatePinnerLocked(FrameRateUpdate &update, int32_t pinnedRate) {
+    FrameRateController &state = g_frameRateController;
+    if (state.pinner != nullptr && state.pinnerRate == pinnedRate && !state.pinnerRearmFailed) {
+        return true;
+    }
+    StopFrameRatePinnerLocked(update, "pinner-replaced");
+    constexpr char name[] = "AMCLFrameRatePinner";
+    OH_NativeVSync *created = OH_NativeVSync_Create(name, sizeof(name) - 1);
+    if (created == nullptr) {
+        OH_LOG_WARN(LOG_APP, "event=frame-rate-pinner-create-failed");
+        return false;
+    }
+    // 创建成功即登记本次事务的所有权。任何启动步骤失败都在解锁后回收。
+    update.failedStart.reset(created);
+    OH_NativeVSync_ExpectedRateRange range = {pinnedRate, pinnedRate, pinnedRate};
+    int32_t result = OH_NativeVSync_SetExpectedFrameRateRange(created, &range);
+    if (result == 0) {
+        ++state.pinnerGeneration;
+        result = OH_NativeVSync_RequestFrame(created, OnFrameRatePinnerFrame,
+            reinterpret_cast<void *>(state.pinnerGeneration));
+        if (result != 0) {
+            ClearFrameRatePinnerVoteLocked(created);
+        }
+    }
+    if (result != 0) {
+        OH_LOG_WARN(LOG_APP,
+                    "event=frame-rate-pinner-start-failed result=%{public}d rate=%{public}d",
+                    result, pinnedRate);
+        return false;
+    }
+    state.pinner = update.failedStart.release();
+    state.pinnerRate = pinnedRate;
+    state.pinnerFrames = 0;
+    state.pinnerRearmFailed = false;
+    OH_LOG_INFO(LOG_APP, "event=frame-rate-pinner-started rate=%{public}d", pinnedRate);
+    return true;
+}
+
+bool ApplyControllerLocked(FrameRateUpdate &update, const char *lifecycleStage,
+                           bool force, bool forceInactive = false,
                            int32_t displayRateOverride = 0) {
     FrameRateController &state = g_frameRateController;
     if (state.component == nullptr || !state.lifecycle.surfaceReady) {
-        // 这条早退此前**完全不可观测**，于是"提示为什么一直停在 30"少了一环证据：
-        // 分不出"没调到本函数"与"调到了但因为 surface 还没就绪而没下发"。见计划 §79.3。
+        // surface 未就绪时无法下发；留痕才能区分"没调到"与"调到了但没下发"。
+        StopFrameRatePinnerLocked(update, "no-live-surface");
         OH_LOG_INFO(LOG_APP,
                     "event=frame-rate-hint-deferred stage=%{public}s "
                     "component=%{public}d surfaceReady=%{public}d "
@@ -150,6 +254,7 @@ bool ApplyControllerLocked(const char *lifecycleStage, bool force,
         return false;
     }
     if (FrameRateHintDisabled()) {
+        StopFrameRatePinnerLocked(update, "hint-disabled");
         state.haveAppliedPolicy = false;
         OH_LOG_INFO(LOG_APP,
                     "event=frame-rate-hint-disabled stage=%{public}s "
@@ -175,9 +280,22 @@ bool ApplyControllerLocked(const char *lifecycleStage, bool force,
         state.runtimeCap > 0 ? state.runtimeCap : ValueOrUnset(environmentCap);
     const bool active =
         !forceInactive && IsFrameRateLifecycleActive(state.lifecycle);
-    const FrameRatePolicy policy = MakeFrameRatePolicy(
+    FrameRatePolicy policy = MakeFrameRatePolicy(
         displayRate, ValueOrUnset(overrideMin), ValueOrUnset(overrideMax),
         ValueOrUnset(overrideExpected), effectiveCap, active);
+
+    // 当前瞬时Hz可能因LTPO下降，屏幕真实支持档位由窗口侧核对。旧上限仍优先；
+    // 固定请求启动失败时先下发原调度策略，稳定去重前仍尝试恢复投票。
+    const int32_t fixedRate = state.supportedFixedRate;
+    // MAX 是显式上限。未设置时允许面板从 LTPO 当前低档提升到已验证的固定档。
+    const bool withinMaximum = overrideMax.state != OverrideState::Valid || fixedRate <= overrideMax.value;
+    if (active && fixedRate > 0 && withinMaximum && (effectiveCap == 0 || fixedRate <= effectiveCap)) {
+        if (EnsureFrameRatePinnerLocked(update, fixedRate)) {
+            policy = {fixedRate, fixedRate, fixedRate};
+        }
+    } else {
+        StopFrameRatePinnerLocked(update, "inactive-or-auto");
+    }
 
     if (!force && state.haveAppliedPolicy &&
         FrameRatePolicyEqual(state.appliedPolicy, policy)) {
@@ -218,7 +336,8 @@ bool ApplyControllerLocked(const char *lifecycleStage, bool force,
                 "display=%{public}d active=%{public}d "
                 "foregroundMask=%{public}u focused=%{public}d "
                 "cap=%{public}d capSource=%{public}s "
-                "range=%{public}d..%{public}d expected=%{public}d",
+                "range=%{public}d..%{public}d expected=%{public}d "
+                "pinner=%{public}d",
                 SafeStage(lifecycleStage), displayRate, active ? 1 : 0,
                 state.lifecycle.foregroundSources,
                 state.lifecycle.focused ? 1 : 0, effectiveCap,
@@ -226,20 +345,22 @@ bool ApplyControllerLocked(const char *lifecycleStage, bool force,
                     ? "runtime"
                     : (environmentCap.state == OverrideState::Valid ? "env"
                                                                      : "display"),
-                policy.min, policy.max, policy.expected);
+                policy.min, policy.max, policy.expected,
+                g_frameRateController.pinner != nullptr ? 1 : 0);
     return true;
 }
 
 } // namespace
 
 void RegisterFrameRateComponent(OH_NativeXComponent *component) {
-    std::lock_guard<std::mutex> lock(g_frameRateMutex);
+    FrameRateUpdate update;
     if (g_frameRateController.component != component) {
         if (g_frameRateController.component != nullptr &&
             g_frameRateController.lifecycle.surfaceReady) {
-            (void)ApplyControllerLocked("component-replaced", true, true);
+            (void)ApplyControllerLocked(update, "component-replaced", true, true);
         }
         g_frameRateController.component = component;
+        g_frameRateController.supportedFixedRate = 0;
         // Ability foreground may have arrived before XComponent registration;
         // preserve those source bits while resetting component-owned state.
         g_frameRateController.lifecycle = {
@@ -250,7 +371,7 @@ void RegisterFrameRateComponent(OH_NativeXComponent *component) {
 
 void SetFrameRateSurfaceReady(OH_NativeXComponent *component, bool ready,
                               const char *lifecycleStage) {
-    std::lock_guard<std::mutex> lock(g_frameRateMutex);
+    FrameRateUpdate update;
     if (component == nullptr) {
         OH_LOG_WARN(LOG_APP,
                     "event=frame-rate-surface-ignored stage=%{public}s "
@@ -268,9 +389,10 @@ void SetFrameRateSurfaceReady(OH_NativeXComponent *component, bool ready,
         }
         if (g_frameRateController.component != nullptr &&
             g_frameRateController.lifecycle.surfaceReady) {
-            (void)ApplyControllerLocked("surface-replaced", true, true);
+            (void)ApplyControllerLocked(update, "surface-replaced", true, true);
         }
         g_frameRateController.component = component;
+        g_frameRateController.supportedFixedRate = 0;
         g_frameRateController.lifecycle.focused = true;
         g_frameRateController.lifecycle.surfaceReady = false;
         g_frameRateController.haveAppliedPolicy = false;
@@ -282,29 +404,33 @@ void SetFrameRateSurfaceReady(OH_NativeXComponent *component, bool ready,
         // Replace any prior high-rate request before making the controller
         // unable to address the component. Failure is logged and remains
         // non-fatal; teardown must never wait for a scheduler hint.
-        (void)ApplyControllerLocked(lifecycleStage, true, true);
+        (void)ApplyControllerLocked(update, lifecycleStage, true, true);
     }
     g_frameRateController.lifecycle = transition.next;
+    if (!ready) {
+        g_frameRateController.supportedFixedRate = 0;
+    }
     g_frameRateController.haveAppliedPolicy = false;
     if (ready) {
-        (void)ApplyControllerLocked(lifecycleStage, true);
+        (void)ApplyControllerLocked(update, lifecycleStage, true);
     }
 }
 
 void SetFrameRateFocused(OH_NativeXComponent *component, bool focused,
                          const char *lifecycleStage) {
-    std::lock_guard<std::mutex> lock(g_frameRateMutex);
+    FrameRateUpdate update;
     if (component == nullptr || component != g_frameRateController.component) {
         OH_LOG_WARN(LOG_APP,
                     "event=frame-rate-focus-ignored stage=%{public}s "
                     "reason=%{public}s",
                     SafeStage(lifecycleStage),
-                    component == nullptr ? "null-component" : "stale-component");
+                    component == nullptr ? "null-component"
+                                         : "stale-component");
         return;
     }
     g_frameRateController.lifecycle = WithFrameRateFocus(
         g_frameRateController.lifecycle, focused);
-    (void)ApplyControllerLocked(lifecycleStage, false);
+    (void)ApplyControllerLocked(update, lifecycleStage, false);
 }
 
 bool SetFrameRateForegroundSource(uint32_t sourceBit, bool foreground,
@@ -317,30 +443,26 @@ bool SetFrameRateForegroundSource(uint32_t sourceBit, bool foreground,
         return false;
     }
 
-    uint32_t foregroundMask = 0u;
-    {
-        std::lock_guard<std::mutex> lock(g_frameRateMutex);
-        g_frameRateController.lifecycle = WithFrameRateForegroundSource(
-            g_frameRateController.lifecycle, sourceBit, foreground);
-        foregroundMask = g_frameRateController.lifecycle.foregroundSources;
-        // 唯一还没被观测的一环：本函数有没有被调到、调完 mask 是几。真机上 surface-created
-        // 一直报 foregroundMask=0，排除过程见计划 §79.3。频率 = 生命周期边沿。
-        OH_LOG_INFO(LOG_APP,
-                    "event=frame-rate-foreground stage=%{public}s bit=%{public}u "
-                    "foreground=%{public}d maskNow=%{public}u surfaceReady=%{public}d "
-                    "component=%{public}d",
-                    SafeStage(lifecycleStage), sourceBit, foreground ? 1 : 0,
-                    foregroundMask,
-                    g_frameRateController.lifecycle.surfaceReady ? 1 : 0,
-                    g_frameRateController.component != nullptr ? 1 : 0);
-        (void)ApplyControllerLocked(lifecycleStage, false);
+    FrameRateUpdate update;
+    g_frameRateController.lifecycle = WithFrameRateForegroundSource(
+        g_frameRateController.lifecycle, sourceBit, foreground);
+    const uint32_t foregroundMask = g_frameRateController.lifecycle.foregroundSources;
+    // 生命周期边沿：记录本次置位后的 mask，便于核对 surface-created 报的 foregroundMask。
+    OH_LOG_INFO(LOG_APP,
+                "event=frame-rate-foreground stage=%{public}s bit=%{public}u "
+                "foreground=%{public}d maskNow=%{public}u surfaceReady=%{public}d "
+                "component=%{public}d",
+                SafeStage(lifecycleStage), sourceBit, foreground ? 1 : 0,
+                foregroundMask,
+                g_frameRateController.lifecycle.surfaceReady ? 1 : 0,
+                g_frameRateController.component != nullptr ? 1 : 0);
+    (void)ApplyControllerLocked(update, lifecycleStage, false);
 
-        // Keep this call under the frame lock so an older mask cannot publish
-        // after a newer update. XComponent never holds the publisher mutex while
-        // entering SetFrameRate*, so this order has no reverse nested edge.
-        PublishInputForegroundGateForAbility(foregroundMask, lifecycleStage);
-        amclGraphicsForegroundV1(foregroundMask != 0u ? 1 : 0);
-    }
+    // Keep this call under the frame lock so an older mask cannot publish
+    // after a newer update. XComponent never holds the publisher mutex while
+    // entering SetFrameRate*, so this order has no reverse nested edge.
+    PublishInputForegroundGateForAbility(foregroundMask, lifecycleStage);
+    amclGraphicsForegroundV1(foregroundMask != 0u ? 1 : 0);
     return true;
 }
 
@@ -355,24 +477,25 @@ bool SetRuntimeFrameRateCap(int32_t fpsCap, const char *lifecycleStage) {
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(g_frameRateMutex);
+    FrameRateUpdate update;
     g_frameRateController.runtimeCap = fpsCap;
-    (void)ApplyControllerLocked(lifecycleStage, false);
+    (void)ApplyControllerLocked(update, lifecycleStage, false);
     return true;
 }
 
 bool ApplyExpectedFrameRateHint(OH_NativeXComponent *component,
                                 const char *lifecycleStage) {
-    std::lock_guard<std::mutex> lock(g_frameRateMutex);
+    FrameRateUpdate update;
     if (component == nullptr || component != g_frameRateController.component) {
         OH_LOG_WARN(LOG_APP,
                     "event=frame-rate-refresh-ignored stage=%{public}s "
                     "reason=%{public}s",
                     SafeStage(lifecycleStage),
-                    component == nullptr ? "null-component" : "stale-component");
+                    component == nullptr ? "null-component"
+                                         : "stale-component");
         return false;
     }
-    return ApplyControllerLocked(lifecycleStage, true);
+    return ApplyControllerLocked(update, lifecycleStage, true);
 }
 
 bool RefreshExpectedFrameRateHint(const char *lifecycleStage) {
@@ -380,8 +503,12 @@ bool RefreshExpectedFrameRateHint(const char *lifecycleStage) {
 }
 
 bool RefreshExpectedFrameRateHintForDisplayRate(
-    int32_t displayRate, const char *lifecycleStage) {
-    std::lock_guard<std::mutex> lock(g_frameRateMutex);
+    int32_t displayRate, const char *lifecycleStage, std::optional<int32_t> supportedFixedRate) {
+    if (supportedFixedRate && *supportedFixedRate != 0 &&
+        (*supportedFixedRate < kMinimumUsefulFrameRate || *supportedFixedRate > kMaximumFixedRefreshRate)) {
+        return false;
+    }
+    FrameRateUpdate update;
     if (g_frameRateController.component == nullptr ||
         !g_frameRateController.lifecycle.surfaceReady) {
         OH_LOG_INFO(LOG_APP,
@@ -390,9 +517,12 @@ bool RefreshExpectedFrameRateHintForDisplayRate(
                     SafeStage(lifecycleStage));
         return false;
     }
+    if (supportedFixedRate) {
+        g_frameRateController.supportedFixedRate = *supportedFixedRate;
+    }
     // 普通显示元数据刷新可由250ms维护重复进入，既有成功政策就是去重事实。
     // 不绕过本次Native计算/失败重试，也不改真正component/surface边界的force调用。
-    return ApplyControllerLocked(lifecycleStage, false, false, displayRate);
+    return ApplyControllerLocked(update, lifecycleStage, false, false, displayRate);
 }
 
 } // namespace amcl::ohos

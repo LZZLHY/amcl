@@ -290,9 +290,9 @@ function containsAll(text, patterns) {
 
 // 先验证资格再解算 relative，避免已经退休的 delta 更新 consumer current。各后端的
 // 数字身份是冻结的实际 consumer，不能从其它后端借用一次 helper 调用满足本合同。
-function scopedRelativeConsumer(text, backend, shared = false) {
+function scopedRelativeConsumer(text, backend, shared, resolver) {
   const validAt = text.search(/scopedMenuEventValid\s*\(/);
-  const relativeAt = text.search(new RegExp(`resolveRelativeMenuEvent\\s*\\(\\s*${backend}\\s*,`));
+  const relativeAt = text.search(new RegExp(`${resolver}\\s*\\(\\s*${backend}\\s*,`));
   const ownedState = backend === 1 ? 'g_glfwPointer' : backend === 2 ? 'g_l2Pointer' : 'g_sdlMenuState.pointer';
   const phaseContract = shared
     ? has(text, new RegExp(`amclPointerAccept\\s*\\(\\s*&${ownedState.replace('.', '\\.')}\\s*,`))
@@ -465,12 +465,25 @@ function causalTouchMenuChecks(touch, bridge, transaction) {
   const retireBridge = extractFunctionBody(bridge, 'inputBridge_retireTouchMenuScopeV1');
   const valid = extractFunctionBody(bridge, 'scopedMenuEventValid');
   const scanner = extractFunctionBody(bridge, 'queuedMenuInvalidates');
-  const resolve = extractFunctionBody(bridge, 'resolveRelativeMenuEvent');
+  // 新归约器同时处理绝对设位与原相对手势；门禁须核当前采用的同一个入口。
+  const resolver = has(bridge, /\bresolveMenuCommand\s*\(/) ? 'resolveMenuCommand' : 'resolveRelativeMenuEvent';
+  const resolve = extractFunctionBody(bridge, resolver);
   const cursor = extractFunctionBody(bridge, 'resolveRelativeMenuCursor');
   const glfw = extractFunctionBody(bridge, 'inputBridge_pumpOrdered');
   const glfwPending = extractFunctionBody(bridge, 'advanceGlfwMenuPending');
-  const l2 = extractFunctionBody(bridge, 'inputBridge_l2NextEvent');
-  const sdl = extractFunctionBody(bridge, 'inputBridge_sdlNextThrough');
+  const l2Entry = extractFunctionBody(bridge, 'inputBridge_l2NextEvent');
+  const l2Through = extractFunctionBody(bridge, 'inputBridge_l2NextThroughV1');
+  // 旧入口必须实际接到受限拉取函数，才可用它的生产正文核对三个后端的公共约定。
+  const l2 = l2Through && has(l2Entry, /return\s+inputBridge_l2NextThroughV1\s*\(\s*outType\s*,\s*o1\s*,\s*o2\s*,\s*o3\s*,\s*o4\s*,\s*UINT64_MAX\s*\)/)
+    ? l2Through : l2Entry;
+  const sdlEntry = extractFunctionBody(bridge, 'inputBridge_sdlNextThrough');
+  const sdlCarried = extractFunctionBody(bridge, 'inputBridge_sdlNextCarriedThroughV1');
+  const sdlReader = extractFunctionBody(bridge, 'readSdlNextThrough');
+  // 两个 SDL 入口只在承接 MOVE 的输出类型上有区别，顺序、作用域和 present 屏障均由同一个读端维护。
+  const sdlArgs = String.raw`return\s+readSdlNextThrough\s*\(\s*outType\s*,\s*o1\s*,\s*o2\s*,\s*o3\s*,\s*o4\s*,\s*maxOrder\s*,\s*`;
+  const sharedSdlReader = sdlReader && has(sdlEntry, new RegExp(sdlArgs + String.raw`false\s*\)`)) &&
+    has(sdlCarried, new RegExp(sdlArgs + String.raw`true\s*\)`));
+  const sdl = sharedSdlReader ? sdlReader : sdlEntry;
   const sdlPointer = extractFunctionBody(bridge, 'consumeSdlMenuPointer');
   const sdlPending = extractFunctionBody(bridge, 'returnDueSdlMenuButton');
   const legacy = extractFunctionBody(bridge, 'returnLegacyEvent');
@@ -558,11 +571,11 @@ function causalTouchMenuChecks(touch, bridge, transaction) {
         /event->type\s*=\s*EVENT_TYPE_MENU_POINTER/, /event->i1\s*=\s*phase/, /event->i4\s*=\s*\(int\)token/,
       ]) && containsAll(cursor, [
         /currentMenuCursor\s*\(\s*backend\s*,\s*x\s*,\s*y\s*\)/,
-        /\*x\s*\+=\s*dx/, /\*y\s*\+=\s*dy/, /relative->maxX/, /relative->maxY/,
+        /\*x\s*\+=\s*dx/, /\*y\s*\+=\s*dy/, /relative->(?:pointer\.)?maxX/, /relative->(?:pointer\.)?maxY/,
       ]), consumerEvidence),
     oneCheck('touch-three-consumers', '三个真实消费者在 relative 解算前核 scope 并消费 BEGIN/END/CANCEL',
-      scopedRelativeConsumer(glfw, 1, shared) && scopedRelativeConsumer(l2, 2, shared) &&
-        scopedRelativeConsumer(`${sdl}\n${sdlPointer}`, 3, shared) && (!shared || sharedLifecycle) &&
+      scopedRelativeConsumer(glfw, 1, shared, resolver) && scopedRelativeConsumer(l2, 2, shared, resolver) &&
+        scopedRelativeConsumer(`${sdl}\n${sdlPointer}`, 3, shared, resolver) && (!shared || sharedLifecycle) &&
         has(sdl, /consumeSdlMenuPointer\s*\(/), consumerEvidence),
     oneCheck('touch-present-barriers', 'GLFW/SDL 保留实际 present 屏障，提交前先撤 CANCEL/旧 target',
       shared ? sharedBarriers : containsAll(glfwPending, [

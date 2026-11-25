@@ -468,6 +468,8 @@ let g_scopeSink: LedgerScopeSink | null = null;
 let processRunNonce: string = String(process.pid) + '-' + Date.now();
 /** Ability 进程启动时注入一次身份，异步启动活动各自保存这份不可变归属。 */
 export function setLedgerProcessRunNonce(nonce: string): void { processRunNonce = nonce; }
+/** 返回本进程实际发布到活动账本的轮次身份，供已持有活动的读侧对账。 */
+export function ledgerCurrentRunNonce(): string { return processRunNonce; }
 
 /**
  * 旧轮恢复可能被游戏锁延后到本轮已经创建任务之后，不能再用“发现 RUNNING”推断进程已退出。

@@ -74,20 +74,30 @@ def run(args,cwd,log,negative=False):
 
 def production(source,name):
     """从完整已应用源提取函数单正文；同样与series重建逐字核对，不拼凑未知上游上下文。"""
-    match=re.search(r'^(?:JNIEXPORT )?(?:static )?(?:bool|void|int|SDL_MouseID)\s+'+re.escape(name)+r'\([^;{}]*\)\s*\{',source,re.M)
+    match=re.search(r'^(?:JNIEXPORT )?(?:static )?(?:bool|void|int|Uint64|SDL_MouseID|SDL_AMCL_InputReceipt)\s+\*?'+re.escape(name)+r'\([^;{}]*\)\s*\{',source,re.M)
     if not match:raise ValueError('Missing production function: '+name)
     return recipe.block(source,match.start())
 
-def render_fixture(sdl):
-    """一次装配全部真实函数与固定来源材料；施工增量/完整验收使用同一生成入口。"""
+def input_consumer_body(sdl):
+    """控制、来源及视角夹具共用实际 SDL 消费者函数及其必要依赖。"""
     names=['OPENHARMONY_MouseIDFromHost','OPENHARMONY_ValidPointerIdentity','OPENHARMONY_ValidateTypedEvent',
-        'OPENHARMONY_CloseControl','OPENHARMONY_ControlCurrent','OPENHARMONY_ControlCacheApplied','OPENHARMONY_DeliverControl','OPENHARMONY_RetireControls',
-        'OPENHARMONY_ControlReady','OPENHARMONY_SendKeyFromPlane','OPENHARMONY_SendButtonFromPlane',
+        'OPENHARMONY_CloseControl','OPENHARMONY_ControlCurrent','OPENHARMONY_ControlCacheApplied','OPENHARMONY_DeliverControlScoped','OPENHARMONY_DeliverControl','OPENHARMONY_RetireControls',
+        'OPENHARMONY_ControlReady','OPENHARMONY_SendKeyFromPlaneScoped','OPENHARMONY_SendKeyFromPlane','OPENHARMONY_SendButtonFromPlane',
         'SDL_AMCL_ObserveKeyboardPoll','SDL_AMCL_ObserveMousePoll','OPENHARMONY_LookCurrent','OPENHARMONY_LookCacheApplied',
         'OPENHARMONY_DeliverLookForMouse','OPENHARMONY_DeliverLook','SDL_AMCL_ObserveLookPoll','OPENHARMONY_DisableRelativeModeForHostLoss',
-        'OPENHARMONY_ApplyTypedFocus','OPENHARMONY_PumpHostEvents','OPENHARMONY_PumpTypedEvents',
+        'OPENHARMONY_ApplyTypedFocus','OPENHARMONY_PumpHostEvents','OPENHARMONY_TypedTextDemand','OPENHARMONY_InitTextReceipt','OPENHARMONY_PumpTypedEvents',
         'OPENHARMONY_PumpHostCursor','OPENHARMONY_PumpOrderedEvents']
     body='\n\n'.join(production(sdl,name) for name in names)
+    if 'OPENHARMONY_SendCarriedMotion' in sdl:
+        start=sdl.index('typedef struct OPENHARMONY_MenuMotion')
+        end=sdl.index('static void OPENHARMONY_PumpHostEvents(',start)
+        body=sdl[start:end]+body
+    return body
+
+
+def render_fixture(sdl):
+    """一次装配全部真实函数与固定来源材料；施工增量/完整验收使用同一生成入口。"""
+    body=input_consumer_body(sdl)
     constants='\n'.join(line for line in sdl.splitlines() if re.match(r'^#define AMCL_\w+\s+',line) and not line.endswith('\\'))
     event=re.search(r'typedef struct\s*\{[^}]*\}\s*AMCL_BackendInputEvent;',sdl).group(0)
     context='\n'.join(re.search(r'typedef struct '+name+r'\s*\{[^}]*\}\s*'+name+';',sdl).group(0)
@@ -230,7 +240,35 @@ void SDL_AMCL_ObserveKeyboardPoll(const bool*states,int count){(void)states;(voi
 void SDL_AMCL_ObserveMousePoll(SDL_MouseButtonFlags state){(void)state;}
 void SDL_AMCL_ObserveLookPoll(double x,double y){(void)x;(void)y;}
 ''',encoding='utf-8')
+    queue_only = getattr(options, 'text_demand_queue_only', False)
+    if queue_only:
+        # 此目标沿用上面完整、应用正式补丁的 SDL3-static 和键鼠编译开关，单独验证真实 ABI 出队边界。
+        fixture_path = ROOT/'scripts/fixtures/input-consumer/sdl_text_demand_queue.c'
+        frozen[fixture_path] = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+        shutil.copyfile(fixture_path, output/'text_demand_queue.c')
+        text += '''
+add_executable(sdl_text_demand_queue text_demand_queue.c cold_observer.c)
+set_property(TARGET sdl_text_demand_queue PROPERTY C_STANDARD 11)
+target_include_directories(sdl_text_demand_queue PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/source/src" "${CMAKE_CURRENT_BINARY_DIR}/sdk/include-config-release/build_config" "${CMAKE_CURRENT_BINARY_DIR}/sdk/include-revision")
+target_link_libraries(sdl_text_demand_queue PRIVATE SDL3::SDL3-static)
+'''
     (output/'CMakeLists.txt').write_text(text,encoding='utf-8');configure_host_cmake(cmake,output,output/'build')
+    if queue_only:
+        run([cmake, '--build', output/'build', '--config', 'Release', '--target', 'sdl_text_demand_queue',
+             '--parallel', '8'], output, output/'text-queue-compile.log')
+        binary = output/('build/Release/sdl_text_demand_queue.exe' if os.name=='nt' else 'build/sdl_text_demand_queue')
+        run([binary], output, output/'text-queue.log')
+        library = output/('build/sdk/Release/SDL3-static.lib' if os.name=='nt' else 'build/sdk/libSDL3.a')
+        for path in [fixture_path, *applied]:
+            if hashlib.sha256(path.read_bytes()).hexdigest() != frozen[path]:
+                raise RuntimeError('SDK/text queue fixture changed during validation: '+str(path))
+        (output/'text-queue-summary.json').write_text(json.dumps({
+            'scope':'Locked native host SDL on dummy video, text receipt enqueue/queue consumption and freeing',
+            'pin':commit, 'startedAt':started, 'completedAt':datetime.now().astimezone().isoformat(),
+            'patches':{p.name:frozen[p] for p in applied}, 'fixtureSha256':frozen[fixture_path],
+            'library':sdk_identity(library,output), 'consumer':sdk_identity(binary,output), 'commands':COMMAND_RECEIPTS,
+        }, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+        return
     run([cmake,'--build',output/'build','--config','Release','--parallel','8'],output,output/'production-compile.log')
     binary=output/('build/Release/sdl_control.exe' if os.name=='nt' else 'build/sdl_control')
     shared=output/('build/sdk/Release/SDL3.dll' if os.name=='nt' else 'build/sdk/libSDL3.so')
@@ -324,5 +362,7 @@ if __name__=='__main__':
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--cmake')
     parser.add_argument('--production-only',action='store_true',help='施工调试阶段仅生产闭包；交付必须执行默认负控')
+    parser.add_argument('--text-demand-queue-only',action='store_true',
+                        help='只运行 SDL 真实文本需求出队、释放及普通事件隔离回归')
     parser.add_argument('--no-dynapi',action='store_true',help='完整SDK选择OHOS使用的SDL_DYNAMIC_API=0分支；保持所有实际消费正例')
     build(parser.parse_args())

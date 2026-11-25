@@ -17,7 +17,7 @@ import {
 import {
   DownloadTask, DownloadPhase, DownloadStateModel, PhaseDetailModel, FailedFileBrief,
 } from '../download/DownloadTask';
-import { ModLoaderType } from '../modloader/ModLoaderTypes';
+import { ModLoaderType, modLoaderDisplayName } from '../modloader/ModLoaderTypes';
 import { DownloadTaskRegistry } from '../download/DownloadTaskRegistry';
 
 const TAG = 'McVersionTask';
@@ -35,10 +35,10 @@ function phaseLabel(p: string): string {
   }
 }
 
-/** loader 子标题文本 */
+/** 子标题按任务真实加载器命名，与安装阶段采用同一张名称表。 */
 function loaderSubtitle(loaderType: ModLoaderType | null, loaderVersion: string): string {
   if (!loaderType) return '原版';
-  let name = loaderType === ModLoaderType.FABRIC ? 'Fabric' : 'Forge';
+  const name = modLoaderDisplayName(loaderType) || loaderType;
   if (loaderVersion.length > 0) return name + ' ' + loaderVersion;
   return name;
 }

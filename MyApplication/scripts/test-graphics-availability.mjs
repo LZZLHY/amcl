@@ -87,7 +87,8 @@ function fixture(probe, options = {}) {
     if (options.afterPrepare) await options.afterPrepare(args[2]);
     return result;
   };
-  const componentDependencies = { PreferenceManager, ...launch, prepareGraphicsProfileInput: prepare,
+  const {LauncherSkillBus}=makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets');
+  const componentDependencies = { PreferenceManager, ...launch, LauncherSkillBus, prepareGraphicsProfileInput: prepare,
     AppLogger: dependencies.commons.AppLogger };
   // 保留原方法正文，包括生命周期和最终行生成；不复制generation或错误处理逻辑。
   let component = componentSource;
@@ -104,7 +105,7 @@ function fixture(probe, options = {}) {
   const componentModule = { exports: {} };
   new Function('module', ...Object.keys(componentDependencies), componentJs)(componentModule, ...Object.values(componentDependencies));
   const subject = new componentModule.exports();
-  Object.assign(subject, { refreshGeneration: 0, availabilityActive: true, pendingAvailabilityKey: '',
+  Object.assign(subject, { refreshGeneration: 0, choiceEpoch_:0, writingChoice_:-1, availabilityActive: true, pendingAvailabilityKey: '',
     pendingAvailability: undefined, lastInputKey: '', lastInput: undefined, peerRows: [],
     mcDir: '/mc', mcVersion: '1.20.1', getUIContext: () => ({ getHostContext: () => context }) });
   return { api, subject, calls, context };

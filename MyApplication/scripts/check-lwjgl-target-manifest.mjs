@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
 import { stripComments } from './lib/source-noise.mjs';
 import { locateReadelf, runNativeSurfaceCheck } from './check-lwjgl-native-surface.mjs';
+import { resolveBundleFileLock } from './lib/sdl3-artifact-lock.mjs';
 import { checkModuleCoverage } from './check-lwjgl-module-coverage.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -481,8 +482,14 @@ function verifyLibraryNameContract(root, contract, module, problems, artifact) {
     return;
   }
   const kind = contract.kind ?? 'literal';
-  if (!['literal', 'hap-absolute'].includes(kind) ||
-      (kind === 'hap-absolute' && contract.value !== basename(String(artifact)))) {
+  // 现代 allocator 的库名由 JEmalloc 的专用配置项读取，必须在现代槽条件下绑定交付库。
+  if (module === 'lwjgl-jemalloc' && (kind !== 'modern-hap-absolute' ||
+      contract.key !== 'org.lwjgl.system.jemalloc.libname' || contract.value !== 'libamcl_lwjgl_jemalloc.so')) {
+    problems.push(module + ': expected modern-slot JEmalloc library-name property and HAP provider');
+    return;
+  }
+  if (!['literal', 'hap-absolute', 'modern-hap-absolute'].includes(kind) ||
+      (kind.endsWith('hap-absolute') && contract.value !== basename(String(artifact)))) {
     problems.push(`${module}: libraryName must bind the declared HAP provider basename`);
     return;
   }
@@ -499,13 +506,21 @@ function verifyLibraryNameContract(root, contract, module, problems, artifact) {
 
 /**
  * 核对 JVM 创建前的属性表，不再要求晚置 setSystemProperty（其时 LWJGL/agent 已可能
- * 缓存错误值）。仅接受 RuntimeBootstrapProperties 的 result 初始化表内精确键值对；
+ * 缓存错误值）。普通库从 result 初始化表取值，现代专用库从对应条件分支取值；
  * 注释、别的函数或仅出现一个相同字符串均不能满足这个来源契约。冻结与创建顺序
  * 由运行时 bootstrap 的行为测试负责，本门禁只证明 provider 路由表确实包含该值。
  * hap-absolute只接受同一个nativeDir参数加固定制品名；其它根、函数和表达式不作为证明。
  */
 export function hasBootstrapLibraryName(source, key, value, kind = 'literal') {
   const code = stripComments(source, { lang: 'c' });
+  if (kind === 'modern-hap-absolute') {
+    // 只接受已选择现代槽的 JVM 创建前属性；注释、相同 basename 或旧槽路由均不足以证明。
+    const tail = /\bRuntimeBootstrapProperties\s*\([^)]*\)\s*\{([\s\S]*?)\breturn result\s*;/.exec(code)?.[1];
+    if (!tail || !/^lib[^/\\]+\.so$/.test(value)) return false;
+    const block = /\bif\s*\(\s*lwjglSlot\s*==\s*"LWJGL3"\s*\)\s*\{([^{}]*)\}/.exec(tail)?.[1];
+    const option = new RegExp(`result\\.emplace_back\\(\\s*"${escapeRegExp(key)}"\\s*,\\s*nativeDir\\s*\\+\\s*"/${escapeRegExp(value)}"\\s*\\)\\s*;`);
+    return Boolean(block && option.test(block));
+  }
   const body = /\bRuntimeBootstrapProperties\s*\([^)]*\)\s*\{\s*std::vector<BootstrapProperty>\s+result\s*\{([\s\S]*?)\n\s*\};/.exec(code);
   if (!body) return false;
   if (!['literal', 'hap-absolute'].includes(kind)) return false;
@@ -572,8 +587,17 @@ function verifyNativeProvider(root, module, native, modernManifest, problems) {
       return;
     }
     const path = resolveRepositoryPath(root, native.artifact, `${module}: bundle-file artifact`, problems);
+    // SDL 由 deps.lock 锁定原 ELF 与 SDK strip 两种身份。此处比较原 ELF，
+    // HAP 中的 strip 结果由 check-sdl3-artifact --hap 再核；导出/架构/路由仍独立验证。
+    let expected;
+    try {
+      expected = resolveBundleFileLock(root, module, native);
+    } catch (error) {
+      problems.push(String(error.message));
+      return;
+    }
     const bytes = path
-      ? verifyLockedFile(path, native, `${module}: bundle native ${native.artifact}`, problems)
+      ? verifyLockedFile(path, expected, `${module}: bundle native ${native.artifact}`, problems)
       : null;
     if (bytes) {
       verifyAarch64Elf(bytes, `${module}: bundle native ${native.artifact}`, problems);

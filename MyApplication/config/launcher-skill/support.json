@@ -1,0 +1,2699 @@
+[
+  {
+    "domain": "shell",
+    "name": "getLauncherState",
+    "description": "查看当前启动器的初始化状态和等待隐私决定情况。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing"
+    ],
+    "output": {
+      "product": {
+        "type": "string"
+      },
+      "privacyPending": {
+        "type": "boolean"
+      },
+      "privacyRequired": {
+        "type": "boolean"
+      },
+      "privacyAgreed": {
+        "type": "boolean"
+      },
+      "initialized": {
+        "type": "boolean"
+      },
+      "privacyDecision": {
+        "type": "string",
+        "enum": [
+          "notRequired",
+          "unknown",
+          "agreed",
+          "pending"
+        ]
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "product",
+        "privacyPending",
+        "initialized",
+        "privacyRequired",
+        "privacyDecision"
+      ],
+      "initializing": [
+        "product",
+        "privacyPending",
+        "initialized",
+        "privacyRequired",
+        "privacyDecision"
+      ],
+      "needsUser": [
+        "product",
+        "privacyPending",
+        "initialized",
+        "privacyRequired",
+        "privacyDecision"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "product": "default",
+        "privacyPending": false,
+        "initialized": true,
+        "privacyRequired": false,
+        "privacyDecision": "notRequired"
+      },
+      "initializing": {
+        "product": "default",
+        "privacyPending": false,
+        "initialized": false,
+        "privacyRequired": false,
+        "privacyDecision": "notRequired"
+      },
+      "needsUser": {
+        "product": "store",
+        "privacyPending": true,
+        "initialized": false,
+        "privacyRequired": true,
+        "privacyDecision": "unknown"
+      }
+    }
+  },
+  {
+    "domain": "shell",
+    "name": "retryLauncherInitialization",
+    "description": "仅在启动器报告初始化失败时重试准备，返回当前真实状态。",
+    "args": [],
+    "results": [
+      "initializing",
+      "ready",
+      "failed",
+      "needsUser"
+    ],
+    "output": {
+      "product": {
+        "type": "string"
+      },
+      "privacyPending": {
+        "type": "boolean"
+      },
+      "privacyRequired": {
+        "type": "boolean"
+      },
+      "privacyAgreed": {
+        "type": "boolean"
+      },
+      "initialized": {
+        "type": "boolean"
+      },
+      "privacyDecision": {
+        "type": "string",
+        "enum": [
+          "notRequired",
+          "unknown",
+          "agreed",
+          "pending"
+        ]
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "product",
+        "privacyPending",
+        "initialized",
+        "privacyRequired",
+        "privacyDecision"
+      ],
+      "initializing": [
+        "product",
+        "privacyPending",
+        "initialized",
+        "privacyRequired",
+        "privacyDecision"
+      ],
+      "needsUser": [
+        "product",
+        "privacyPending",
+        "initialized",
+        "privacyRequired",
+        "privacyDecision"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "product": "default",
+        "privacyPending": false,
+        "initialized": true,
+        "privacyRequired": false,
+        "privacyDecision": "notRequired"
+      },
+      "initializing": {
+        "product": "default",
+        "privacyPending": false,
+        "initialized": false,
+        "privacyRequired": false,
+        "privacyDecision": "notRequired"
+      },
+      "needsUser": {
+        "product": "store",
+        "privacyPending": true,
+        "initialized": false,
+        "privacyRequired": true,
+        "privacyDecision": "unknown"
+      }
+    }
+  },
+  {
+    "domain": "shell",
+    "name": "openLauncherLog",
+    "description": "在前台打开启动器运行日志，由用户阅读或复制脱敏诊断。",
+    "args": [],
+    "results": [
+      "needsUser"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "launcherLog"
+      }
+    }
+  },
+  {
+    "domain": "shell",
+    "name": "openRecentGameLog",
+    "description": "查找最近游戏活动并打开实际日志；没有可用原件时说明不可用。",
+    "args": [],
+    "results": [
+      "needsUser",
+      "unavailable"
+    ]
+  },
+  {
+    "domain": "shell",
+    "name": "openPlayerSupport",
+    "description": "打开产品允许的安装教程、JIT 帮助、问题反馈或支持作者页面。选图、网页提交和保存到相册由用户操作。",
+    "args": [
+      {
+        "name": "topic",
+        "type": "string",
+        "description": "要打开的产品功能",
+        "required": true,
+        "enum": [
+          "install",
+          "jit",
+          "feedback",
+          "sponsor"
+        ]
+      }
+    ],
+    "results": [
+      "needsUser",
+      "unavailable"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "pages/FeedbackPage"
+      }
+    }
+  },
+  {
+    "domain": "messages",
+    "name": "readMessages",
+    "description": "读取通知列表、未读角标和上一次整批清空决定，不外传私人正文。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "messages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "integer"
+            },
+            "read": {
+              "type": "boolean"
+            },
+            "createdAt": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "read",
+            "createdAt"
+          ]
+        }
+      },
+      "unread": {
+        "type": "integer"
+      },
+      "clearDecision": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "messages",
+        "unread",
+        "clearDecision"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "messages": [],
+        "unread": 0,
+        "clearDecision": "idle"
+      }
+    }
+  },
+  {
+    "domain": "messages",
+    "name": "openMessage",
+    "description": "在消息中心标记指定消息已读，并执行该消息原有导航。",
+    "args": [
+      {
+        "name": "messageId",
+        "type": "string",
+        "description": "readMessages 返回的 id",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "read": {
+        "type": "boolean"
+      },
+      "destinationReached": {
+        "type": "boolean"
+      },
+      "notificationGone": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "read",
+        "destinationReached",
+        "notificationGone"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "read": true,
+        "destinationReached": true,
+        "notificationGone": true
+      }
+    }
+  },
+  {
+    "domain": "messages",
+    "name": "markAllMessagesRead",
+    "description": "将当前消息标记已读，回读剩余未读数。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "unread": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "unread"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "unread": 0
+      }
+    }
+  },
+  {
+    "domain": "messages",
+    "name": "requestClearMessages",
+    "description": "打开清空消息的产品确认框，由用户确认或取消，通过 readMessages 查询结果。",
+    "args": [],
+    "results": [
+      "needsUser",
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "decision": {
+        "type": "string"
+      },
+      "remaining": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "remaining"
+      ],
+      "needsUser": [
+        "decision"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "remaining": 0
+      },
+      "needsUser": {
+        "decision": "pending"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "remaining"
+        ],
+        "example": {
+          "remaining": 0
+        },
+        "expect": {
+          "remaining": 0
+        }
+      }
+    ]
+  },
+  {
+    "domain": "about",
+    "name": "readLauncherAbout",
+    "description": "查询当前安装的应用版本、运行准入及公开的作者联系信息。",
+    "args": [],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "versionName": {
+        "type": "string"
+      },
+      "versionCode": {
+        "type": "integer"
+      },
+      "email": {
+        "type": "string"
+      },
+      "group": {
+        "type": "string"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "gameRunAllowed": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "versionName",
+        "versionCode"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "versionName": "1.0.8-pre2",
+        "versionCode": 1000911
+      }
+    }
+  },
+  {
+    "domain": "about",
+    "name": "openStoreRunSettings",
+    "description": "在商店产品内进入真实的运行准入设置并显示当前值，由用户自行切换。",
+    "args": [],
+    "results": [
+      "needsUser",
+      "unavailable"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      },
+      "gameRunAllowed": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface",
+        "gameRunAllowed"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "AboutPage",
+        "gameRunAllowed": false
+      }
+    }
+  },
+  {
+    "domain": "changelog",
+    "name": "readReleaseNotes",
+    "description": "读取当前渠道的更新日志，可按已有类别筛选，按版本分页。",
+    "args": [
+      {
+        "name": "category",
+        "type": "string",
+        "description": "变更类别，空表示全部",
+        "required": false
+      },
+      {
+        "name": "offset",
+        "type": "integer",
+        "description": "版本列表从零开始的位置",
+        "required": false
+      }
+    ],
+    "results": [
+      "initializing",
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "source": {
+        "type": "string"
+      },
+      "total": {
+        "type": "integer"
+      },
+      "offset": {
+        "type": "integer"
+      },
+      "releases": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "preview": {
+              "type": "boolean"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "version",
+            "preview",
+            "entries"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "source",
+        "total",
+        "offset",
+        "releases"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "source": "随包数据",
+        "total": 0,
+        "offset": 0,
+        "releases": []
+      },
+      "failed": {
+        "reason": "invalidCategory"
+      }
+    },
+    "echoArgs": {
+      "offset": "offset"
+    },
+    "inputExamples": [
+      {},
+      {
+        "offset": 0
+      }
+    ]
+  },
+  {
+    "domain": "changelog",
+    "name": "openLatestRelease",
+    "description": "用产品的发布链接打开浏览器；更新记录为空时进入应用发行列表，遵守当前渠道的外链限制。",
+    "args": [],
+    "results": [
+      "initializing",
+      "needsUser",
+      "unavailable"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "browser"
+      }
+    }
+  },
+  {
+    "domain": "policy",
+    "name": "readLocalPolicy",
+    "description": "分段读取当前渠道随包的隐私政策、日志分享说明或第三方许可。",
+    "args": [
+      {
+        "name": "policy",
+        "type": "string",
+        "description": "随包文档类别",
+        "required": true,
+        "enum": [
+          "privacy",
+          "logshare",
+          "license"
+        ]
+      },
+      {
+        "name": "offset",
+        "type": "integer",
+        "description": "起始字符位置",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "initializing",
+      "failed",
+      "unavailable"
+    ],
+    "output": {
+      "title": {
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      },
+      "length": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "title",
+        "length",
+        "text"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "title": "隐私政策",
+        "length": 8436,
+        "text": ""
+      }
+    },
+    "inputExamples": [
+      {
+        "policy": "privacy",
+        "offset": 8436
+      }
+    ]
+  },
+  {
+    "domain": "shares",
+    "name": "readSharedLogs",
+    "description": "按页读取分享状态和可撤回性，不返回令牌。",
+    "args": [
+      {
+        "name": "offset",
+        "type": "integer",
+        "description": "从零开始的列表位置",
+        "required": false
+      }
+    ],
+    "results": [
+      "busy",
+      "failed",
+      "ready"
+    ],
+    "output": {
+      "total": {
+        "type": "integer"
+      },
+      "records": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "activityId": {
+              "type": "integer"
+            },
+            "createdAt": {
+              "type": "integer"
+            },
+            "revocable": {
+              "type": "boolean"
+            },
+            "status": {
+              "type": "string"
+            },
+            "retention": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "activityId",
+            "createdAt",
+            "revocable",
+            "status",
+            "retention"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "records",
+        "total"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "records": [],
+        "total": 0
+      }
+    }
+  },
+  {
+    "domain": "shares",
+    "name": "viewSharedLog",
+    "description": "打开原分享选项，查看文件快照、复制链接或转到允许的网页。",
+    "args": [
+      {
+        "name": "shareId",
+        "type": "string",
+        "description": "readSharedLogs 返回的分享号",
+        "required": true
+      },
+      {
+        "name": "createdAt",
+        "type": "integer",
+        "description": "与该条分享匹配的时间戳",
+        "required": true
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "unavailable",
+      "busy"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "shareOptions"
+      },
+      "failed": {
+        "reason": "shareChanged"
+      }
+    }
+  },
+  {
+    "domain": "shares",
+    "name": "requestRevokeSharedLog",
+    "description": "请求撤回指定在线分享，由用户完成产品确认。",
+    "args": [
+      {
+        "name": "shareId",
+        "type": "string",
+        "description": "readSharedLogs 返回的分享号",
+        "required": true
+      },
+      {
+        "name": "createdAt",
+        "type": "integer",
+        "description": "与该条分享匹配的时间戳",
+        "required": true
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "unavailable",
+      "busy"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "revokeShare"
+      },
+      "failed": {
+        "reason": "shareChanged"
+      }
+    }
+  },
+  {
+    "domain": "activity",
+    "name": "readActivity",
+    "description": "查询指定活动的状态、保留状态、来源文件、缺失及分享回执。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原产品账本中的活动号",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "unavailable",
+      "failed"
+    ],
+    "output": {
+      "activityId": {
+        "type": "integer"
+      },
+      "category": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "integer"
+      },
+      "pinned": {
+        "type": "boolean"
+      },
+      "duration": {
+        "type": "string"
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            },
+            "capture": {
+              "type": "string"
+            },
+            "bytes": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "role",
+            "capture",
+            "bytes"
+          ]
+        }
+      },
+      "localFindings": {
+        "type": "integer"
+      },
+      "integrity": {
+        "type": "string"
+      },
+      "publicShareId": {
+        "type": "string"
+      },
+      "authorReceipt": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "activityId",
+        "files",
+        "localFindings",
+        "pinned",
+        "publicShareId",
+        "authorReceipt"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "activityId": 42,
+        "files": [],
+        "localFindings": 0,
+        "pinned": false,
+        "publicShareId": "",
+        "authorReceipt": ""
+      }
+    },
+    "echoArgs": {
+      "activityId": "activityId"
+    },
+    "inputExamples": [
+      {
+        "activityId": 42
+      }
+    ]
+  },
+  {
+    "domain": "activity",
+    "name": "readActivityEvents",
+    "description": "按已登记活动、文件引用、级别或关键词读取真实阅读器的一页脱敏事件。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原产品账本中的活动号",
+        "required": true
+      },
+      {
+        "name": "fileId",
+        "type": "string",
+        "description": "原活动文件引用；留空搜索所有可读来源",
+        "required": false
+      },
+      {
+        "name": "keyword",
+        "type": "string",
+        "description": "可选的搜索文本",
+        "required": false
+      },
+      {
+        "name": "level",
+        "type": "integer",
+        "description": "0全部、1警告以上、2错误以上",
+        "required": false
+      },
+      {
+        "name": "offset",
+        "type": "integer",
+        "description": "跳过的记录数",
+        "required": false
+      },
+      {
+        "name": "rowOffset",
+        "description": "offset 指向的事件内已返回的显示块数，续页取上次 nextRowOffset",
+        "type": "integer",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "busy"
+    ],
+    "output": {
+      "matches": {
+        "type": "integer"
+      },
+      "offset": {
+        "type": "integer"
+      },
+      "events": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "fileId": {
+              "type": "string"
+            },
+            "line": {
+              "type": "integer"
+            },
+            "level": {
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            },
+            "eventLine": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "hasMore": {
+        "type": "boolean"
+      },
+      "nextOffset": {
+        "type": "integer"
+      },
+      "nextRowOffset": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "events",
+        "matches",
+        "offset",
+        "hasMore",
+        "nextOffset",
+        "nextRowOffset"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/pages/ActivityLogPage.ets",
+      "test": "scripts/test-log-experience.mjs"
+    },
+    "examples": {
+      "ready": {
+        "events": [],
+        "matches": 0,
+        "offset": 0,
+        "hasMore": false,
+        "nextOffset": 0,
+        "nextRowOffset": 0
+      }
+    },
+    "echoArgs": {
+      "offset": "offset"
+    },
+    "inputExamples": [
+      {
+        "activityId": 1
+      },
+      {
+        "activityId": 1,
+        "offset": 0
+      }
+    ]
+  },
+  {
+    "domain": "activity",
+    "name": "setActivityRetention",
+    "description": "为指定活动保留或取消保留，重新读取产品确认值。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原产品账本中的活动号",
+        "required": true
+      },
+      {
+        "name": "keep",
+        "type": "boolean",
+        "description": "是否固定保留",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "unknown",
+      "busy"
+    ],
+    "output": {
+      "pinned": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "pinned"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "pinned": true
+      }
+    },
+    "inputExamples": [
+      {
+        "activityId": 42,
+        "keep": true
+      }
+    ],
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "pinned"
+        ],
+        "echoArgs": {
+          "pinned": "keep"
+        },
+        "example": {
+          "pinned": true
+        }
+      }
+    ]
+  },
+  {
+    "domain": "activity",
+    "name": "requestActivityRemoval",
+    "description": "在原日志页面请求删除本地活动证据，等待产品确认并核对原活动。 用 getActivityChoiceOutcome 回读本次结果。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原产品账本中的活动号",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser",
+      "busy",
+      "unavailable",
+      "failed"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "operation": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "evidenceChoice"
+        },
+        "require": [
+          "operationRef",
+          "operation",
+          "activityId"
+        ],
+        "example": {
+          "operationRef": "e78a3bab-46a3-475d-80d1-0df5b31692ff",
+          "operation": "requestActivityRemoval",
+          "activityId": 42
+        }
+      },
+      {
+        "when": {
+          "state": "busy",
+          "reason": "existingChoice"
+        },
+        "require": [
+          "operationRef",
+          "operation",
+          "activityId"
+        ],
+        "example": {
+          "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+          "activityId": 42,
+          "operation": "exportActivityEvidence"
+        }
+      }
+    ],
+    "inputExamples": [
+      {
+        "activityId": 42
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "evidenceChoice",
+        "operationRef": "e78a3bab-46a3-475d-80d1-0df5b31692ff",
+        "activityId": 42,
+        "operation": "requestActivityRemoval"
+      },
+      "busy": {
+        "reason": "pendingChoices"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "operationRef",
+        "activityId",
+        "operation"
+      ]
+    },
+    "echoArgs": {
+      "activityId": "activityId"
+    }
+  },
+  {
+    "domain": "activity",
+    "name": "exportActivityEvidence",
+    "description": "通过系统保存面板导出指定活动的脱敏 ZIP，区分已保存、取消和错误。 用 getActivityChoiceOutcome 回读本次结果。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原产品账本中的活动号",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser",
+      "busy",
+      "unavailable",
+      "failed"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "operation": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "evidenceChoice"
+        },
+        "require": [
+          "operationRef",
+          "operation",
+          "activityId"
+        ],
+        "example": {
+          "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+          "operation": "exportActivityEvidence",
+          "activityId": 42
+        }
+      },
+      {
+        "when": {
+          "state": "busy",
+          "reason": "existingChoice"
+        },
+        "require": [
+          "operationRef",
+          "operation",
+          "activityId"
+        ],
+        "example": {
+          "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+          "activityId": 42,
+          "operation": "exportActivityEvidence"
+        }
+      }
+    ],
+    "inputExamples": [
+      {
+        "activityId": 42
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "evidenceChoice",
+        "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+        "activityId": 42,
+        "operation": "exportActivityEvidence"
+      },
+      "busy": {
+        "reason": "pendingChoices"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "operationRef",
+        "activityId",
+        "operation"
+      ]
+    },
+    "echoArgs": {
+      "activityId": "activityId"
+    }
+  },
+  {
+    "domain": "activity",
+    "name": "reviewActivityShare",
+    "description": "在设备上预览要发送的文件和目标，取得玩家的实际决定；用 readActivity 查询接收结果。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原产品账本中的活动号",
+        "required": true
+      },
+      {
+        "name": "destination",
+        "type": "string",
+        "description": "公开分享或允许渠道的作者反馈",
+        "required": true,
+        "enum": [
+          "logshare",
+          "author"
+        ]
+      }
+    ],
+    "results": [
+      "needsUser",
+      "unavailable",
+      "busy"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "surface": "sharePreview"
+        },
+        "require": [
+          "activityId",
+          "operationRef"
+        ],
+        "example": {
+          "activityId": 42,
+          "operationRef": "share-1"
+        }
+      }
+    ],
+    "inputExamples": [
+      {
+        "activityId": 42,
+        "destination": "logshare"
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "surface": "sharePreview",
+        "activityId": 42,
+        "operationRef": "share-1"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface",
+        "activityId",
+        "operationRef"
+      ]
+    },
+    "echoArgs": {
+      "activityId": "activityId"
+    }
+  },
+  {
+    "domain": "activity",
+    "name": "readHistoricalAnalysis",
+    "description": "检查本地是否保留旧分析报告，存在时打开真实报告阅读页。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原产品账本中的活动号",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "busy"
+    ],
+    "output": {
+      "available": {
+        "type": "boolean"
+      },
+      "completedAt": {
+        "type": "integer"
+      },
+      "surface": {
+        "type": "string"
+      },
+      "identifiedSource": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "available"
+      ],
+      "needsUser": [
+        "available",
+        "surface",
+        "identifiedSource",
+        "completedAt"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "available": false
+      },
+      "needsUser": {
+        "available": true,
+        "surface": "historicalReport",
+        "identifiedSource": true,
+        "completedAt": 1795456400000
+      }
+    }
+  },
+  {
+    "name": "readActivityStorage",
+    "domain": "shell",
+    "description": "通过生产活动账本读取已用字节数、各组数量与提醒阈值，不能读取时报告缺口。",
+    "args": [],
+    "results": [
+      "ready",
+      "partial"
+    ],
+    "output": {
+      "bytes": {
+        "type": "integer",
+        "minimum": -1
+      },
+      "alertBytes": {
+        "type": "integer"
+      },
+      "issueCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "groups": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": -1
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "title",
+            "bytes",
+            "count"
+          ]
+        }
+      },
+      "alertKnown": {
+        "type": "boolean",
+        "description": "提醒阈值是否可证；未知时不返回 alertBytes。"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "bytes",
+        "issueCount",
+        "groups",
+        "alertKnown",
+        "alertBytes"
+      ],
+      "partial": [
+        "bytes",
+        "issueCount",
+        "groups",
+        "alertKnown"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "bytes": 0,
+        "groups": [],
+        "issueCount": 0,
+        "alertKnown": true,
+        "alertBytes": 0
+      },
+      "partial": {
+        "bytes": 0,
+        "groups": [],
+        "issueCount": 1,
+        "alertKnown": false,
+        "reason": "thresholdUnconfirmed"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "bytes",
+          "groups",
+          "issueCount",
+          "alertKnown",
+          "alertBytes"
+        ],
+        "example": {
+          "bytes": 0,
+          "groups": [],
+          "issueCount": 0,
+          "alertKnown": true,
+          "alertBytes": 0
+        },
+        "fields": {
+          "bytes": {
+            "minimum": 0
+          },
+          "alertBytes": {
+            "minimum": 0
+          },
+          "groups": {
+            "items": {
+              "properties": {
+                "bytes": {
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "expect": {
+          "issueCount": 0,
+          "alertKnown": true
+        }
+      },
+      {
+        "when": {
+          "state": "partial"
+        },
+        "require": [
+          "issueCount"
+        ],
+        "example": {
+          "bytes": 0,
+          "groups": [],
+          "issueCount": 1,
+          "alertKnown": false,
+          "reason": "thresholdUnconfirmed"
+        },
+        "fields": {
+          "issueCount": {
+            "minimum": 1
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "partial",
+          "alertKnown": true
+        },
+        "require": [
+          "alertBytes"
+        ],
+        "example": {
+          "bytes": -1,
+          "groups": [
+            {
+              "title": "示例实例",
+              "bytes": -1,
+              "count": 1
+            }
+          ],
+          "issueCount": 1,
+          "alertBytes": 0
+        }
+      },
+      {
+        "when": {
+          "state": "partial",
+          "alertKnown": false
+        },
+        "require": [
+          "reason"
+        ],
+        "example": {
+          "bytes": 0,
+          "groups": [],
+          "issueCount": 1,
+          "alertKnown": false,
+          "reason": "thresholdUnconfirmed"
+        },
+        "expect": {
+          "reason": "thresholdUnconfirmed"
+        }
+      }
+    ]
+  },
+  {
+    "name": "setActivityAlert",
+    "domain": "shell",
+    "description": "调整账本空间提醒，不会删除任何活动。",
+    "args": [
+      {
+        "name": "thresholdMiB",
+        "type": "integer",
+        "description": "0关闭，单位 MiB",
+        "required": true,
+        "enum": [
+          0,
+          256,
+          512,
+          1024,
+          2048
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "unknown"
+    ],
+    "output": {
+      "alertBytes": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "alertBytes"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "alertBytes": 268435456
+      }
+    },
+    "inputExamples": [
+      {
+        "thresholdMiB": 256
+      }
+    ]
+  },
+  {
+    "name": "readHomeNotification",
+    "domain": "shell",
+    "description": "读取首页正在显示的消息引用、角标及提示可见性。",
+    "args": [],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "messageId": {
+        "type": "string"
+      },
+      "visible": {
+        "type": "boolean"
+      },
+      "unread": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "visible",
+        "messageId",
+        "unread"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "visible": false,
+        "messageId": "",
+        "unread": 0
+      }
+    }
+  },
+  {
+    "name": "actOnHomeNotification",
+    "domain": "shell",
+    "description": "打开或略过当前可见的指定消息；打开沿用原入口，标记已读并回到相应活动。",
+    "args": [
+      {
+        "name": "messageId",
+        "type": "string",
+        "description": "readHomeNotification 返回的原消息号",
+        "required": true
+      },
+      {
+        "name": "action",
+        "type": "string",
+        "description": "对原消息的操作",
+        "required": true,
+        "enum": [
+          "open",
+          "dismiss"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "messageId": {
+        "type": "string"
+      },
+      "visible": {
+        "type": "boolean"
+      },
+      "unread": {
+        "type": "integer"
+      },
+      "read": {
+        "type": "boolean"
+      },
+      "destinationReached": {
+        "type": "boolean"
+      }
+    },
+    "examples": {
+      "ready": {
+        "visible": false,
+        "messageId": "",
+        "unread": 0
+      }
+    }
+  },
+  {
+    "name": "readSupportPage",
+    "domain": "supportWeb",
+    "description": "读取当前帮助、反馈或支持页面的加载、图片选择及保存到相册的结果。网站未给启动器的收据保持未知。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "initializing"
+    ],
+    "output": {
+      "title": {
+        "type": "string"
+      },
+      "photoSelection": {
+        "type": "string"
+      },
+      "selectedImages": {
+        "type": "integer"
+      },
+      "album": {
+        "type": "string"
+      },
+      "remoteReceipt": {
+        "type": "string",
+        "const": "notProvidedByPage"
+      }
+    },
+    "examples": {
+      "ready": {
+        "title": "反馈",
+        "photoSelection": "idle",
+        "selectedImages": 0,
+        "album": "",
+        "remoteReceipt": "notProvidedByPage"
+      },
+      "initializing": {
+        "title": "反馈",
+        "photoSelection": "idle",
+        "selectedImages": 0,
+        "album": "",
+        "remoteReceipt": "notProvidedByPage"
+      },
+      "failed": {
+        "title": "反馈",
+        "photoSelection": "idle",
+        "selectedImages": 0,
+        "album": "",
+        "remoteReceipt": "notProvidedByPage"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "title",
+        "photoSelection",
+        "selectedImages",
+        "album",
+        "remoteReceipt"
+      ],
+      "initializing": [
+        "title",
+        "photoSelection",
+        "selectedImages",
+        "album",
+        "remoteReceipt"
+      ]
+    }
+  },
+  {
+    "name": "retrySupportPage",
+    "domain": "supportWeb",
+    "description": "在当前支持页面重新加载内容。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "initializing"
+    ],
+    "output": {
+      "title": {
+        "type": "string"
+      },
+      "photoSelection": {
+        "type": "string"
+      },
+      "selectedImages": {
+        "type": "integer"
+      },
+      "album": {
+        "type": "string"
+      },
+      "remoteReceipt": {
+        "type": "string",
+        "const": "notProvidedByPage"
+      }
+    },
+    "examples": {
+      "ready": {
+        "title": "反馈",
+        "photoSelection": "idle",
+        "selectedImages": 0,
+        "album": "",
+        "remoteReceipt": "notProvidedByPage"
+      },
+      "initializing": {
+        "title": "反馈",
+        "photoSelection": "idle",
+        "selectedImages": 0,
+        "album": "",
+        "remoteReceipt": "notProvidedByPage"
+      },
+      "failed": {
+        "title": "反馈",
+        "photoSelection": "idle",
+        "selectedImages": 0,
+        "album": "",
+        "remoteReceipt": "notProvidedByPage"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "title",
+        "photoSelection",
+        "selectedImages",
+        "album",
+        "remoteReceipt"
+      ],
+      "initializing": [
+        "title",
+        "photoSelection",
+        "selectedImages",
+        "album",
+        "remoteReceipt"
+      ]
+    }
+  },
+  {
+    "name": "viewSupportInBrowser",
+    "domain": "supportWeb",
+    "description": "使用当前页面自带的地址进入系统浏览器。",
+    "args": [],
+    "results": [
+      "needsUser",
+      "failed"
+    ],
+    "output": {
+      "surface": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "surface"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "surface": "browser"
+      }
+    }
+  },
+  {
+    "domain": "activity",
+    "name": "copyActivityEvidence",
+    "description": "使用原页面的冻结与脱敏流程，复制本次全部可导出证据到剪贴板。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "required": true,
+        "description": "本次产品活动号"
+      }
+    ],
+    "results": [
+      "ready",
+      "busy",
+      "failed"
+    ]
+  },
+  {
+    "domain": "activity",
+    "name": "copyActivityEvent",
+    "description": "只复制指定原文件起始行匹配的完整脱敏事件。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "required": true,
+        "description": "本次产品活动号"
+      },
+      {
+        "name": "fileId",
+        "type": "string",
+        "required": true,
+        "description": "已读原文件引用"
+      },
+      {
+        "name": "line",
+        "type": "integer",
+        "required": true,
+        "description": "事件起始行号"
+      }
+    ],
+    "results": [
+      "ready",
+      "busy",
+      "failed"
+    ]
+  },
+  {
+    "domain": "activity",
+    "name": "readActivityFindings",
+    "description": "读取该次活动的真实本地诊断线索，返回原文件及行号、严重度和证据缺口。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "required": true,
+        "description": "本次产品活动号"
+      }
+    ],
+    "results": [
+      "ready",
+      "partial",
+      "initializing",
+      "failed",
+      "busy"
+    ],
+    "output": {
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "fileId": {
+              "type": "string"
+            },
+            "line": {
+              "type": "integer"
+            },
+            "endLine": {
+              "type": "integer"
+            },
+            "level": {
+              "type": "integer"
+            },
+            "count": {
+              "type": "integer"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "fileId",
+            "line",
+            "endLine",
+            "level",
+            "count",
+            "title"
+          ]
+        }
+      },
+      "gaps": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "findings",
+        "gaps"
+      ],
+      "partial": [
+        "findings",
+        "gaps"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "findings": [],
+        "gaps": 0
+      },
+      "partial": {
+        "findings": [],
+        "gaps": 1
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "findings",
+          "gaps"
+        ],
+        "example": {
+          "findings": [],
+          "gaps": 0
+        },
+        "fields": {
+          "gaps": {
+            "const": 0
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "partial"
+        },
+        "require": [
+          "findings",
+          "gaps"
+        ],
+        "example": {
+          "findings": [],
+          "gaps": 1
+        },
+        "fields": {
+          "gaps": {
+            "minimum": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "readLauncherDiagnostics",
+    "domain": "shell",
+    "description": "读取启动器脱敏诊断摘要的可用性和版本；具体内容由用户在应用中阅读。",
+    "args": [],
+    "results": [
+      "ready"
+    ],
+    "output": {
+      "version": {
+        "type": "string"
+      },
+      "summaryCharacters": {
+        "type": "integer"
+      },
+      "logPanelVisible": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "version",
+        "summaryCharacters",
+        "logPanelVisible"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "version": "1.0.8-pre2",
+        "summaryCharacters": 842,
+        "logPanelVisible": false
+      }
+    }
+  },
+  {
+    "domain": "shell",
+    "name": "readSystemBackupStatus",
+    "description": "查询本机已安装包的系统备份扩展配置以及应用最近实际收到的备份、恢复回调。备份由系统发起，回调不证明系统归档完成或某个世界已恢复。",
+    "args": [],
+    "results": [
+      "ready",
+      "unavailable",
+      "unknown"
+    ],
+    "output": {
+      "allowed": {
+        "type": "boolean"
+      },
+      "initiator": {
+        "const": "system"
+      },
+      "lastBackupCallback": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "enum": [
+              "observed",
+              "notObserved",
+              "unreadable"
+            ]
+          },
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "lastRestoreCallback": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "enum": [
+              "observed",
+              "notObserved",
+              "unreadable"
+            ]
+          },
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "systemOutcome": {
+        "const": "notReportedByExtension"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "allowed",
+        "initiator",
+        "lastBackupCallback",
+        "lastRestoreCallback",
+        "systemOutcome"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "allowed": true,
+        "initiator": "system",
+        "lastBackupCallback": {
+          "state": "notObserved"
+        },
+        "lastRestoreCallback": {
+          "state": "notObserved"
+        },
+        "systemOutcome": "notReportedByExtension"
+      }
+    }
+  },
+  {
+    "name": "getActivityShareOutcome",
+    "domain": "activity",
+    "description": "查询原活动及本次预览引用的实际公开分享或作者接收回执，关闭未取得回执时保持未知。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原活动号",
+        "required": true
+      },
+      {
+        "name": "operationRef",
+        "type": "string",
+        "description": "reviewActivityShare 返回的本次操作引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "unknown"
+    ],
+    "output": {
+      "shareState": {
+        "type": "string",
+        "enum": [
+          "waiting",
+          "sending",
+          "shared",
+          "submittedToAuthor",
+          "failed",
+          "unknown",
+          "cancelled"
+        ]
+      },
+      "receipt": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "shareState",
+        "receipt",
+        "reason"
+      ]
+    },
+    "inputExamples": [
+      {
+        "activityId": 42,
+        "operationRef": "share-1"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "shareState": "sending",
+        "reason": "",
+        "receipt": ""
+      },
+      "unknown": {
+        "reason": "operationNotFound"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready",
+          "shareState": "waiting"
+        },
+        "require": [
+          "receipt",
+          "reason"
+        ],
+        "example": {
+          "shareState": "waiting",
+          "receipt": "",
+          "reason": ""
+        },
+        "fields": {
+          "receipt": {
+            "const": ""
+          },
+          "reason": {
+            "const": ""
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "shareState": "sending"
+        },
+        "require": [
+          "receipt",
+          "reason"
+        ],
+        "example": {
+          "shareState": "sending",
+          "receipt": "",
+          "reason": ""
+        },
+        "fields": {
+          "receipt": {
+            "const": ""
+          },
+          "reason": {
+            "const": ""
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "shareState": "shared"
+        },
+        "require": [
+          "receipt",
+          "reason"
+        ],
+        "example": {
+          "shareState": "shared",
+          "receipt": "share-42",
+          "reason": ""
+        },
+        "fields": {
+          "receipt": {
+            "minLength": 1
+          },
+          "reason": {
+            "const": ""
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "shareState": "submittedToAuthor"
+        },
+        "require": [
+          "receipt",
+          "reason"
+        ],
+        "example": {
+          "shareState": "submittedToAuthor",
+          "receipt": "feedback-42",
+          "reason": ""
+        },
+        "fields": {
+          "receipt": {
+            "minLength": 1
+          },
+          "reason": {
+            "const": ""
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "shareState": "cancelled"
+        },
+        "require": [
+          "receipt",
+          "reason"
+        ],
+        "example": {
+          "shareState": "cancelled",
+          "receipt": "",
+          "reason": ""
+        },
+        "fields": {
+          "receipt": {
+            "const": ""
+          },
+          "reason": {
+            "const": ""
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "shareState": "failed"
+        },
+        "require": [
+          "receipt",
+          "reason"
+        ],
+        "example": {
+          "shareState": "failed",
+          "receipt": "",
+          "reason": "http"
+        },
+        "fields": {
+          "receipt": {
+            "const": ""
+          },
+          "reason": {
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "shareState": "unknown"
+        },
+        "require": [
+          "receipt",
+          "reason"
+        ],
+        "example": {
+          "shareState": "unknown",
+          "receipt": "",
+          "reason": "unknown-outcome"
+        },
+        "fields": {
+          "receipt": {
+            "const": ""
+          },
+          "reason": {
+            "minLength": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "getActivityChoiceOutcome",
+    "domain": "evidenceReceipt",
+    "description": "按原活动及选择引用查询系统导出或应用删除确认的真实结果。重启或记录消失时返回未知，不重新派发。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原活动号",
+        "required": true
+      },
+      {
+        "name": "operationRef",
+        "type": "string",
+        "description": "发起导出或删除时返回的引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser",
+      "ready",
+      "cancelled",
+      "unavailable",
+      "failed",
+      "unknown",
+      "busy"
+    ],
+    "output": {
+      "operation": {
+        "type": "string",
+        "enum": [
+          "requestActivityRemoval",
+          "exportActivityEvidence"
+        ]
+      },
+      "removed": {
+        "type": "boolean"
+      },
+      "saved": {
+        "type": "boolean"
+      },
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "activityId": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "operation",
+        "activityId",
+        "operationRef"
+      ],
+      "cancelled": [
+        "operation",
+        "activityId",
+        "operationRef"
+      ],
+      "needsUser": [
+        "operation",
+        "activityId",
+        "operationRef"
+      ]
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "operation": "requestActivityRemoval"
+        },
+        "require": [
+          "activityId",
+          "operationRef"
+        ],
+        "example": {
+          "operation": "requestActivityRemoval",
+          "activityId": 42,
+          "operationRef": "e78a3bab-46a3-475d-80d1-0df5b31692ff"
+        }
+      },
+      {
+        "when": {
+          "state": "needsUser",
+          "operation": "exportActivityEvidence"
+        },
+        "require": [
+          "activityId",
+          "operationRef"
+        ],
+        "example": {
+          "operation": "exportActivityEvidence",
+          "activityId": 42,
+          "operationRef": "1aab259c-0932-4109-8776-70b808c03009"
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "operation": "requestActivityRemoval"
+        },
+        "require": [
+          "removed"
+        ],
+        "example": {
+          "operation": "requestActivityRemoval",
+          "activityId": 42,
+          "operationRef": "e78a3bab-46a3-475d-80d1-0df5b31692ff",
+          "removed": true
+        },
+        "expect": {
+          "removed": true
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "operation": "exportActivityEvidence"
+        },
+        "require": [
+          "saved"
+        ],
+        "example": {
+          "operation": "exportActivityEvidence",
+          "activityId": 42,
+          "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+          "saved": true
+        },
+        "expect": {
+          "saved": true
+        }
+      },
+      {
+        "when": {
+          "state": "cancelled",
+          "operation": "requestActivityRemoval"
+        },
+        "require": [
+          "removed"
+        ],
+        "example": {
+          "activityId": 42,
+          "operationRef": "e78a3bab-46a3-475d-80d1-0df5b31692ff",
+          "removed": false
+        },
+        "expect": {
+          "removed": false
+        }
+      },
+      {
+        "when": {
+          "state": "cancelled",
+          "operation": "exportActivityEvidence"
+        },
+        "require": [
+          "saved"
+        ],
+        "example": {
+          "activityId": 42,
+          "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+          "saved": false
+        },
+        "expect": {
+          "saved": false
+        }
+      }
+    ],
+    "inputExamples": [
+      {
+        "activityId": 42,
+        "operationRef": "e78a3bab-46a3-475d-80d1-0df5b31692ff"
+      },
+      {
+        "activityId": 42,
+        "operationRef": "1aab259c-0932-4109-8776-70b808c03009"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "operation": "exportActivityEvidence",
+        "activityId": 42,
+        "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+        "saved": true
+      },
+      "unknown": {
+        "reason": "originalChoiceUnavailable"
+      },
+      "needsUser": {
+        "operation": "exportActivityEvidence",
+        "operationRef": "1aab259c-0932-4109-8776-70b808c03009",
+        "activityId": 42
+      },
+      "cancelled": {
+        "operation": "requestActivityRemoval",
+        "operationRef": "e78a3bab-46a3-475d-80d1-0df5b31692ff",
+        "activityId": 42,
+        "removed": false
+      },
+      "failed": {
+        "reason": "invalidArguments"
+      }
+    },
+    "echoArgs": {
+      "activityId": "activityId",
+      "operationRef": "operationRef"
+    }
+  },
+  {
+    "domain": "handoffReceipt",
+    "name": "getLauncherHandoff",
+    "description": "通过原方法名及 operationRef 查询一次已打开的用户确认或系统选择器。等待时返回 needsUser，结束时 outcome 内保留原业务状态和字段；进程更替或记录过期返回 unknown。",
+    "args": [
+      {
+        "name": "method",
+        "type": "string",
+        "required": true,
+        "description": "原业务方法名",
+        "example": "chooseLocalModpack"
+      },
+      {
+        "name": "operationRef",
+        "type": "string",
+        "required": true,
+        "description": "该方法先前以 awaitingUser 返回的引用"
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "unknown"
+    ],
+    "output": {
+      "method": {
+        "type": "string"
+      },
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "outcome": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/LauncherSkillBus.ets",
+      "test": "qa/device/test-named-skill-session.mjs"
+    },
+    "requiredOutput": {
+      "ready": [
+        "method",
+        "operationRef",
+        "outcome"
+      ],
+      "needsUser": [
+        "method",
+        "operationRef"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "method": "chooseLocalModpack",
+        "operationRef": "8316e628-24b0-44f1-bcb7-60c4d42d6897",
+        "outcome": {
+          "state": "cancelled"
+        }
+      },
+      "needsUser": {
+        "method": "chooseLocalModpack",
+        "operationRef": "8316e628-24b0-44f1-bcb7-60c4d42d6897",
+        "reason": "awaitingUser"
+      }
+    },
+    "echoArgs": {
+      "method": "method",
+      "operationRef": "operationRef"
+    },
+    "inputExamples": [
+      {
+        "method": "chooseLocalModpack",
+        "operationRef": "8316e628-24b0-44f1-bcb7-60c4d42d6897"
+      }
+    ]
+  }
+]

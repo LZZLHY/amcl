@@ -18,6 +18,7 @@ import {
   ModLoaderInstallCallback,
   ModLoaderInstallResult,
   InstalledModLoader,
+  modLoaderDisplayName,
 } from './ModLoaderTypes';
 import { FabricService } from './FabricService';
 import { QuiltService } from './QuiltService';
@@ -266,13 +267,6 @@ export class ModLoaderManager {
    * 获取加载器的中文显示名
    */
   static getLoaderDisplayName(type: ModLoaderType): string {
-    switch (type) {
-      case ModLoaderType.FABRIC: return 'Fabric';
-      case ModLoaderType.FORGE: return 'Forge';
-      case ModLoaderType.NEOFORGE: return 'NeoForge';
-      case ModLoaderType.OPTIFINE: return 'OptiFine';
-      case ModLoaderType.QUILT: return 'Quilt';
-      default: return type;
-    }
+    return modLoaderDisplayName(type) || type;
   }
 }

@@ -40,6 +40,7 @@ const KNOWN_DIRECTIVES = new Set([
   '-enable-toplevel-obfuscation',
   '-enable-filename-obfuscation',
   '-enable-export-obfuscation',
+  '-keep-file-name',
   '-keep-property-name',
   '-keep-global-name',
 ]);

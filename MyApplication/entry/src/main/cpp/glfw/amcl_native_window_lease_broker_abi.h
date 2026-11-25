@@ -104,6 +104,11 @@ typedef struct AmclNativeWindowLeaseBrokerV2 {
     // 不增加引用、不转移owner、不调用几何/系统回调；旧短表没有这项资格。
     int (*matchesPresentationIdentity)(void* nativeWindow,uint64_t generation,
                                       uint64_t presentationToken,uint64_t resourceEpoch);
+    // SDL主呈现窗口按真实文本需求投影；NativeWindow及发布代必须是当前值。
+    int (*setTextInputDemand)(void* nativeWindow, uint64_t generation, uint32_t sdlWindowId, uint32_t wanted);
+    uint32_t (*peekTextInputDemand)(void);
+    // SDL队列在真正交付前按全宽身份回读。此入口必须无阻塞、无重入。
+    uint64_t (*textInputDemandIdentity)(void);
 } AmclNativeWindowLeaseBrokerV2;
 
 // The core prefix is retained for append-only ABI accounting. SDL's hybrid
@@ -131,6 +136,10 @@ typedef struct AmclNativeWindowLeaseBrokerV2 {
 #define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_PRESENTATION_IDENTITY_SIZE \
     ((uint32_t)(offsetof(AmclNativeWindowLeaseBrokerV2, matchesPresentationIdentity) + \
                 sizeof(((AmclNativeWindowLeaseBrokerV2*)0)->matchesPresentationIdentity)))
+
+#define AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_TEXT_INPUT_SIZE \
+    ((uint32_t)(offsetof(AmclNativeWindowLeaseBrokerV2, peekTextInputDemand) + \
+                sizeof(((AmclNativeWindowLeaseBrokerV2*)0)->peekTextInputDemand)))
 
 #if defined(__cplusplus)
 static_assert(offsetof(AmclNativeWindowLeaseBrokerV2, acquire) ==

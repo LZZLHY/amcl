@@ -67,6 +67,31 @@ function frozenScopeContract(rewrite=source=>source){
 }
 try {
   {
+    const f=fixture();activeTimers=f.timers;
+    const values=Array(25).fill(0); values[0]=21;values[1]=34;values[13]=-1;
+    let polls=0,boxed=0,writes=0,full=0,geometry=0;
+    // 替代 NAPI 内存传输；真实 Native 字段写入、变化位和几何短路由 touch-maintenance 校验。
+    f.native.touchInteractionVisual=()=>{boxed++;return values.slice();};
+    f.native.maintainTouchFrontend=(buffer,all)=>{
+      polls++;if(all)full++;else geometry++;
+      const data=new Float64Array(buffer),n=all?25:2;
+      data[25]=0;
+      for(let i=0;i<n;i++)if(data[i]!==values[i]){data.set(values.slice(0,n));data[25]=1;writes++;break}
+      return true;
+    };
+    const session=new f.module.EntryTouchSession(),visuals=[],positions=[];
+    session.start(v=>visuals.push(v),true,undefined,(x,y)=>positions.push([x,y]));
+    const tick=()=>{for(const callback of activeTimers.values())callback()};
+    for(let i=0;i<600;i++)tick();
+    assert.deepEqual([polls,full,writes,boxed,visuals.length,positions.length],[600,600,1,0,1,1]);
+    session.unsubscribeVisual();values[5]=.5;tick();
+    assert.equal(geometry,1);assert.equal(writes,1);
+    values[0]=-17;tick();assert.deepEqual(positions.at(-1),[-17,34]);
+    session.subscribeVisual(v=>visuals.push(v));tick();assert.equal(visuals.at(-1).joystickX,.5);
+    session.stop();
+    console.log('PASS buffered 600 idle ticks: 600 maintenance calls, one changed frame, no boxed visual getter; geometry-only and resubscribe');
+  }
+  {
     const f=fixture();activeTimers=f.timers;const session=new f.module.EntryTouchSession(),gui=[];
     session.setGuiViewport(1920,1080,'1.21.11');session.start(()=>{},true,state=>gui.push(state));
     const source=f.events.find(event=>event[0]==='attach');assert.deepEqual(source,['attach',20]);
@@ -92,12 +117,11 @@ try {
       assert.equal(gui.at(-1).effective,4,'NECESSARY_GUI_CONTINUES_WITH_VISUAL_OFF');
       assert.deepEqual(points.at(-1),[60,70],'NECESSARY_MENU_GEOMETRY_CONTINUES_WITH_VISUAL_OFF');
       assert.equal(visual.length,1);assert.equal(session.sourceLease,source);assert.equal(session.timer,timer);
-      const count=session.observationSnapshot();assert.equal(count.guiReads,2);assert.equal(count.geometryDeliveries,2);
+      assert.equal(session.guiReads,2);assert.equal(points.length,2);
       session.subscribeVisual(s=>visual.push(s));session.refreshVisual();assert.equal(visual.length,2,'恢复只交当前快照');
       assert.equal(session.sourceLease,source);assert.equal(session.timer,timer);
-      f.module.stopEntryTouchInputMaintenance(f.host);now=3000;const reads=session.observationSnapshot().guiReads;
-      session.refreshVisual();assert.equal(session.observationSnapshot().guiReads,reads,'RETIRED_SOURCE_MUST_NOT_READ_NEW_GUI');
-      return count;
+      f.module.stopEntryTouchInputMaintenance(f.host);now=3000;const reads=session.guiReads;
+      session.refreshVisual();assert.equal(session.guiReads,reads,'RETIRED_SOURCE_MUST_NOT_READ_NEW_GUI');
     } finally {Date.now=originalNow;session.stop();}
   }
   geometryContract();
@@ -124,8 +148,8 @@ try {
     f.native.touchInteractionVisual=()=>[44,55,...Array(12).fill(0)];for(const tick of f.timers.values())tick();
     assert.deepEqual(points.at(-1),[44,55],'GUI/可选显示异常不能夺走必要菜单几何');assert.ok(f.maintenance()>0);
     f.failRetire();assert.throws(()=>session.stop(),/GUI retire failure/);
-    const stopped=session.observationSnapshot();assert.equal(stopped.timerActive,false);assert.equal(stopped.sourceCurrent,false);
-    assert.equal(stopped.guiSubscribed,false);assert.equal(stopped.geometrySubscribed,false);assert.equal(stopped.visualSubscribed,false,
+    assert.equal(f.timers.size,0);assert.equal(session.hasCurrentSource(),false);
+    assert.equal(session.guiReceive,undefined);assert.equal(session.geometryReceive,undefined);assert.equal(session.receive,undefined,
       '完整退休即使Native GUI异常也清所有原组件闭包');
   }
   {

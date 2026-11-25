@@ -15,6 +15,8 @@ export interface SystemNativeBridge {
   getMinecraftVulkanDeviceCapabilityJson(requirementId: string, windowProvider: string): string;
   /** native 侧文件读写探针，返回可读报告。 */
   probeNativePath(probeDir: string): string;
+  /** 正常启动/切换存储时，通过实际文件描述符检查指定游戏根能否读写。 */
+  verifyGameDirectoryWritable(directory: string): boolean;
 }
 
 let g_sysNative: SystemNativeBridge | null = null;

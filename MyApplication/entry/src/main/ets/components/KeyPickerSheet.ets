@@ -172,29 +172,29 @@ export struct KeyPickerSheet {
     }
   }
 
-  /** 单浮窗紧凑选择器：搜索和分类同排，正文滚动，确定/取消始终位于原面板底部。 */
+  /** 布局浮窗专用选键器：列表滚动，分类、键位与确认均保留44vp触区，极矮窗口由外层滚动兜底。 */
   @Builder
   EmbeddedPicker() {
     Column({space:5}) {
       Row({space:4}) {
-        TextInput({text:this.searchText,placeholder:'搜索键名…'}).height(32).layoutWeight(1).fontSize(12)
+        TextInput({text:this.searchText,placeholder:'搜索键名…'}).height(44).layoutWeight(1).fontSize(12)
           .fontColor(this.palette.text).backgroundColor(this.palette.surface).onChange((value: string): void=>{this.searchText=value})
         Select(this.groups.map((group: KeyGroup): SelectOption=>{return {value:group.title}}))
-          .selected(this.selectedTab).value(this.groups[this.selectedTab].title).width(82).height(32).font({size:11})
+          .selected(this.selectedTab).value(this.groups[this.selectedTab].title).width(82).height(44).font({size:11})
           .fontColor(this.palette.text).backgroundColor(this.palette.surface)
           .onSelect((index: number): void=>{this.selectedTab=index;this.searchText=''})
       }.width('100%')
       Row({space:4}) {
-        Button(this.comboMode?'组合键 ✓':'单键').type(ButtonType.Normal).borderRadius(6).height(28).fontSize(11).layoutWeight(1)
+        Button(this.comboMode?'组合键 ✓':'单键').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(11).layoutWeight(1)
           .backgroundColor(this.palette.surface).fontColor(this.palette.text).enabled(this.allowCombo)
           .onClick(()=>this.setComboMode(!this.comboMode))
-        Button(this.requiredDefaultKey>0?'默认 '+glfwKeyName(this.requiredDefaultKey):'解除绑定').type(ButtonType.Normal).borderRadius(6).height(28).fontSize(11).layoutWeight(1).backgroundColor(Color.Transparent)
+        Button(this.requiredDefaultKey>0?'默认 '+glfwKeyName(this.requiredDefaultKey):'解除绑定').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(11).layoutWeight(1).backgroundColor(Color.Transparent)
           .fontColor(this.palette.muted).onClick(()=>this.clearPickedKeys())
       }.width('100%')
       Scroll() {
         Flex({wrap:FlexWrap.Wrap,justifyContent:FlexAlign.Start}) {
           ForEach(this.visibleOptions(),(option: KeyOption)=>{
-            Button(option.name).type(ButtonType.Normal).borderRadius(6).width('23%').height(34).fontSize(11).padding({left:2,right:2}).margin({right:'2%',bottom:4})
+            Button(option.name).type(ButtonType.Normal).borderRadius(6).width('23%').height(44).fontSize(11).padding({left:2,right:2}).margin({right:'2%',bottom:4})
               .fontColor(this.isPicked(option.code)?this.palette.accent:this.palette.text)
               .backgroundColor(this.isPicked(option.code)?this.palette.surfaceActive:this.palette.surface).borderRadius(5)
               .onClick(()=>this.toggleKey(option.code))
@@ -205,8 +205,8 @@ export struct KeyPickerSheet {
         .fontSize(11).fontColor(this.palette.muted).maxLines(2).width('100%')
       if(this.selectionMessage.length>0){Text(this.selectionMessage).fontSize(11).fontColor(this.palette.warning)}
       Row({space:8}) {
-        Button('取消').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).backgroundColor(Color.Transparent).fontColor(this.palette.muted).onClick(()=>this.onPick(null))
-        Button('确定绑定').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.confirmChoice())
+        Button('取消').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).backgroundColor(Color.Transparent).fontColor(this.palette.muted).onClick(()=>this.onPick(null))
+        Button('确定绑定').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.confirmChoice())
       }.width('100%')
     }.width('100%').height(this.embeddedHeight).padding({left:12,right:12,top:6,bottom:8})
       .backgroundColor(this.palette.panel)

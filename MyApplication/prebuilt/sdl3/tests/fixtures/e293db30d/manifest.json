@@ -21,6 +21,13 @@
       "sourceUrl": "https://github.com/icculus/SDL/blob/e293db30d74cca888eafba4e27f0c894f128e67d/src/events/SDL_events.c"
     },
     {
+      "path": "src/video/SDL_video.c",
+      "size": 198801,
+      "sha256": "940c827a99a09c1f55d06b1976980a7f7c61e1448ee2f29c89b011b207d43455",
+      "gitBlob": "25942837ab72a1c440aa9f881131455f2677ff28",
+      "sourceUrl": "https://github.com/icculus/SDL/blob/e293db30d74cca888eafba4e27f0c894f128e67d/src/video/SDL_video.c"
+    },
+    {
       "path": "LICENSE.txt",
       "size": 884,
       "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",

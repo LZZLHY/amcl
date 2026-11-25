@@ -43,7 +43,7 @@ function fixture(type = 'msa') {
     async syncProfile() { state.syncs++; if (state.barrier) await state.barrier.promise; },
   };
   class AccountError extends Error {}
-  const manager = { async persistOne() { state.persisted++; } };
+  const manager = { findById:id=>id===account.id ? account : undefined,getSelected:()=>account,async persistOne() { state.persisted++; } };
   const env = environment({
     commons: { DiagnosticPolicy: { isDeveloperBuild: () => false } },
     imports: { feature_core: { getTaskActivityOwner: () => ({ recordSummary: async (...args) => { state.summaries.push(args); } }) },

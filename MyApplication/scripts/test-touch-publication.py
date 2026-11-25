@@ -75,6 +75,12 @@ int main(){
  CHECK(repeated.context.schema==committed.context.schema&&repeated.token==committed.token);
  CHECK(AbortTouchPublication("op-1").status==TouchPublicationStatus::Stale);
  CHECK(ConfirmTouchPublication("op-1",committed.token)&&AcceptTouchUiPublication(committed.token));
+ TouchPublicationReceipt observed;
+ uint64_t observedStamp[2]={committed.token,s_touchGroups.Revision()};
+ CHECK(!ReadTouchPublicationChange(observedStamp,observed));
+ observedStamp[1]++;
+ CHECK(ReadTouchPublicationChange(observedStamp,observed)&&observed.token==committed.token);
+ observedStamp[1]=observed.groupRevision;
  auto next=BeginTouchPublication("op-2","candidate-2",QueryTouchPublication().context);
  CHECK(next.fenced&&!ConfirmTouchPublication("op-1",committed.token));
  auto invalid=e;invalid.w=-1;

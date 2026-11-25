@@ -296,6 +296,8 @@ export class GamepadManager implements InputEnd {
   private connectionDevices: Map<InputDeviceConnectionLease, GamepadDeviceState> = new Map<InputDeviceConnectionLease, GamepadDeviceState>()
   /** reset同步回入后才返回的已接受输出也保留原清理owner，不覆盖后来同lease创建的新state。 */
   private pendingCleanupStates: Set<GamepadDeviceState> = new Set<GamepadDeviceState>()
+  /** 只缓存集合成员，轴值/资格始终读原对象。替换快照使可重入遍历保留原批次。 */
+  private statesSnapshot: GamepadDeviceState[] | undefined = undefined
   private connectionReader: InputDeviceConnectionReader | undefined
   private resetting: boolean = false
   private connectionCleanupInFlight: Set<InputDeviceConnectionLease> = new Set<InputDeviceConnectionLease>()
@@ -521,21 +523,22 @@ export class GamepadManager implements InputEnd {
     let completed: boolean = true
     try { if (this.emitter.reconcileConnectionControls?.() === false) completed = false }
     catch (_) { completed = false }
+    if (this.devices.size === 0 && this.connectionDevices.size === 0 && this.pendingCleanupStates.size === 0) return completed
     for (const state of this.allStates()) {
       if (state.connection !== undefined && !this.acceptsConnection(state.connection)) state.retiring = true
       if (state.retiring && !this.releaseState(state)) completed = false
       if (!state.retiring) {
         // 样本被兄弟输入替代而原lease仍live时，只清理该样本已接受的原输出，不退休兄弟。
-        for (const entry of Array.from(state.pendingControlReleases.entries())) {
+        if (state.pendingControlReleases.size > 0) for (const entry of Array.from(state.pendingControlReleases.entries())) {
           if (this.emitOriginalControlRelease(state, entry[0], entry[1])) {
             if (state.pendingControlReleases.get(entry[0]) === entry[1]) state.pendingControlReleases.delete(entry[0])
           } else completed = false
         }
         // 稳定维护只提交此前实际收到的原连接事实；压力拒绝仍保原UP/desired，不靠新输入排空。
-        for (const control of Array.from(state.pendingControlReentry.keys())) {
+        if (state.pendingControlReentry.size > 0) for (const control of Array.from(state.pendingControlReentry.keys())) {
           if (!this.settleControlReentry(state.deviceId, state, control)) completed = false
         }
-        for (const key of Array.from(state.pendingMoveReentry.keys())) {
+        if (state.pendingMoveReentry.size > 0) for (const key of Array.from(state.pendingMoveReentry.keys())) {
           if (!this.settleMoveReentry(state.deviceId, state, key)) completed = false
         }
         this.pruneDeviceState(state.deviceId, state)
@@ -642,6 +645,7 @@ export class GamepadManager implements InputEnd {
     try { this.emitter.dropControlsAfterNativeReset?.() }
     finally {
       this.devices.clear(); this.connectionDevices.clear(); this.pendingCleanupStates.clear()
+      this.statesSnapshot = undefined
       this.outputAggregates.clear(); this.resetting = false
     }
     if (hadState) hilog.info(0x0000, TAG, 'dropped held cache after native reset reason=%{public}s', reason)
@@ -781,10 +785,11 @@ export class GamepadManager implements InputEnd {
   }
 
   /** 用单调时间积分当前状态；多个设备按速度相加，单次最大50ms防止后台追赶。 */
-  advanceMappedLook(seconds: number, monotonicNs: number = 0): void {
-    this.reconcileConnectionCleanup()
+  advanceMappedLook(seconds: number, monotonicNs: number = 0, cleanupDone: boolean = false): void {
+    // 16ms 时钟已清理并核原 activation；直接轴输入和独立调用仍先清理原连接。
+    if (!cleanupDone) this.reconcileConnectionCleanup()
     if (this.sharedLookExecution) {
-      this.reconcileLookExecution()
+      this.retryLookStreams()
       // 只有仍live的原流才推进。原退休失败墓碑可重试，不能自己续旧速度。
       if (this.isEnabled() && this.allStates().some((state: GamepadDeviceState): boolean =>
         this.acceptsStateSample(state, state.inputFence) && state.lookConnection !== 0)) {
@@ -818,7 +823,13 @@ export class GamepadManager implements InputEnd {
   /** 显式维护只重试原连接提交/退休。取消不扩大同目标其它设备的速率或尾量。 */
   reconcileLookExecution(): void {
     this.reconcileConnectionCleanup()
+    this.retryLookStreams()
+  }
+
+  /** 重试只作用于原连接的视角流，调用者已在本次入口处理按键与退休墓碑。 */
+  private retryLookStreams(): void {
     if (!this.sharedLookExecution) return
+    if (this.devices.size === 0 && this.connectionDevices.size === 0 && this.pendingCleanupStates.size === 0) return
     for (const state of this.allStates()) {
       if (state.lookRetirementPending) this.retireLookConnection(state.deviceId, state)
       else if (state.lookVelocityDirty && this.acceptsStateSample(state, state.inputFence)) this.publishLookVelocity(state.deviceId, state)
@@ -1087,23 +1098,33 @@ export class GamepadManager implements InputEnd {
   /** 显式legacy原数字桶；不从此方法创建任何opaque hardware连接。 */
   private deviceState(deviceId: number): GamepadDeviceState {
     let state = this.devices.get(deviceId)
-    if (state === undefined) { state = new GamepadDeviceState(deviceId); this.devices.set(deviceId, state) }
+    if (state === undefined) {
+      state = new GamepadDeviceState(deviceId); this.devices.set(deviceId, state)
+      this.statesSnapshot = undefined
+    }
     return state
   }
 
   /** 同rawID的新lease有独立state；相同字段的伪造对象在公开入口已被Reader拒绝。 */
   private connectionState(connection: InputDeviceConnectionLease): GamepadDeviceState {
     let state = this.connectionDevices.get(connection)
-    if (state === undefined) { state = new GamepadDeviceState(connection.rawPlatformId, connection); this.connectionDevices.set(connection, state) }
+    if (state === undefined) {
+      state = new GamepadDeviceState(connection.rawPlatformId, connection); this.connectionDevices.set(connection, state)
+      this.statesSnapshot = undefined
+    }
     return state
   }
 
   /** 非empty的原清理owner不覆盖新state；独立集合覆盖同步reset后原acquire才返回的情况。 */
-  private retainCleanupState(state: GamepadDeviceState): void { this.pendingCleanupStates.add(state) }
+  private retainCleanupState(state: GamepadDeviceState): void {
+    this.pendingCleanupStates.add(state)
+    this.statesSnapshot = undefined
+  }
 
   /** 只删除精确原state，inFlight/失败墓碑不删除；旧回执绝不删除后来同id/state。 */
   private pruneDeviceState(deviceId: number, state: GamepadDeviceState): void {
     if (!state.isEmpty()) return
+    this.statesSnapshot = undefined
     if (state.connection === undefined) {
       if (this.devices.get(deviceId) === state) this.devices.delete(deviceId)
     } else if (this.connectionDevices.get(state.connection) === state) this.connectionDevices.delete(state.connection)
@@ -1112,14 +1133,18 @@ export class GamepadManager implements InputEnd {
 
   /** 三个容器取去重快照，回调重入不会让迭代认领后来新增state或跳过兄弟原state。 */
   private allStates(): GamepadDeviceState[] {
+    if (this.statesSnapshot !== undefined) return this.statesSnapshot
     const states: Set<GamepadDeviceState> = new Set<GamepadDeviceState>()
     this.devices.forEach((state: GamepadDeviceState): void => { states.add(state) })
     this.connectionDevices.forEach((state: GamepadDeviceState): void => { states.add(state) })
     this.pendingCleanupStates.forEach((state: GamepadDeviceState): void => { states.add(state) })
-    return Array.from(states)
+    this.statesSnapshot = Array.from(states)
+    return this.statesSnapshot
   }
 
-  private hasAnyDeviceState(): boolean { return this.allStates().length > 0 }
+  private hasAnyDeviceState(): boolean {
+    return this.devices.size > 0 || this.connectionDevices.size > 0 || this.pendingCleanupStates.size > 0
+  }
 
   /** 诊断计入live持有及待清理记录；没有把acquiring intent或未知token声称为已交付owner。 */
   private heldStateCount(): number {

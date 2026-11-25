@@ -1,0 +1,7087 @@
+[
+  {
+    "name": "listInstances",
+    "domain": "library",
+    "description": "读取已安装实例、残留目录和当前选择。",
+    "args": [
+      {
+        "name": "loader",
+        "description": "列表筛选，省略为全部。",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "all",
+          "vanilla",
+          "fabric",
+          "forge",
+          "neoforge",
+          "quilt"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "instances": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "orphans": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "selected": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instances",
+        "orphans",
+        "selected"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/LauncherLibrary.ets",
+      "test": "qa/device/test-launcher-library-skill.mjs"
+    },
+    "examples": {
+      "ready": {
+        "instances": [
+          "Fabric 1.21"
+        ],
+        "orphans": [],
+        "selected": "Fabric 1.21"
+      },
+      "failed": {
+        "reason": "inventoryUnavailable"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    }
+  },
+  {
+    "name": "getLauncherHome",
+    "domain": "library",
+    "description": "读取首页的实例、账号类型、JDK、模组数、最近活动和运行配置。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "selected": {
+        "type": "string"
+      },
+      "accountType": {
+        "type": "string"
+      },
+      "jdk": {
+        "type": "string"
+      },
+      "memoryMiB": {
+        "type": "integer"
+      },
+      "instanceCount": {
+        "type": "integer"
+      },
+      "installedModCount": {
+        "type": "integer"
+      },
+      "recentActivities": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "lastPlayedAt": {
+        "type": "integer"
+      },
+      "storeAction": {
+        "type": "string"
+      },
+      "jdkReady": {
+        "type": "boolean"
+      },
+      "isolation": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "selected",
+        "accountType",
+        "jdk",
+        "memoryMiB",
+        "instanceCount",
+        "installedModCount",
+        "recentActivities",
+        "lastPlayedAt",
+        "storeAction",
+        "jdkReady",
+        "isolation"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "selected": "Fabric 1.21.1",
+        "accountType": "离线账户",
+        "jdk": "21",
+        "memoryMiB": 2048,
+        "instanceCount": 1,
+        "installedModCount": 0,
+        "recentActivities": [],
+        "lastPlayedAt": 0,
+        "storeAction": "",
+        "jdkReady": true,
+        "isolation": false
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    }
+  },
+  {
+    "name": "openLauncherSection",
+    "domain": "library",
+    "description": "打开已命名的启动器业务界面。",
+    "args": [
+      {
+        "name": "section",
+        "description": "目标页面",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "home",
+          "accounts",
+          "versions",
+          "installedMods",
+          "download",
+          "settings",
+          "tasks",
+          "history",
+          "messages",
+          "network",
+          "mod",
+          "shader",
+          "resourcepack",
+          "modpack"
+        ],
+        "example": "settings"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "requiredOutput": {
+      "ready": [
+        "section"
+      ]
+    },
+    "output": {
+      "section": {
+        "type": "string"
+      }
+    },
+    "examples": {
+      "ready": {
+        "section": "settings"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "section": "section"
+    }
+  },
+  {
+    "name": "performStoreManagerAction",
+    "domain": "library",
+    "description": "按商店首页已显示的管理行动处理。检查中、会话退出或路由失败时不报告受理；选择和修复菜单可通过原交接引用回读用户取消或实际派发结果。",
+    "args": [
+      {
+        "name": "action",
+        "description": "getLauncherHome 返回的当前管理行动",
+        "type": "string",
+        "required": true,
+        "example": "download"
+      }
+    ],
+    "results": [
+      "accepted",
+      "failed",
+      "cancelled",
+      "needsUser",
+      "initializing",
+      "unavailable",
+      "unknown"
+    ],
+    "output": {
+      "action": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "action"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "action": "download"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "action": "action"
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/LauncherLibrary.ets",
+      "test": "qa/device/test-launcher-library-skill.mjs"
+    },
+    "inputExamples": [
+      {
+        "action": "download"
+      },
+      {
+        "action": "checking"
+      }
+    ],
+    "outputCases": [
+      {
+        "args": {
+          "action": "checking"
+        },
+        "when": {
+          "state": "accepted"
+        },
+        "require": [],
+        "reject": true
+      }
+    ],
+    "userHandoff": true
+  },
+  {
+    "name": "getLauncherTasks",
+    "domain": "library",
+    "description": "查看当前产品队列中的活动、终态、控制资格和字节进度。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "tasks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "activityId": {
+              "type": "integer"
+            },
+            "phase": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "activityId",
+            "phase"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "tasks"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/LauncherLibrary.ets",
+      "test": "qa/device/test-launcher-library-skill.mjs"
+    },
+    "examples": {
+      "ready": {
+        "tasks": []
+      },
+      "needsUser": {
+        "reason": "launcherUnavailable"
+      }
+    }
+  },
+  {
+    "name": "moveInstanceBefore",
+    "domain": "library",
+    "description": "把指定实例排到另一个实例之前；不指定参照时移到末尾。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "before",
+        "description": "目标参照实例",
+        "type": "string",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "order": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "order"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "order": [
+          "Fabric 1.21.1",
+          "1.20.1"
+        ]
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    }
+  },
+  {
+    "name": "selectGameInstance",
+    "domain": "library",
+    "description": "选择已安装游戏实例。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true,
+        "example": "Fabric 1.21.1"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "requiredOutput": {
+      "ready": [
+        "selected"
+      ]
+    },
+    "output": {
+      "selected": {
+        "type": "string"
+      }
+    },
+    "examples": {
+      "failed": {
+        "reason": "selectionNotSaved"
+      },
+      "ready": {
+        "selected": "Fabric 1.21.1"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "selected": "instance"
+    }
+  },
+  {
+    "name": "openInstancePanel",
+    "domain": "library",
+    "description": "在指定实例打开实际详情、文件、世界、导出或设置。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true,
+        "example": "Fabric 1.21.1"
+      },
+      {
+        "name": "panel",
+        "description": "版本面板",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "detail",
+          "saves",
+          "files",
+          "export",
+          "jvm",
+          "language",
+          "resolution",
+          "jdk",
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ],
+        "example": "saves"
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "instance": {
+        "type": "string"
+      },
+      "panel": {
+        "type": "string"
+      }
+    },
+    "examples": {
+      "needsUser": {
+        "instance": "Fabric 1.21.1",
+        "panel": "saves"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance",
+      "panel": "panel"
+    }
+  },
+  {
+    "name": "getInstanceSettings",
+    "domain": "library",
+    "description": "读取单版本 JDK、语言和分辨率设置。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true,
+        "example": "Fabric 1.21.1"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "instance": {
+        "type": "string"
+      },
+      "jdk": {
+        "type": "string"
+      },
+      "resolution": {
+        "type": "integer"
+      },
+      "language": {
+        "type": "string"
+      },
+      "jdkChoices": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "effectiveJdk": {
+        "type": "string"
+      },
+      "effectiveLanguage": {
+        "type": "string"
+      },
+      "effectiveResolution": {
+        "type": "integer"
+      },
+      "isolated": {
+        "type": "boolean"
+      },
+      "hasCustomJvmArgs": {
+        "type": "boolean"
+      },
+      "jvmRevision": {
+        "type": "string"
+      },
+      "memoryMiB": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "jdk",
+        "resolution",
+        "language",
+        "jdkChoices",
+        "effectiveJdk",
+        "effectiveLanguage",
+        "effectiveResolution",
+        "isolated",
+        "hasCustomJvmArgs",
+        "jvmRevision",
+        "memoryMiB"
+      ]
+    },
+    "examples": {
+      "failed": {
+        "reason": "instanceNotInstalled"
+      },
+      "ready": {
+        "instance": "Fabric 1.21.1",
+        "jdk": "",
+        "resolution": 0,
+        "language": "",
+        "jdkChoices": [
+          "21"
+        ],
+        "effectiveJdk": "21",
+        "effectiveLanguage": "zh_cn",
+        "effectiveResolution": 100,
+        "isolated": false,
+        "hasCustomJvmArgs": false,
+        "jvmRevision": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "memoryMiB": 2048
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "setInstanceJdk",
+    "domain": "library",
+    "description": "设置指定实例的启动 JDK。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true,
+        "example": "Fabric 1.21.1"
+      },
+      {
+        "name": "jdk",
+        "description": "可选 JDK，或 inherit/auto",
+        "type": "string",
+        "required": true,
+        "example": "21"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "instance": {
+        "type": "string"
+      },
+      "jdk": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "jdk"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "instance": "Fabric 1.21.1",
+        "jdk": "21"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance",
+      "jdk": "jdk"
+    }
+  },
+  {
+    "name": "setInstanceResolution",
+    "domain": "library",
+    "description": "保存版本分辨率百分比，0 表示继承。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "percent",
+        "description": "渲染比例",
+        "type": "integer",
+        "required": true,
+        "example": 100
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "percent": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "percent"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "percent": 100
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "percent": "percent"
+    }
+  },
+  {
+    "name": "requestInstanceDeletion",
+    "domain": "library",
+    "description": "显示实例名并由用户确认，随后回报原实例是否实际删除。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "cancelled",
+      "unavailable",
+      "partial"
+    ],
+    "userHandoff": true,
+    "output": {
+      "removed": {
+        "type": [
+          "string",
+          "array"
+        ],
+        "items": {
+          "type": "string"
+        },
+        "description": "有效实例返回删除的实例名；清理残缺目录返回实取名称列表。"
+      },
+      "remaining": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "未完全清理的残缺实例名称。"
+      },
+      "affected": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "removed"
+      ],
+      "partial": [
+        "removed",
+        "remaining"
+      ]
+    },
+    "examples": {
+      "partial": {
+        "removed": [],
+        "remaining": [
+          "example-instance"
+        ],
+        "affected": "example-instance",
+        "reason": "cleanupIncomplete"
+      },
+      "ready": {
+        "removed": "example-instance"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "partial"
+        },
+        "require": [
+          "removed",
+          "remaining",
+          "affected"
+        ],
+        "fields": {
+          "remaining": {
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "removed": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "example": {
+          "removed": [],
+          "remaining": [
+            "example-instance"
+          ],
+          "affected": "example-instance",
+          "reason": "cleanupIncomplete"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "removed"
+        ],
+        "fields": {
+          "removed": {
+            "minLength": 1,
+            "minItems": 1
+          }
+        },
+        "example": {
+          "removed": "example-instance"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "whenTypes": {
+          "removed": "array"
+        },
+        "require": [
+          "removed",
+          "remaining"
+        ],
+        "fields": {
+          "removed": {
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "remaining": {
+            "const": []
+          }
+        },
+        "example": {
+          "removed": [
+            "example-instance"
+          ],
+          "remaining": []
+        }
+      }
+    ],
+    "targetMembers": {
+      "removed": "instance",
+      "remaining": "instance",
+      "affected": "instance"
+    },
+    "disjointOutput": [
+      [
+        "removed",
+        "remaining"
+      ]
+    ],
+    "inputExamples": [
+      {
+        "instance": "example-instance"
+      }
+    ],
+    "memberOf": {
+      "affected": "remaining"
+    }
+  },
+  {
+    "name": "listGameCatalog",
+    "domain": "library",
+    "description": "查询产品的远程游戏版本清单，带分类、搜索与刷新。",
+    "args": [
+      {
+        "name": "query",
+        "description": "版本搜索词",
+        "type": "string",
+        "required": false
+      },
+      {
+        "name": "category",
+        "description": "版本分类",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "all",
+          "release",
+          "old",
+          "snapshot",
+          "aprilfools"
+        ]
+      },
+      {
+        "name": "offset",
+        "description": "分页起点",
+        "type": "integer",
+        "required": false
+      },
+      {
+        "name": "refresh",
+        "description": "强制刷新",
+        "type": "boolean",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "versions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type"
+          ]
+        }
+      },
+      "offset": {
+        "type": "integer"
+      },
+      "total": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "versions",
+        "offset",
+        "total"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "versions": [
+          {
+            "id": "1.21.1",
+            "type": "release",
+            "date": "2024-08-08"
+          }
+        ],
+        "offset": 0,
+        "total": 1
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "offset": "offset"
+    },
+    "inputExamples": [
+      {},
+      {
+        "offset": 0
+      }
+    ]
+  },
+  {
+    "name": "listGameLoaders",
+    "domain": "library",
+    "description": "查询指定游戏版本的加载器类型或已发布加载器版本。",
+    "args": [
+      {
+        "name": "gameVersion",
+        "description": "游戏版本 ID",
+        "type": "string",
+        "required": true,
+        "example": "1.21.1"
+      },
+      {
+        "name": "loader",
+        "description": "加载器类型",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "fabric",
+          "forge",
+          "neoforge"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "supported": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "versions": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "gameVersion": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "gameVersion"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "supported": [
+          "fabric",
+          "forge",
+          "neoforge"
+        ],
+        "gameVersion": "1.21.1"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "gameVersion",
+          "versions"
+        ],
+        "fields": {},
+        "example": {
+          "gameVersion": "1.21.1",
+          "versions": [
+            {
+              "version": "0.16.10",
+              "stable": true
+            }
+          ]
+        },
+        "args": {
+          "loader": "fabric"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "gameVersion",
+          "versions"
+        ],
+        "fields": {},
+        "example": {
+          "gameVersion": "1.21.1",
+          "versions": [
+            {
+              "version": "51.0.33",
+              "stable": true
+            }
+          ]
+        },
+        "args": {
+          "loader": "forge"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "gameVersion",
+          "versions"
+        ],
+        "fields": {},
+        "example": {
+          "gameVersion": "1.21.1",
+          "versions": [
+            {
+              "version": "21.1.42",
+              "stable": true
+            }
+          ]
+        },
+        "args": {
+          "loader": "neoforge"
+        }
+      }
+    ],
+    "echoArgs": {
+      "gameVersion": "gameVersion"
+    }
+  },
+  {
+    "name": "installGameInstance",
+    "domain": "library",
+    "description": "安装清单中的版本至指定的新实例；受理后按原意图编号回读。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "operationRef",
+        "description": "本次意图的稳定编号，1–64 位字母数字、下划线或短横线；重试沿用。",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "gameVersion",
+        "description": "游戏版本 ID",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "loader",
+        "description": "加载器类型",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "vanilla",
+          "fabric",
+          "forge",
+          "neoforge"
+        ]
+      },
+      {
+        "name": "loaderVersion",
+        "description": "已列出的加载器版本",
+        "type": "string",
+        "required": false
+      },
+      {
+        "name": "withFabricApi",
+        "description": "同时安装对应 Fabric API",
+        "type": "boolean",
+        "required": false
+      }
+    ],
+    "results": [
+      "accepted",
+      "ready",
+      "unknown",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "taskId": {
+        "type": "string"
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "stage": {
+        "type": "string"
+      },
+      "instance": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "operationRef",
+        "taskId",
+        "activityId"
+      ],
+      "ready": [
+        "operationRef",
+        "stage",
+        "activityId",
+        "taskId",
+        "instance"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "operationRef": "example-install-42",
+        "activityId": 1731870000000,
+        "taskId": "mc:Fabric 1.21.1"
+      },
+      "ready": {
+        "operationRef": "example-install-42",
+        "activityId": 1731870000000,
+        "taskId": "mc:Fabric 1.21.1",
+        "stage": "admitted",
+        "instance": "Fabric 1.21.1",
+        "reason": "",
+        "precheck": "",
+        "precheckState": "",
+        "fix": ""
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "operationRef": "operationRef",
+      "instance": "instance"
+    },
+    "inputExamples": [
+      {
+        "instance": "Fabric 1.21.1",
+        "operationRef": "example-install-42",
+        "gameVersion": "1.21.1",
+        "loader": "fabric",
+        "loaderVersion": "0.16.10",
+        "withFabricApi": false
+      }
+    ]
+  },
+  {
+    "name": "launchGameInstance",
+    "domain": "library",
+    "description": "启动当前选择的实例并复用原预检；需要人工授权时显示原界面。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "operationRef",
+        "description": "本次意图的稳定编号，1–64 位字母数字、下划线或短横线；重试沿用。",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "unknown",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "stage": {
+        "type": "string"
+      },
+      "instance": {
+        "type": "string"
+      },
+      "taskId": {
+        "type": "string"
+      },
+      "precheck": {
+        "type": "string"
+      },
+      "precheckState": {
+        "type": "string"
+      },
+      "fix": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "operationRef",
+        "instance",
+        "activityId",
+        "taskId",
+        "stage",
+        "precheck",
+        "precheckState",
+        "fix"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "operationRef": "example-launch-43",
+        "instance": "Fabric 1.21.1",
+        "activityId": 1731870000000,
+        "taskId": "",
+        "stage": "dispatched",
+        "precheck": "",
+        "precheckState": "",
+        "fix": "",
+        "reason": ""
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "operationRef": "operationRef",
+      "instance": "instance"
+    },
+    "inputExamples": [
+      {
+        "instance": "Fabric 1.21.1",
+        "operationRef": "example-launch-43"
+      }
+    ]
+  },
+  {
+    "name": "getLauncherOperation",
+    "domain": "library",
+    "description": "以原意图编号观察真实安装或启动进度和活动。 使用原操作返回的 operationRef；如是等待用户时收到的临时引用，应先用 getLauncherHandoff 读取原业务结果。 后继重试入队或出队后只回读原安装的活动。",
+    "args": [
+      {
+        "name": "operationRef",
+        "description": "本次意图的稳定编号，1–64 位字母数字、下划线或短横线；重试沿用。",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "unknown",
+      "failed",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string"
+      },
+      "instance": {
+        "type": "string",
+        "description": "取自该 operationRef 所绑定的原启动或安装记录。"
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "taskId": {
+        "type": "string"
+      },
+      "stage": {
+        "type": "string"
+      },
+      "taskState": {
+        "type": "string"
+      },
+      "activityState": {
+        "type": "integer"
+      },
+      "precheck": {
+        "type": "string"
+      },
+      "precheckState": {
+        "type": "string"
+      },
+      "fix": {
+        "type": "string"
+      },
+      "companionTaskId": {
+        "type": "string"
+      },
+      "companionActivityId": {
+        "type": "integer"
+      },
+      "companionState": {
+        "type": "string"
+      },
+      "window": {
+        "type": "object",
+        "properties": {
+          "ownerPid": {
+            "type": "integer"
+          },
+          "ownerAlive": {
+            "type": "integer"
+          },
+          "windowId": {
+            "type": "integer"
+          },
+          "visibility": {
+            "enum": [
+              "attached",
+              "unobserved"
+            ]
+          }
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "operationRef",
+        "instance",
+        "activityId",
+        "taskId",
+        "stage",
+        "precheck",
+        "precheckState",
+        "fix"
+      ]
+    },
+    "examples": {
+      "failed": {
+        "reason": "operationNotFound"
+      },
+      "ready": {
+        "operationRef": "example-launch-43",
+        "instance": "Fabric 1.21.1",
+        "activityId": 1731870000000,
+        "taskId": "",
+        "stage": "dispatched",
+        "precheck": "",
+        "precheckState": "",
+        "fix": "",
+        "reason": ""
+      }
+    },
+    "echoArgs": {
+      "operationRef": "operationRef"
+    },
+    "inputExamples": [
+      {
+        "operationRef": "example-launch-43"
+      }
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/LauncherLibrary.ets",
+      "test": "qa/device/test-launcher-library-skill.mjs"
+    }
+  },
+  {
+    "name": "listWorlds",
+    "domain": "worlds",
+    "description": "列出指定实例的世界及有效性。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true,
+        "example": "Fabric 1.21.1"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unavailable"
+    ],
+    "output": {
+      "folder": {
+        "type": "string",
+        "minLength": 1
+      },
+      "shared": {
+        "type": "boolean"
+      },
+      "entries": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref",
+            "name"
+          ]
+        }
+      },
+      "instance": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "folder",
+        "shared",
+        "entries"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "instance": "Fabric 1.21.1",
+        "folder": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "shared": false,
+        "entries": []
+      },
+      "needsUser": {
+        "reason": "panelBusy"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "importWorlds",
+    "domain": "worlds",
+    "description": "选择本地存档 ZIP 并导入当前目标。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "partial",
+      "cancelled",
+      "unavailable"
+    ],
+    "output": {
+      "imported": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "failedCount": {
+        "type": "integer"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "imported",
+        "failedCount"
+      ],
+      "partial": [
+        "imported",
+        "failedCount"
+      ]
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "imported",
+          "failedCount"
+        ],
+        "fields": {
+          "failedCount": {
+            "const": 0
+          }
+        },
+        "example": {
+          "imported": [
+            "Example World"
+          ],
+          "failedCount": 0
+        }
+      },
+      {
+        "when": {
+          "state": "partial"
+        },
+        "require": [
+          "imported",
+          "failedCount"
+        ],
+        "fields": {
+          "imported": {
+            "minItems": 1
+          },
+          "failedCount": {
+            "minimum": 1
+          }
+        },
+        "example": {
+          "imported": [
+            "Example World"
+          ],
+          "failedCount": 1,
+          "reason": "fileRejected"
+        }
+      }
+    ],
+    "examples": {
+      "ready": {
+        "imported": [
+          "Example World"
+        ],
+        "failedCount": 0
+      },
+      "partial": {
+        "imported": [
+          "Example World"
+        ],
+        "failedCount": 1,
+        "reason": "fileRejected"
+      }
+    }
+  },
+  {
+    "name": "exportWorld",
+    "domain": "worlds",
+    "description": "通过系统保存器导出已选世界。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "本次目录查询返回的行引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "exported": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "exported"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "exported": "Example World.zip"
+      }
+    }
+  },
+  {
+    "name": "requestWorldDeletion",
+    "domain": "worlds",
+    "description": "用户确认所选世界与目录后，通过原存档管理流程删除并核实结果。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "本次目录查询返回的行引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "removed": {
+        "type": "string"
+      },
+      "shared": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "removed",
+        "shared"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "removed": "Example World",
+        "shared": false
+      }
+    }
+  },
+  {
+    "name": "listInstanceFiles",
+    "domain": "instanceFiles",
+    "description": "浏览当前实例文件夹及条目引用。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true,
+        "example": "Fabric 1.21.1"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unavailable"
+    ],
+    "output": {
+      "folder": {
+        "type": "string",
+        "minLength": 1
+      },
+      "shared": {
+        "type": "boolean"
+      },
+      "entries": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref",
+            "name"
+          ]
+        }
+      },
+      "instance": {
+        "type": "string"
+      },
+      "segments": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "folder",
+        "segments",
+        "shared",
+        "entries"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "instance": "Fabric 1.21.1",
+        "folder": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "shared": false,
+        "segments": [],
+        "entries": []
+      },
+      "needsUser": {
+        "reason": "panelBusy"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "navigateInstanceParent",
+    "domain": "instanceFiles",
+    "description": "回到已核实目录的父层。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unavailable"
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "panelBusy"
+      }
+    }
+  },
+  {
+    "name": "createInstanceFolder",
+    "domain": "instanceFiles",
+    "description": "在已核实目录创建指定新文件夹。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "name",
+        "description": "新文件夹的纯名称",
+        "type": "string",
+        "required": true,
+        "example": "screenshots"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unavailable"
+    ],
+    "output": {
+      "created": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "created"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "created": "screenshots"
+      },
+      "needsUser": {
+        "reason": "panelBusy"
+      }
+    },
+    "echoArgs": {
+      "created": "name"
+    }
+  },
+  {
+    "name": "enterInstanceFolder",
+    "domain": "instanceFiles",
+    "description": "进入所选的下一层目录。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "本次目录查询返回的行引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unavailable"
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "panelBusy"
+      }
+    }
+  },
+  {
+    "name": "importInstanceFiles",
+    "domain": "instanceFiles",
+    "description": "由系统选择文件后导入目录。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "partial",
+      "cancelled",
+      "unavailable"
+    ],
+    "output": {
+      "imported": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "failedCount": {
+        "type": "integer"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "imported",
+        "failedCount"
+      ],
+      "partial": [
+        "imported",
+        "failedCount"
+      ]
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "imported",
+          "failedCount"
+        ],
+        "fields": {
+          "failedCount": {
+            "const": 0
+          }
+        },
+        "example": {
+          "imported": [
+            "options-copy.txt"
+          ],
+          "failedCount": 0
+        }
+      },
+      {
+        "when": {
+          "state": "partial"
+        },
+        "require": [
+          "imported",
+          "failedCount"
+        ],
+        "fields": {
+          "imported": {
+            "minItems": 1
+          },
+          "failedCount": {
+            "minimum": 1
+          }
+        },
+        "example": {
+          "imported": [
+            "options-copy.txt"
+          ],
+          "failedCount": 1,
+          "reason": "fileRejected"
+        }
+      }
+    ],
+    "examples": {
+      "ready": {
+        "imported": [
+          "options-copy.txt"
+        ],
+        "failedCount": 0
+      },
+      "partial": {
+        "imported": [
+          "options-copy.txt"
+        ],
+        "failedCount": 1,
+        "reason": "fileRejected"
+      }
+    }
+  },
+  {
+    "name": "exportInstanceFile",
+    "domain": "instanceFiles",
+    "description": "通过系统保存文件或打包导出当前目录项。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "本次目录查询返回的行引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "exported": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "exported"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "exported": "options.txt"
+      }
+    }
+  },
+  {
+    "name": "requestInstanceFileDeletion",
+    "domain": "instanceFiles",
+    "description": "在原面板确认删除指定文件或目录。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "本次目录查询返回的行引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "removed": {
+        "type": "string"
+      },
+      "shared": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "removed",
+        "shared"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "removed": "options-old.txt",
+        "shared": false
+      }
+    }
+  },
+  {
+    "name": "requestInstanceFileRename",
+    "domain": "instanceFiles",
+    "description": "确认影响范围及目标身份后由文件管理器改名并回读。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "原实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "本次目录查询返回的引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "本次目录查询返回的行引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "newName",
+        "description": "新的纯名称",
+        "type": "string",
+        "required": true,
+        "example": "options-copy.txt"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "renamed": {
+        "type": "string"
+      },
+      "shared": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "renamed",
+        "shared"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "renamed": "options-copy.txt",
+        "shared": false
+      }
+    },
+    "echoArgs": {
+      "renamed": "newName"
+    }
+  },
+  {
+    "name": "searchResources",
+    "domain": "browse",
+    "description": "从实际在线资源页按类别、关键字和筛选条件搜索。",
+    "args": [
+      {
+        "name": "kind",
+        "description": "在线资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "modpack"
+        ]
+      },
+      {
+        "name": "query",
+        "description": "关键字，空值浏览全部",
+        "type": "string",
+        "required": false
+      },
+      {
+        "name": "loader",
+        "description": "加载器",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "fabric",
+          "forge",
+          "neoforge",
+          "quilt"
+        ]
+      },
+      {
+        "name": "gameVersion",
+        "description": "游戏版本",
+        "type": "string",
+        "required": false
+      },
+      {
+        "name": "sort",
+        "description": "排序",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "relevance",
+          "downloads",
+          "newest",
+          "updated"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "searchRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "projects": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project",
+            "source"
+          ]
+        }
+      },
+      "total": {
+        "type": "integer"
+      },
+      "hasMore": {
+        "type": "boolean"
+      },
+      "loader": {
+        "type": "string"
+      },
+      "gameVersion": {
+        "type": "string"
+      },
+      "sort": {
+        "type": "string"
+      },
+      "httpStatus": {
+        "type": "integer"
+      },
+      "errorKind": {
+        "type": "string"
+      },
+      "sourceError": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "searchRef",
+        "projects",
+        "total",
+        "hasMore"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "searchRef": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "projects": [
+          {
+            "project": "example-project",
+            "source": "modrinth",
+            "title": "示例模组"
+          }
+        ],
+        "total": 1,
+        "hasMore": false
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    }
+  },
+  {
+    "name": "nextResourcePage",
+    "domain": "browse",
+    "description": "取得原资源搜索的下一页。",
+    "args": [
+      {
+        "name": "searchRef",
+        "description": "本次搜索的标识",
+        "type": "string",
+        "required": true,
+        "example": "02a38130-7fd7-4cf4-b09f-87f6cebd0681"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "searchRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "projects": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project",
+            "source"
+          ]
+        }
+      },
+      "total": {
+        "type": "integer"
+      },
+      "hasMore": {
+        "type": "boolean"
+      },
+      "loader": {
+        "type": "string"
+      },
+      "gameVersion": {
+        "type": "string"
+      },
+      "sort": {
+        "type": "string"
+      },
+      "httpStatus": {
+        "type": "integer"
+      },
+      "errorKind": {
+        "type": "string"
+      },
+      "sourceError": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "searchRef",
+        "projects",
+        "total",
+        "hasMore"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "searchRef": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "projects": [],
+        "total": 0,
+        "hasMore": false,
+        "sort": "downloads",
+        "loader": "",
+        "gameVersion": "",
+        "httpStatus": 0,
+        "errorKind": "",
+        "sourceError": ""
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    },
+    "echoArgs": {
+      "searchRef": "searchRef"
+    }
+  },
+  {
+    "name": "getResourceVersions",
+    "domain": "browse",
+    "description": "读取原项目的介绍及实际可选版本。",
+    "args": [
+      {
+        "name": "searchRef",
+        "description": "本次搜索的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "project",
+        "description": "实际结果中的项目 ID",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "source",
+        "description": "实际项目来源",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "offset",
+        "description": "分页起点",
+        "type": "integer",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "source": {
+        "type": "string"
+      },
+      "project": {
+        "type": "string"
+      },
+      "versions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ]
+        }
+      },
+      "offset": {
+        "type": "integer"
+      },
+      "total": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "source",
+        "project",
+        "versions",
+        "offset",
+        "total"
+      ]
+    },
+    "inputExamples": [
+      {
+        "searchRef": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "project": "example-project",
+        "source": "modrinth"
+      },
+      {
+        "searchRef": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "project": "example-project",
+        "source": "modrinth",
+        "offset": 0
+      }
+    ],
+    "examples": {
+      "ready": {
+        "source": "modrinth",
+        "project": "example-project",
+        "versions": [
+          {
+            "id": "example-file",
+            "name": "1.0",
+            "loaders": [
+              "fabric"
+            ],
+            "games": [
+              "1.21.1"
+            ],
+            "files": [
+              {
+                "name": "example.jar",
+                "bytes": 32768,
+                "primary": true
+              }
+            ]
+          }
+        ],
+        "offset": 0,
+        "total": 1
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    },
+    "echoArgs": {
+      "project": "project",
+      "source": "source",
+      "offset": "offset"
+    }
+  },
+  {
+    "name": "prepareResourceInstall",
+    "domain": "browse",
+    "description": "为该来源、项目和版本选择真实主文件并列出依赖。",
+    "args": [
+      {
+        "name": "searchRef",
+        "description": "本次搜索的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "project",
+        "description": "实际结果中的项目 ID",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "source",
+        "description": "实际项目来源",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "version",
+        "description": "实际资源版本 ID",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "instance",
+        "description": "整合包的目标名称",
+        "type": "string",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "planRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "dependencies": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "selected"
+          ]
+        }
+      },
+      "version": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "filename": {
+        "type": "string"
+      },
+      "saveOnly": {
+        "type": "boolean"
+      },
+      "project": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "planRef",
+        "project",
+        "source",
+        "version",
+        "target",
+        "filename",
+        "saveOnly",
+        "dependencies"
+      ]
+    },
+    "inputExamples": [
+      {
+        "searchRef": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "project": "example-project",
+        "source": "modrinth",
+        "version": "example-file"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "planRef": "256d1962-2579-4e41-8eed-4274cae65f67",
+        "project": "example-project",
+        "source": "modrinth",
+        "version": "example-file",
+        "target": "Fabric 1.21.1",
+        "saveOnly": false,
+        "filename": "example.jar",
+        "dependencies": []
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    },
+    "echoArgs": {
+      "project": "project",
+      "source": "source",
+      "version": "version"
+    }
+  },
+  {
+    "name": "selectResourceDependency",
+    "domain": "browse",
+    "description": "更新原安装计划中的可选依赖。",
+    "args": [
+      {
+        "name": "searchRef",
+        "description": "本次搜索的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "planRef",
+        "description": "原计划确认标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "key",
+        "description": "依赖标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "selected",
+        "description": "是否安装",
+        "type": "boolean",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "planRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "dependencies": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "selected"
+          ]
+        }
+      },
+      "version": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "filename": {
+        "type": "string"
+      },
+      "saveOnly": {
+        "type": "boolean"
+      },
+      "project": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "planRef",
+        "project",
+        "source",
+        "version",
+        "target",
+        "filename",
+        "saveOnly",
+        "dependencies"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "planRef": "256d1962-2579-4e41-8eed-4274cae65f67",
+        "version": "example-file",
+        "target": "Fabric 1.21.1",
+        "project": "example-project",
+        "source": "modrinth",
+        "filename": "example.jar",
+        "dependencies": [
+          {
+            "key": "modrinth:optional-mod",
+            "kind": "optional",
+            "name": "Optional Mod",
+            "installed": false,
+            "selected": true
+          }
+        ],
+        "saveOnly": false
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    }
+  },
+  {
+    "name": "installResourcePlan",
+    "domain": "browse",
+    "description": "提交一次指定资源安装计划。",
+    "args": [
+      {
+        "name": "searchRef",
+        "description": "本次搜索的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "planRef",
+        "description": "原计划确认标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "accepted",
+      "failed",
+      "needsUser",
+      "unknown",
+      "cancelled",
+      "unavailable"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "operationRef"
+      ]
+    },
+    "userHandoff": true,
+    "inputExamples": [
+      {
+        "searchRef": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "planRef": "256d1962-2579-4e41-8eed-4274cae65f67"
+      }
+    ],
+    "examples": {
+      "accepted": {
+        "operationRef": "256d1962-2579-4e41-8eed-4274cae65f67"
+      }
+    },
+    "echoArgs": {
+      "operationRef": "planRef"
+    }
+  },
+  {
+    "name": "getResourceInstall",
+    "domain": "library",
+    "description": "使用原计划编号查询资源安装或另存任务，应用重启后仍由原活动及记录核验。 使用原操作返回的 operationRef；如是等待用户时收到的临时引用，应先用 getLauncherHandoff 读取原业务结果。",
+    "args": [
+      {
+        "name": "operationRef",
+        "description": "提交回包的操作编号",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "unavailable",
+      "initializing"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string"
+      },
+      "taskId": {
+        "type": "string"
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "phase": {
+        "type": "string"
+      },
+      "completeness": {
+        "type": "string"
+      },
+      "missingCount": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "operationRef",
+        "taskId",
+        "activityId",
+        "phase"
+      ]
+    },
+    "inputExamples": [
+      {
+        "operationRef": "256d1962-2579-4e41-8eed-4274cae65f67"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "operationRef": "256d1962-2579-4e41-8eed-4274cae65f67",
+        "taskId": "mod-plan:/sandbox/.minecraft/mods:modrinth:example-project",
+        "activityId": 1731870000000,
+        "phase": "done"
+      }
+    },
+    "echoArgs": {
+      "operationRef": "operationRef"
+    }
+  },
+  {
+    "name": "closeResourceDetails",
+    "domain": "browse",
+    "description": "用原搜索引用收起由它打开的同一个详情。后台刷新或目标换代后仍可收起原详情，不能关闭玩家另开的详情。",
+    "args": [
+      {
+        "name": "searchRef",
+        "description": "本次搜索的标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/BrowseSkill.ets",
+      "test": "qa/device/test-launcher-library-skill.mjs"
+    },
+    "examples": {
+      "failed": {
+        "reason": "searchChanged"
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    }
+  },
+  {
+    "name": "chooseLocalModpack",
+    "domain": "browse",
+    "description": "在整合包页经系统文件选择器选择本地整合包。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "cancelled",
+      "unavailable"
+    ],
+    "output": {
+      "selectionRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "instance": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "selectionRef",
+        "instance"
+      ]
+    },
+    "userHandoff": true,
+    "examples": {
+      "failed": {
+        "reason": "fileNotSelected"
+      },
+      "ready": {
+        "selectionRef": "7cc6a8e9-e662-477a-b58a-000000000001",
+        "instance": "Example Pack"
+      }
+    }
+  },
+  {
+    "name": "prepareLocalModpack",
+    "domain": "browse",
+    "description": "查看或修改本次选择的整合包安装名。",
+    "args": [
+      {
+        "name": "selectionRef",
+        "description": "系统选择文件后的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "instance",
+        "description": "新的目标安装名",
+        "type": "string",
+        "required": false,
+        "example": "Example Pack"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "planRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "instance": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "planRef",
+        "instance"
+      ]
+    },
+    "examples": {
+      "failed": {
+        "reason": "fileSelectionChanged"
+      },
+      "ready": {
+        "planRef": "7cc6a8e9-e662-477a-b58a-000000000002",
+        "instance": "Example Pack"
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    },
+    "inputExamples": [
+      {
+        "selectionRef": "7cc6a8e9-e662-477a-b58a-000000000001",
+        "instance": "Example Pack"
+      }
+    ],
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "installLocalModpack",
+    "domain": "browse",
+    "description": "将已选择、已命名的本地整合包按原计划入队。",
+    "args": [
+      {
+        "name": "selectionRef",
+        "description": "系统选择文件后的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "planRef",
+        "description": "原计划确认标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "accepted",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "operationRef"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "operationRef": "7cc6a8e9-e662-477a-b58a-000000000002"
+      },
+      "needsUser": {
+        "reason": "resourcePageUnavailable"
+      }
+    },
+    "echoArgs": {
+      "operationRef": "planRef"
+    },
+    "inputExamples": [
+      {
+        "selectionRef": "7cc6a8e9-e662-477a-b58a-000000000001",
+        "planRef": "7cc6a8e9-e662-477a-b58a-000000000002"
+      }
+    ]
+  },
+  {
+    "name": "listInstalledResources",
+    "domain": "installedResources",
+    "description": "查询选定实例中的已安装资源、更新及完整性，支持按词筛选。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "query",
+        "description": "查询词",
+        "type": "string",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "folder": {
+        "type": "string"
+      },
+      "shared": {
+        "type": "boolean"
+      },
+      "entries": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "folder",
+        "shared",
+        "entries"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "folder": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "entries": [],
+        "shared": false
+      },
+      "needsUser": {
+        "reason": "resourcePanelChanged"
+      }
+    }
+  },
+  {
+    "name": "refreshInstalledResources",
+    "domain": "installedResources",
+    "description": "刷新指定实例已安装资源的真实扫描。 该方法首先返回 accepted，完成后用 listInstalledResources 查看重扫结果。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      }
+    ],
+    "results": [
+      "accepted",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "resourcePanelChanged"
+      }
+    }
+  },
+  {
+    "name": "importInstalledResources",
+    "domain": "installedResources",
+    "description": "通过系统选择器批量导入本地资源。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "folder",
+        "type": "string",
+        "required": true,
+        "description": "原已安装资源查询返回的目录标识"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "cancelled",
+      "partial",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "imported": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "failedCount": {
+        "type": "integer"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "imported",
+        "failedCount"
+      ],
+      "partial": [
+        "imported",
+        "failedCount"
+      ]
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "imported",
+          "failedCount"
+        ],
+        "fields": {
+          "failedCount": {
+            "const": 0
+          }
+        },
+        "example": {
+          "imported": [
+            "example.jar"
+          ],
+          "failedCount": 0
+        }
+      },
+      {
+        "when": {
+          "state": "partial"
+        },
+        "require": [
+          "imported",
+          "failedCount"
+        ],
+        "fields": {
+          "imported": {
+            "minItems": 1
+          },
+          "failedCount": {
+            "minimum": 1
+          }
+        },
+        "example": {
+          "imported": [
+            "example.jar"
+          ],
+          "failedCount": 1,
+          "reason": "fileRejected"
+        }
+      }
+    ],
+    "examples": {
+      "ready": {
+        "imported": [
+          "example.jar"
+        ],
+        "failedCount": 0
+      },
+      "partial": {
+        "imported": [
+          "example.jar"
+        ],
+        "failedCount": 1,
+        "reason": "fileRejected"
+      }
+    }
+  },
+  {
+    "name": "verifyInstalledMods",
+    "domain": "installedResources",
+    "description": "执行已安装模组的完整性校验。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "corrupt": {
+        "type": "integer"
+      },
+      "files": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "corrupt",
+        "files"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "corrupt": 0,
+        "files": 0
+      },
+      "needsUser": {
+        "reason": "resourcePanelChanged"
+      }
+    }
+  },
+  {
+    "name": "setInstalledResourceEnabled",
+    "domain": "installedResources",
+    "description": "启用或禁用选定的资源。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "folder",
+        "description": "原查询返回的目录标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "原查询返回的行标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "enabled",
+        "description": "启用目标状态",
+        "type": "boolean",
+        "required": true,
+        "example": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "cancelled",
+      "initializing",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "enabled": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "enabled"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "enabled": true
+      }
+    },
+    "echoArgs": {
+      "enabled": "enabled"
+    }
+  },
+  {
+    "name": "checkInstalledModUpdate",
+    "domain": "installedResources",
+    "description": "检查该已安装模组的可用更新。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "folder",
+        "description": "原查询返回的目录标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "原查询返回的行标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "accepted",
+      "failed",
+      "needsUser",
+      "unknown",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "updateState": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "updateState",
+        "version"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "updateState": "latest",
+        "version": ""
+      },
+      "accepted": {
+        "reason": "alreadyChecking"
+      },
+      "needsUser": {
+        "reason": "resourcePanelChanged"
+      }
+    }
+  },
+  {
+    "name": "ignoreInstalledModUpdate",
+    "domain": "installedResources",
+    "description": "忽略当前模组此版本更新。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "folder",
+        "description": "原查询返回的目录标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "原查询返回的行标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "updateState": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "updateState"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "updateState": "ignored"
+      },
+      "needsUser": {
+        "reason": "resourcePanelChanged"
+      }
+    }
+  },
+  {
+    "name": "requestInstalledResourceDelete",
+    "domain": "installedResources",
+    "description": "打开确认后删除指定已安装资源。 ready 表示已核实原目标消失；随后用 listInstalledResources 读取该目录。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "folder",
+        "description": "原查询返回的目录标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "原查询返回的行标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "cancelled",
+      "initializing",
+      "unavailable"
+    ],
+    "userHandoff": true
+  },
+  {
+    "name": "repairInstalledMod",
+    "domain": "installedResources",
+    "description": "用户确认后原来源修复损坏的模组。 ready 表示原修复调用正常返回。可重新读取该目录并运行 verifyInstalledMods 确认文件完整性。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "folder",
+        "description": "原查询返回的目录标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "原查询返回的行标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "cancelled",
+      "initializing",
+      "unavailable"
+    ],
+    "userHandoff": true
+  },
+  {
+    "name": "updateInstalledMod",
+    "domain": "installedResources",
+    "description": "用户确认后更新指定模组至页面给出的版本。 ready 表示更新协调器完成。可用 listInstalledResources 重新取得文件与版本，旧行引用可能已失效。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "已选择的本地实例名称",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "资源类别",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "datapack"
+        ]
+      },
+      {
+        "name": "folder",
+        "description": "原查询返回的目录标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "ref",
+        "description": "原查询返回的行标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "cancelled",
+      "initializing",
+      "unavailable"
+    ],
+    "userHandoff": true
+  },
+  {
+    "name": "listDownloadQueue",
+    "domain": "taskPanel",
+    "description": "按全部、进行中、完成和失败筛选下载任务，读取实际汇总和引用。",
+    "args": [
+      {
+        "name": "filter",
+        "description": "筛选器",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "all",
+          "active",
+          "done",
+          "failed"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "tasks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "activityId": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "ref",
+            "activityId"
+          ]
+        }
+      },
+      "activeCount": {
+        "type": "integer"
+      },
+      "waitingCount": {
+        "type": "integer"
+      },
+      "progress": {
+        "type": "number"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "tasks",
+        "activeCount",
+        "waitingCount",
+        "progress"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "tasks": [
+          {
+            "ref": "7cc6a8e9-e662-477a-b58a-000000000003",
+            "id": "mc:Fabric 1.21.1",
+            "activityId": 1731870000000,
+            "title": "Fabric 1.21.1",
+            "category": "mc",
+            "phase": "downloading",
+            "queuePosition": 0,
+            "bytesDone": 0,
+            "bytesTotal": 8192,
+            "filesDone": 0,
+            "filesTotal": 1,
+            "errorKind": "",
+            "canPause": true,
+            "canResume": false,
+            "canRetry": false,
+            "canCancel": true,
+            "requiresConfirmation": false
+          },
+          {
+            "ref": "7cc6a8e9-e662-477a-b58a-000000000004",
+            "id": "modpack:demo",
+            "activityId": 1731870000000,
+            "title": "Example Pack",
+            "category": "modpack",
+            "phase": "paused",
+            "queuePosition": 0,
+            "bytesDone": 0,
+            "bytesTotal": 8192,
+            "filesDone": 0,
+            "filesTotal": 1,
+            "errorKind": "",
+            "canPause": false,
+            "canResume": false,
+            "canRetry": false,
+            "canCancel": true,
+            "requiresConfirmation": true
+          }
+        ],
+        "activeCount": 1,
+        "waitingCount": 0,
+        "progress": 0
+      },
+      "needsUser": {
+        "reason": "queueUnavailable"
+      }
+    }
+  },
+  {
+    "name": "getDownloadTaskDetail",
+    "domain": "taskPanel",
+    "description": "返回原任务详情，需要时展示分文件进度。",
+    "args": [
+      {
+        "name": "ref",
+        "description": "本次任务清单的行引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "show",
+        "description": "是否打开原产品任务详情",
+        "type": "boolean",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "id": {
+        "type": "string"
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "stages": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "currentFiles": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "category": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "phase": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "id",
+        "activityId",
+        "category",
+        "title",
+        "phase"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "id": "mc:Fabric 1.21.1",
+        "activityId": 1731870000000,
+        "category": "mc",
+        "title": "Fabric 1.21.1",
+        "phase": "downloading",
+        "stages": []
+      },
+      "needsUser": {
+        "reason": "queueUnavailable"
+      }
+    },
+    "inputExamples": [
+      {
+        "ref": "7cc6a8e9-e662-477a-b58a-000000000003"
+      }
+    ]
+  },
+  {
+    "name": "controlDownloadTask",
+    "domain": "taskPanel",
+    "description": "对原任务执行允许的控制，取消与移除经用户确认。 外部恢复须回读原任务与已到达的产品页面，不能据此断言导出或更新已重新执行。",
+    "args": [
+      {
+        "name": "ref",
+        "description": "本次任务清单的行引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "action",
+        "description": "控制类型",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "pause",
+          "resume",
+          "retry",
+          "cancel",
+          "remove",
+          "externalRecovery"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "accepted",
+      "unknown",
+      "unavailable",
+      "busy"
+    ],
+    "output": {
+      "destinationReached": {
+        "type": "boolean"
+      },
+      "started": {
+        "type": "boolean"
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "parentActivityId": {
+        "type": "integer"
+      },
+      "action": {
+        "type": "string"
+      },
+      "choiceState": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "destination": {
+        "type": "string"
+      },
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "taskId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "phase": {
+        "type": "string"
+      },
+      "originalActivityId": {
+        "type": "integer"
+      },
+      "selectedTaskId": {
+        "type": "string"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "accepted": [
+        "operationRef",
+        "taskId",
+        "activityId",
+        "outcome",
+        "originalActivityId",
+        "selectedTaskId",
+        "action",
+        "started",
+        "choiceState",
+        "phase"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "operationRef": "7cc6a8e9-e662-477a-b58a-000000000003",
+        "selectedTaskId": "mc:Fabric 1.21.1",
+        "originalActivityId": 1731870000000,
+        "taskId": "mc:Fabric 1.21.1",
+        "activityId": 1731870000000,
+        "action": "pause",
+        "started": true,
+        "choiceState": "notApplicable",
+        "outcome": "pending",
+        "phase": "paused"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "accepted"
+        },
+        "require": [
+          "outcome"
+        ],
+        "fields": {
+          "outcome": {
+            "const": "pending"
+          }
+        },
+        "example": {
+          "operationRef": "7cc6a8e9-e662-477a-b58a-000000000003",
+          "selectedTaskId": "mc:Fabric 1.21.1",
+          "originalActivityId": 1731870000000,
+          "taskId": "mc:Fabric 1.21.1",
+          "activityId": 1731870000000,
+          "action": "pause",
+          "started": true,
+          "choiceState": "notApplicable",
+          "outcome": "pending",
+          "phase": "paused"
+        }
+      }
+    ],
+    "echoArgs": {
+      "operationRef": "ref",
+      "action": "action"
+    },
+    "inputExamples": [
+      {
+        "ref": "7cc6a8e9-e662-477a-b58a-000000000003",
+        "action": "pause"
+      }
+    ]
+  },
+  {
+    "name": "clearFinishedTasks",
+    "domain": "taskPanel",
+    "description": "用户确认后移除查询所对应的已结束任务记录。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "unknown",
+      "unavailable"
+    ],
+    "requiredOutput": {
+      "ready": [
+        "removed"
+      ]
+    },
+    "output": {
+      "removed": {
+        "type": "integer"
+      }
+    },
+    "userHandoff": true,
+    "examples": {
+      "failed": {
+        "reason": "queueChanged"
+      },
+      "ready": {
+        "removed": 0
+      }
+    }
+  },
+  {
+    "name": "getModpackChoices",
+    "domain": "taskPanel",
+    "description": "读取同一整合包任务待选的子包和可选文件。",
+    "args": [
+      {
+        "name": "ref",
+        "description": "本次任务清单的行引用",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "choiceRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "packages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "index",
+            "name",
+            "selected"
+          ]
+        }
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "index",
+            "name",
+            "selected"
+          ]
+        }
+      },
+      "requiresChoice": {
+        "type": "boolean"
+      },
+      "canChooseOtherPackage": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "choiceRef",
+        "packages",
+        "files",
+        "requiresChoice",
+        "canChooseOtherPackage"
+      ]
+    },
+    "examples": {
+      "failed": {
+        "reason": "notModpack"
+      },
+      "ready": {
+        "choiceRef": "7cc6a8e9-e662-477a-b58a-000000000005",
+        "packages": [],
+        "files": [
+          {
+            "index": 0,
+            "name": "optional-resource.jar",
+            "selected": false
+          }
+        ],
+        "requiresChoice": true,
+        "canChooseOtherPackage": false
+      },
+      "needsUser": {
+        "reason": "queueUnavailable"
+      }
+    },
+    "inputExamples": [
+      {
+        "ref": "7cc6a8e9-e662-477a-b58a-000000000004"
+      }
+    ],
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready",
+          "canChooseOtherPackage": true
+        },
+        "require": [
+          "packages",
+          "files",
+          "choiceRef"
+        ],
+        "example": {
+          "choiceRef": "7cc6a8e9-e662-477a-b58a-000000000007",
+          "requiresChoice": true,
+          "canChooseOtherPackage": true,
+          "packages": [
+            {
+              "index": 0,
+              "name": "客户端 A",
+              "selected": false
+            },
+            {
+              "index": 1,
+              "name": "客户端 B",
+              "selected": false
+            }
+          ],
+          "files": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "changeModpackChoice",
+    "domain": "taskPanel",
+    "description": "选子包、选择可选文件或返回重新选择。",
+    "args": [
+      {
+        "name": "ref",
+        "description": "本次任务清单的行引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "choiceRef",
+        "description": "本次待确认选择的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "kind",
+        "description": "选择类型",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "package",
+          "optional",
+          "other"
+        ]
+      },
+      {
+        "name": "index",
+        "description": "候选序号",
+        "type": "integer",
+        "required": false
+      },
+      {
+        "name": "selected",
+        "description": "是否选择可选文件",
+        "type": "boolean",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "choiceRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "packages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "index",
+            "name",
+            "selected"
+          ]
+        }
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "index",
+            "name",
+            "selected"
+          ]
+        }
+      },
+      "requiresChoice": {
+        "type": "boolean"
+      },
+      "canChooseOtherPackage": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "choiceRef",
+        "packages",
+        "files",
+        "requiresChoice",
+        "canChooseOtherPackage"
+      ]
+    },
+    "cases": [
+      {
+        "when": {
+          "kind": "package"
+        },
+        "require": [
+          "index"
+        ]
+      },
+      {
+        "when": {
+          "kind": "optional"
+        },
+        "require": [
+          "index",
+          "selected"
+        ]
+      }
+    ],
+    "inputExamples": [
+      {
+        "ref": "7cc6a8e9-e662-477a-b58a-000000000004",
+        "choiceRef": "7cc6a8e9-e662-477a-b58a-000000000005",
+        "kind": "optional",
+        "index": 0,
+        "selected": true
+      },
+      {
+        "ref": "7cc6a8e9-e662-477a-b58a-000000000004",
+        "choiceRef": "7cc6a8e9-e662-477a-b58a-000000000007",
+        "kind": "package",
+        "index": 0
+      },
+      {
+        "ref": "7cc6a8e9-e662-477a-b58a-000000000004",
+        "choiceRef": "7cc6a8e9-e662-477a-b58a-000000000007",
+        "kind": "other"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "choiceRef": "7cc6a8e9-e662-477a-b58a-000000000006",
+        "packages": [],
+        "files": [
+          {
+            "index": 0,
+            "name": "optional-resource.jar",
+            "selected": true
+          }
+        ],
+        "requiresChoice": true,
+        "canChooseOtherPackage": false
+      },
+      "failed": {
+        "reason": "choiceChanged"
+      },
+      "needsUser": {
+        "reason": "queueUnavailable"
+      }
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/TaskPanelSkill.ets",
+      "test": "qa/device/test-launcher-library-skill.mjs"
+    }
+  },
+  {
+    "name": "confirmModpackChoices",
+    "domain": "taskPanel",
+    "description": "确认本轮整合包选项并继续原任务。 重放已受理确认时须使用原任务行及原 choiceRef。",
+    "args": [
+      {
+        "name": "ref",
+        "description": "本次任务清单的行引用",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "choiceRef",
+        "description": "本次待确认选择的标识",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "accepted",
+      "unknown",
+      "unavailable",
+      "busy"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "selectedTaskId": {
+        "type": "string"
+      },
+      "originalActivityId": {
+        "type": "integer"
+      },
+      "taskId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "action": {
+        "type": "string"
+      },
+      "started": {
+        "type": "boolean"
+      },
+      "choiceState": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "phase": {
+        "type": "string"
+      },
+      "selectedRef": {
+        "type": "string",
+        "description": "确认受理时的原任务行引用"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "operationRef",
+        "taskId",
+        "activityId",
+        "outcome",
+        "originalActivityId",
+        "selectedTaskId",
+        "action",
+        "started",
+        "choiceState",
+        "phase",
+        "selectedRef"
+      ],
+      "ready": [
+        "operationRef",
+        "taskId",
+        "activityId",
+        "outcome",
+        "originalActivityId",
+        "selectedTaskId",
+        "action",
+        "started",
+        "choiceState",
+        "phase",
+        "selectedRef"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "operationRef": "7cc6a8e9-e662-477a-b58a-000000000006",
+        "selectedTaskId": "modpack:demo",
+        "originalActivityId": 1731870000000,
+        "taskId": "modpack:demo",
+        "activityId": 1731870000000,
+        "action": "confirm",
+        "started": true,
+        "choiceState": "committed",
+        "outcome": "pending",
+        "phase": "downloading",
+        "selectedRef": "7cc6a8e9-e662-477a-b58a-000000000004"
+      },
+      "ready": {
+        "operationRef": "7cc6a8e9-e662-477a-b58a-000000000006",
+        "selectedTaskId": "modpack:demo",
+        "originalActivityId": 1731870000000,
+        "taskId": "modpack:demo",
+        "activityId": 1731870000000,
+        "action": "confirm",
+        "started": true,
+        "choiceState": "committed",
+        "outcome": "returned",
+        "phase": "downloading",
+        "selectedRef": "7cc6a8e9-e662-477a-b58a-000000000004"
+      },
+      "needsUser": {
+        "reason": "queueUnavailable"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "accepted"
+        },
+        "require": [
+          "outcome"
+        ],
+        "fields": {
+          "outcome": {
+            "const": "pending"
+          }
+        },
+        "example": {
+          "operationRef": "7cc6a8e9-e662-477a-b58a-000000000006",
+          "selectedTaskId": "modpack:demo",
+          "originalActivityId": 1731870000000,
+          "taskId": "modpack:demo",
+          "activityId": 1731870000000,
+          "action": "confirm",
+          "started": true,
+          "choiceState": "committed",
+          "outcome": "pending",
+          "phase": "downloading",
+          "selectedRef": "7cc6a8e9-e662-477a-b58a-000000000004"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "outcome"
+        ],
+        "fields": {
+          "outcome": {
+            "const": "returned"
+          }
+        },
+        "example": {
+          "operationRef": "7cc6a8e9-e662-477a-b58a-000000000006",
+          "selectedTaskId": "modpack:demo",
+          "originalActivityId": 1731870000000,
+          "taskId": "modpack:demo",
+          "activityId": 1731870000000,
+          "action": "confirm",
+          "started": true,
+          "choiceState": "committed",
+          "outcome": "returned",
+          "phase": "downloading",
+          "selectedRef": "7cc6a8e9-e662-477a-b58a-000000000004"
+        }
+      }
+    ],
+    "echoArgs": {
+      "operationRef": "choiceRef",
+      "selectedRef": "ref"
+    },
+    "inputExamples": [
+      {
+        "ref": "7cc6a8e9-e662-477a-b58a-000000000004",
+        "choiceRef": "7cc6a8e9-e662-477a-b58a-000000000006"
+      }
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/TaskPanelSkill.ets",
+      "test": "qa/device/test-skill-task-ownership.mjs"
+    }
+  },
+  {
+    "name": "listResourceTargets",
+    "domain": "browse",
+    "description": "列出当前资源分类在沙箱、外部存储和另存模式的可选目标。",
+    "args": [
+      {
+        "name": "kind",
+        "description": "资源分类",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "modpack"
+        ],
+        "example": "mod"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "kind": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "location": {
+        "type": "string"
+      },
+      "external": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "sandbox": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "customSave": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "kind",
+        "target",
+        "location",
+        "external",
+        "sandbox",
+        "customSave"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "kind": "mod",
+        "target": "Fabric 1.21.1",
+        "location": "sandbox",
+        "external": [],
+        "sandbox": [
+          "Fabric 1.21.1"
+        ],
+        "customSave": true
+      },
+      "needsUser": {
+        "reason": "panelBusy"
+      }
+    },
+    "echoArgs": {
+      "kind": "kind"
+    },
+    "outputCases": [
+      {
+        "args": {
+          "kind": "mod"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "kind",
+          "customSave"
+        ],
+        "expect": {
+          "kind": "mod",
+          "customSave": true
+        },
+        "example": {
+          "kind": "mod",
+          "target": "Fabric 1.21.1",
+          "location": "sandbox",
+          "external": [],
+          "sandbox": [
+            "Fabric 1.21.1"
+          ],
+          "customSave": true
+        }
+      },
+      {
+        "args": {
+          "kind": "shader"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "kind",
+          "customSave"
+        ],
+        "expect": {
+          "kind": "shader",
+          "customSave": true
+        },
+        "example": {
+          "kind": "shader",
+          "target": "Fabric 1.21.1",
+          "location": "sandbox",
+          "external": [],
+          "sandbox": [
+            "Fabric 1.21.1"
+          ],
+          "customSave": true
+        }
+      },
+      {
+        "args": {
+          "kind": "resourcepack"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "kind",
+          "customSave"
+        ],
+        "expect": {
+          "kind": "resourcepack",
+          "customSave": true
+        },
+        "example": {
+          "kind": "resourcepack",
+          "target": "Fabric 1.21.1",
+          "location": "sandbox",
+          "external": [],
+          "sandbox": [
+            "Fabric 1.21.1"
+          ],
+          "customSave": true
+        }
+      },
+      {
+        "args": {
+          "kind": "modpack"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "kind",
+          "customSave"
+        ],
+        "expect": {
+          "kind": "modpack",
+          "customSave": false
+        },
+        "example": {
+          "kind": "modpack",
+          "target": "Fabric 1.21.1",
+          "location": "sandbox",
+          "external": [],
+          "sandbox": [
+            "Fabric 1.21.1"
+          ],
+          "customSave": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "selectResourceTarget",
+    "domain": "browse",
+    "description": "选择已列出的存储位置和实例，或选择自定义另存模式。",
+    "args": [
+      {
+        "name": "kind",
+        "description": "资源分类",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "mod",
+          "shader",
+          "resourcepack",
+          "modpack"
+        ]
+      },
+      {
+        "name": "location",
+        "description": "目标位置",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "sandbox",
+          "external",
+          "custom"
+        ],
+        "example": "sandbox"
+      },
+      {
+        "name": "instance",
+        "description": "已有实例",
+        "type": "string",
+        "required": false,
+        "example": "Fabric 1.21.1"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "instance": {
+        "type": "string",
+        "description": "选择实例位置时返回；自选文件位置仅返回 location。"
+      },
+      "location": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "location"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "location": "sandbox",
+        "instance": "Fabric 1.21.1"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance",
+      "location": "location"
+    },
+    "cases": [
+      {
+        "when": {
+          "location": "sandbox"
+        },
+        "require": [
+          "instance"
+        ]
+      },
+      {
+        "when": {
+          "location": "external"
+        },
+        "require": [
+          "instance"
+        ]
+      }
+    ],
+    "inputExamples": [
+      {
+        "kind": "mod",
+        "location": "sandbox",
+        "instance": "Fabric 1.21.1"
+      },
+      {
+        "kind": "mod",
+        "location": "external",
+        "instance": "Fabric 1.21.1"
+      },
+      {
+        "kind": "shader",
+        "location": "custom"
+      }
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/pages/ModBrowsePage.ets",
+      "test": "qa/device/test-launcher-skill-surfaces.mjs"
+    },
+    "outputCases": [
+      {
+        "args": {
+          "location": "sandbox"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "location",
+          "instance"
+        ],
+        "expect": {
+          "location": "sandbox"
+        },
+        "example": {
+          "instance": "Fabric 1.21.1"
+        }
+      },
+      {
+        "args": {
+          "location": "external"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "location",
+          "instance"
+        ],
+        "expect": {
+          "location": "external"
+        },
+        "example": {
+          "instance": "Fabric 1.21.1"
+        }
+      },
+      {
+        "args": {
+          "location": "custom"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "location"
+        ],
+        "expect": {
+          "location": "custom"
+        },
+        "example": {}
+      },
+      {
+        "args": {
+          "location": "custom",
+          "kind": "modpack"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [],
+        "reject": true
+      }
+    ]
+  },
+  {
+    "name": "listModpackRecovery",
+    "domain": "browse",
+    "description": "读取继续安装或补齐记录。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "records": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "missing": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "instance",
+            "missing"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "records"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "records": []
+      },
+      "needsUser": {
+        "reason": "modpackPageRequired"
+      }
+    }
+  },
+  {
+    "name": "continueModpackRecovery",
+    "domain": "browse",
+    "description": "从选定的原持久记录恢复。仅本次 adapter 实际入队才返回 accepted；旧卡需要用户检查。可用 getResourceInstall 按 operationRef 查询原结果。",
+    "args": [
+      {
+        "name": "id",
+        "description": "恢复记录 ID",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "accepted",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "taskId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "operationRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "operationRef",
+        "taskId",
+        "activityId"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "taskId": "modpack:persistent-pack-42",
+        "activityId": 1731870000000,
+        "operationRef": "02a38130-7fd7-4cf4-b09f-87f6cebd0681",
+        "reason": "originalTaskAdmitted"
+      },
+      "needsUser": {
+        "reason": "existingTaskRequiresReview",
+        "taskId": "modpack:persistent-pack-42"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "existingTaskRequiresReview"
+        },
+        "require": [
+          "taskId"
+        ],
+        "fields": {
+          "taskId": {
+            "minLength": 1
+          }
+        },
+        "example": {
+          "taskId": "modpack:persistent-pack-42"
+        }
+      }
+    ]
+  },
+  {
+    "name": "dismissModpackRecovery",
+    "domain": "browse",
+    "description": "前台确认放弃指定的原持久安装/补齐记录。",
+    "args": [
+      {
+        "name": "id",
+        "description": "恢复记录 ID",
+        "type": "string",
+        "required": true,
+        "example": "persistent-pack-42"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "unknown",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "id": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "id"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "id": "persistent-pack-42"
+      }
+    },
+    "echoArgs": {
+      "id": "id"
+    }
+  },
+  {
+    "name": "resourceProjectSource",
+    "domain": "browse",
+    "description": "选择产品当前项目对应的网站、真实匹配的来源网页或下载来源。域与项目变化、没有对应网址和系统拒绝会说明无法交接。",
+    "args": [
+      {
+        "name": "project",
+        "description": "项目 ID",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "source",
+        "description": "当前来源",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "modrinth",
+          "curseforge"
+        ]
+      },
+      {
+        "name": "choice",
+        "description": "来源操作",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "website",
+          "crossSourceWeb",
+          "switch"
+        ]
+      },
+      {
+        "name": "target",
+        "description": "新的来源",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "modrinth",
+          "curseforge"
+        ],
+        "example": "curseforge"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "reason": {
+        "type": "string"
+      },
+      "project": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      }
+    },
+    "examples": {
+      "ready": {
+        "project": "example-project",
+        "source": "curseforge"
+      },
+      "needsUser": {
+        "reason": "browserOpened"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "project",
+        "source"
+      ]
+    },
+    "echoArgs": {
+      "source": "target"
+    },
+    "inputExamples": [
+      {
+        "project": "example-project",
+        "source": "modrinth",
+        "choice": "switch",
+        "target": "curseforge"
+      },
+      {
+        "project": "example-project",
+        "source": "modrinth",
+        "choice": "website"
+      },
+      {
+        "project": "example-project",
+        "source": "modrinth",
+        "choice": "crossSourceWeb",
+        "target": "curseforge"
+      }
+    ],
+    "cases": [
+      {
+        "when": {
+          "choice": "switch"
+        },
+        "require": [
+          "target"
+        ]
+      },
+      {
+        "when": {
+          "choice": "crossSourceWeb"
+        },
+        "require": [
+          "target"
+        ]
+      }
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/pages/ModBrowsePage.ets",
+      "test": "qa/device/test-launcher-skill-surfaces.mjs"
+    },
+    "outputCases": [
+      {
+        "args": {
+          "choice": "website"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [],
+        "reject": true
+      },
+      {
+        "args": {
+          "choice": "crossSourceWeb"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [],
+        "reject": true
+      },
+      {
+        "args": {
+          "choice": "switch",
+          "source": "modrinth",
+          "target": "modrinth"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "source",
+          "project"
+        ],
+        "echoArgs": {
+          "project": "project"
+        }
+      },
+      {
+        "args": {
+          "choice": "switch",
+          "source": "curseforge",
+          "target": "curseforge"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "source",
+          "project"
+        ],
+        "echoArgs": {
+          "project": "project"
+        }
+      },
+      {
+        "args": {
+          "choice": "switch"
+        },
+        "when": {
+          "state": "needsUser"
+        },
+        "require": [],
+        "reject": true
+      },
+      {
+        "args": {
+          "choice": "website"
+        },
+        "when": {
+          "state": "needsUser"
+        },
+        "require": [
+          "reason"
+        ],
+        "expect": {
+          "reason": "browserOpened"
+        }
+      },
+      {
+        "args": {
+          "choice": "crossSourceWeb"
+        },
+        "when": {
+          "state": "needsUser"
+        },
+        "require": [
+          "reason"
+        ],
+        "expect": {
+          "reason": "browserOpened"
+        }
+      }
+    ]
+  },
+  {
+    "name": "renameGameInstance",
+    "domain": "library",
+    "description": "前台确认后将指定的已装实例重命名。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "newName",
+        "description": "新实例名",
+        "type": "string",
+        "required": true,
+        "example": "Renamed 1.21.1"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "userHandoff": true,
+    "output": {
+      "instance": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "instance": "Renamed 1.21.1"
+      }
+    },
+    "echoArgs": {
+      "instance": "newName"
+    }
+  },
+  {
+    "name": "verifyGameInstance",
+    "domain": "library",
+    "description": "检查指定实例的真实版本文件，在启动器查看或决定修复。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "checked": {
+        "type": "integer"
+      },
+      "corrupt": {
+        "type": "integer"
+      },
+      "missing": {
+        "type": "integer"
+      },
+      "missingAssets": {
+        "type": "integer"
+      },
+      "metadataAvailable": {
+        "type": "boolean"
+      },
+      "totalAssets": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "checked",
+        "corrupt",
+        "missing",
+        "missingAssets",
+        "metadataAvailable",
+        "totalAssets"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "checked": 3,
+        "corrupt": 0,
+        "missing": 0,
+        "missingAssets": 0,
+        "totalAssets": 1,
+        "metadataAvailable": true
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "metadataAvailable"
+        ],
+        "fields": {
+          "metadataAvailable": {
+            "const": true
+          }
+        },
+        "example": {
+          "checked": 3,
+          "corrupt": 0,
+          "missing": 0,
+          "missingAssets": 0,
+          "totalAssets": 1,
+          "metadataAvailable": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "repairGameInstance",
+    "domain": "library",
+    "description": "为已安装或中断的实例提交原修复任务。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "initializing",
+      "accepted",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "taskId": {
+        "type": "string"
+      },
+      "activityId": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "taskId",
+        "activityId"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "taskId": "repair:Fabric 1.21.1",
+        "activityId": 1731870000000
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    }
+  },
+  {
+    "name": "clearIncompleteInstances",
+    "domain": "library",
+    "description": "显示全批残留目录和内容。取得整批安装租约、用户确认及库存身份复核后清理；含其他用户文件、符号链接和在途任务须保留。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "cancelled",
+      "initializing",
+      "unknown",
+      "unavailable",
+      "partial"
+    ],
+    "output": {
+      "removed": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "remaining": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "affected": {
+        "type": "string"
+      },
+      "retainedDirectory": {
+        "type": "string"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "removed",
+        "remaining"
+      ],
+      "partial": [
+        "removed",
+        "remaining"
+      ]
+    },
+    "examples": {
+      "partial": {
+        "removed": [],
+        "remaining": [
+          "unfinished-instance"
+        ],
+        "affected": "unfinished-instance",
+        "reason": "cleanupIncomplete"
+      },
+      "ready": {
+        "removed": [
+          "unfinished-instance"
+        ],
+        "remaining": []
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "partial"
+        },
+        "require": [
+          "remaining",
+          "removed"
+        ],
+        "fields": {
+          "remaining": {
+            "minItems": 1
+          },
+          "removed": {
+            "type": "array"
+          }
+        },
+        "example": {
+          "removed": [],
+          "remaining": [
+            "unfinished-instance"
+          ],
+          "affected": "unfinished-instance",
+          "reason": "cleanupIncomplete"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "removed",
+          "remaining"
+        ],
+        "fields": {
+          "removed": {
+            "minItems": 1
+          },
+          "remaining": {
+            "const": []
+          }
+        },
+        "example": {
+          "removed": [
+            "unfinished-instance"
+          ],
+          "remaining": []
+        }
+      }
+    ],
+    "disjointOutput": [
+      [
+        "removed",
+        "remaining"
+      ]
+    ],
+    "memberOf": {
+      "affected": "remaining"
+    }
+  },
+  {
+    "name": "getInstancePack",
+    "domain": "versionPanel",
+    "description": "读取已安装整合包的来源、安装身份与缺件。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true,
+        "example": "Example Pack"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "instance": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      },
+      "gameVersion": {
+        "type": "string"
+      },
+      "packVersion": {
+        "type": "string"
+      },
+      "missing": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "canRepair": {
+        "type": "boolean"
+      },
+      "pack": {
+        "type": "string"
+      },
+      "loader": {
+        "type": "string"
+      },
+      "loaderVersion": {
+        "type": "string"
+      },
+      "installedAt": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "source",
+        "pack",
+        "packVersion",
+        "gameVersion",
+        "loader",
+        "loaderVersion",
+        "installedAt",
+        "missing",
+        "canRepair"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "instance": "Example Pack",
+        "source": "modrinth",
+        "pack": "Example Pack",
+        "packVersion": "1.0",
+        "gameVersion": "1.21.1",
+        "loader": "fabric",
+        "loaderVersion": "0.16.10",
+        "installedAt": 1731870000000,
+        "missing": [],
+        "canRepair": false
+      },
+      "needsUser": {
+        "reason": "showInstanceDetail"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "repairInstancePack",
+    "domain": "versionPanel",
+    "description": "提交原整合包计划的补齐。既有任务仍在时只打开原卡片，不能视为本次新补齐已受理。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "accepted",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "taskId": {
+        "type": "string"
+      },
+      "activityId": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "taskId",
+        "activityId"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "taskId": "modpack:persistent-pack-42",
+        "activityId": 1731870000000
+      },
+      "needsUser": {
+        "reason": "existingTaskRequiresReview",
+        "taskId": "modpack:persistent-pack-42"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "existingTaskRequiresReview"
+        },
+        "require": [
+          "taskId"
+        ],
+        "fields": {
+          "taskId": {
+            "minLength": 1
+          }
+        },
+        "example": {
+          "taskId": "modpack:persistent-pack-42"
+        }
+      }
+    ]
+  },
+  {
+    "name": "copyInstancePackMissing",
+    "domain": "versionPanel",
+    "description": "复制该实例原缺件清单至系统剪贴板。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "showInstanceDetail"
+      }
+    }
+  },
+  {
+    "name": "openInstanceSystemFolder",
+    "domain": "versionPanel",
+    "description": "用系统文件管理器展示允许的外部存储目录。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "description": "允许的版本目录",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "root",
+          "mods",
+          "saves",
+          "resourcepacks",
+          "shaderpacks"
+        ]
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "unknown",
+      "unavailable"
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "systemFileManager"
+      }
+    }
+  },
+  {
+    "name": "setInstanceLanguage",
+    "domain": "versionPanel",
+    "description": "保存该实例游戏语言或选择继承全局。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "language",
+        "description": "游戏支持的语言代码或 inherit",
+        "type": "string",
+        "required": true,
+        "example": "zh_cn"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "language": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "language"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "language": "zh_cn"
+      }
+    },
+    "echoArgs": {
+      "language": "language"
+    }
+  },
+  {
+    "name": "getLaunchChecks",
+    "domain": "launchChecks",
+    "description": "读取当前实例预检阶段、具体检查和此次允许的选择。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true,
+        "example": "instance"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "choiceRef": {
+        "type": "string",
+        "minLength": 1
+      },
+      "actions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "checks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "check": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "check",
+            "status"
+          ]
+        }
+      },
+      "stage": {
+        "type": "string"
+      },
+      "instance": {
+        "type": "string"
+      },
+      "jdk": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "jdk",
+        "choiceRef",
+        "actions",
+        "checks",
+        "stage"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "choiceRef": "precheck-ref",
+        "stage": "running",
+        "actions": [
+          "cancel"
+        ],
+        "checks": [
+          {
+            "check": "jit",
+            "title": "JIT 可执行内存",
+            "status": "running",
+            "fix": ""
+          },
+          {
+            "check": "jdk",
+            "title": "JDK 版本匹配",
+            "status": "pending",
+            "fix": ""
+          },
+          {
+            "check": "runtime",
+            "title": "运行时环境",
+            "status": "pending",
+            "fix": ""
+          },
+          {
+            "check": "files",
+            "title": "版本文件完整性",
+            "status": "pending",
+            "fix": ""
+          },
+          {
+            "check": "contract",
+            "title": "启动契约",
+            "status": "pending",
+            "fix": ""
+          },
+          {
+            "check": "assets",
+            "title": "游戏资源完整性",
+            "status": "pending",
+            "fix": ""
+          },
+          {
+            "check": "mod_install_state",
+            "title": "模组安装状态",
+            "status": "pending",
+            "fix": ""
+          }
+        ],
+        "instance": "instance",
+        "jdk": "21"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "chooseLaunchCheckAction",
+    "domain": "launchChecks",
+    "description": "按原预检的真实选择继续或取消。 需要在应用继续时通过 reason 区分授权或 JDK 管理；accepted 附带已提交的 choice。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "当前业务目标实例",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "choiceRef",
+        "description": "本次待确认选择的标识",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "choice",
+        "description": "原表允许的决定",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "cancel",
+          "automaticJdk",
+          "keepJdk",
+          "retry",
+          "jitHelp",
+          "installJdk",
+          "jdkManager",
+          "fix"
+        ]
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "cancelled",
+      "accepted",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "choice": {
+        "type": "string",
+        "enum": [
+          "retry",
+          "automaticJdk",
+          "keepJdk",
+          "installJdk",
+          "fix"
+        ]
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "choice"
+      ]
+    },
+    "echoArgs": {
+      "choice": "choice"
+    },
+    "inputExamples": [
+      {
+        "instance": "instance",
+        "choiceRef": "failed-precheck-ref",
+        "choice": "retry"
+      },
+      {
+        "instance": "instance",
+        "choiceRef": "precheck-ref",
+        "choice": "cancel"
+      }
+    ],
+    "examples": {
+      "accepted": {
+        "choice": "retry"
+      },
+      "cancelled": {},
+      "needsUser": {
+        "reason": "jitGuide"
+      }
+    }
+  },
+  {
+    "name": "getGraphicsRecovery",
+    "domain": "library",
+    "description": "只读查询一次独立游戏启动后产生的原始及自动重试图形票据。",
+    "args": [
+      {
+        "name": "activityId",
+        "description": "原始启动活动 ID",
+        "type": "integer",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "attempts": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "attempts"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "attempts": [
+          {
+            "activityId": 1731870000000,
+            "rootActivityId": 1731870000000,
+            "attempt": 0,
+            "instance": "Fabric 1.21.1",
+            "retryProfile": "",
+            "failureCode": "",
+            "outcome": "unknown",
+            "stage": "",
+            "profile": "",
+            "savedOutcome": false
+          }
+        ]
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "attempts"
+        ],
+        "fields": {
+          "attempts": {
+            "minItems": 1
+          }
+        },
+        "example": {
+          "attempts": [
+            {
+              "activityId": 1731870000000,
+              "rootActivityId": 1731870000000,
+              "attempt": 0,
+              "instance": "Fabric 1.21.1",
+              "retryProfile": "",
+              "failureCode": "",
+              "outcome": "unknown",
+              "stage": "",
+              "profile": "",
+              "savedOutcome": false
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "showCatalogVersion",
+    "domain": "library",
+    "description": "从游戏目录选择明确版本打开安装详情。",
+    "args": [
+      {
+        "name": "gameVersion",
+        "description": "真实清单中的版本",
+        "type": "string",
+        "required": true,
+        "example": "1.21.1"
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "gameVersion": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "versionDetailOpened"
+        },
+        "require": [
+          "gameVersion"
+        ],
+        "fields": {},
+        "example": {
+          "gameVersion": "1.21.1"
+        }
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "versionDetailOpened",
+        "gameVersion": "1.21.1"
+      }
+    },
+    "echoArgs": {
+      "gameVersion": "gameVersion"
+    }
+  },
+  {
+    "name": "getGameVersionRequirements",
+    "domain": "versionInstall",
+    "description": "读取已打开的游戏安装详情中的 Wiki 说明、JDK/JIT、加载器及 Vulkan 提示。",
+    "args": [
+      {
+        "name": "gameVersion",
+        "description": "showCatalogVersion 已打开的版本",
+        "type": "string",
+        "required": true,
+        "example": "1.21.1"
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "description": {
+        "type": "string"
+      },
+      "descriptionLoaded": {
+        "type": "boolean"
+      },
+      "runtimeJdk": {
+        "type": "integer"
+      },
+      "loaders": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "vulkan": {
+        "type": "string"
+      },
+      "gameVersion": {
+        "type": "string"
+      },
+      "category": {
+        "type": "string"
+      },
+      "installedJdk": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      },
+      "jitAvailable": {
+        "type": "boolean"
+      },
+      "vulkanStatus": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "gameVersion",
+        "category",
+        "description",
+        "descriptionLoaded",
+        "runtimeJdk",
+        "installedJdk",
+        "loaders",
+        "jitAvailable",
+        "vulkan",
+        "vulkanStatus"
+      ],
+      "initializing": [
+        "gameVersion",
+        "category",
+        "description",
+        "descriptionLoaded",
+        "runtimeJdk",
+        "installedJdk",
+        "loaders",
+        "jitAvailable",
+        "vulkan",
+        "vulkanStatus"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "gameVersion": "1.21.1",
+        "category": "release",
+        "description": "",
+        "descriptionLoaded": true,
+        "runtimeJdk": 21,
+        "installedJdk": [
+          21
+        ],
+        "loaders": [
+          {
+            "type": "vanilla",
+            "supported": true,
+            "runtimeJdk": 0,
+            "installerJdk": 0
+          },
+          {
+            "type": "fabric",
+            "supported": true,
+            "runtimeJdk": 0,
+            "installerJdk": 0
+          },
+          {
+            "type": "forge",
+            "supported": true,
+            "runtimeJdk": 21,
+            "installerJdk": 21
+          },
+          {
+            "type": "neoforge",
+            "supported": true,
+            "runtimeJdk": 21,
+            "installerJdk": 21
+          },
+          {
+            "type": "quilt",
+            "supported": false,
+            "runtimeJdk": 0,
+            "installerJdk": 0
+          }
+        ],
+        "jitAvailable": true,
+        "vulkan": "",
+        "vulkanStatus": "notApplicable"
+      },
+      "initializing": {
+        "gameVersion": "1.21.1",
+        "category": "release",
+        "description": "",
+        "descriptionLoaded": false,
+        "runtimeJdk": 21,
+        "installedJdk": [
+          21
+        ],
+        "loaders": [
+          {
+            "type": "vanilla",
+            "supported": true,
+            "runtimeJdk": 0,
+            "installerJdk": 0
+          },
+          {
+            "type": "fabric",
+            "supported": true,
+            "runtimeJdk": 0,
+            "installerJdk": 0
+          },
+          {
+            "type": "forge",
+            "supported": true,
+            "runtimeJdk": 21,
+            "installerJdk": 21
+          },
+          {
+            "type": "neoforge",
+            "supported": true,
+            "runtimeJdk": 21,
+            "installerJdk": 21
+          },
+          {
+            "type": "quilt",
+            "supported": false,
+            "runtimeJdk": 0,
+            "installerJdk": 0
+          }
+        ],
+        "jitAvailable": true,
+        "vulkan": "",
+        "vulkanStatus": "notApplicable"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "descriptionLoaded",
+          "loaders"
+        ],
+        "fields": {
+          "descriptionLoaded": {
+            "const": true
+          },
+          "loaders": {
+            "minItems": 5
+          }
+        },
+        "example": {
+          "gameVersion": "1.21.1",
+          "category": "release",
+          "description": "",
+          "descriptionLoaded": true,
+          "runtimeJdk": 21,
+          "installedJdk": [
+            21
+          ],
+          "loaders": [
+            {
+              "type": "vanilla",
+              "supported": true,
+              "runtimeJdk": 0,
+              "installerJdk": 0
+            },
+            {
+              "type": "fabric",
+              "supported": true,
+              "runtimeJdk": 0,
+              "installerJdk": 0
+            },
+            {
+              "type": "forge",
+              "supported": true,
+              "runtimeJdk": 21,
+              "installerJdk": 21
+            },
+            {
+              "type": "neoforge",
+              "supported": true,
+              "runtimeJdk": 21,
+              "installerJdk": 21
+            },
+            {
+              "type": "quilt",
+              "supported": false,
+              "runtimeJdk": 0,
+              "installerJdk": 0
+            }
+          ],
+          "jitAvailable": true,
+          "vulkan": "",
+          "vulkanStatus": "notApplicable"
+        }
+      },
+      {
+        "when": {
+          "state": "initializing"
+        },
+        "require": [
+          "descriptionLoaded",
+          "loaders"
+        ],
+        "fields": {
+          "descriptionLoaded": {
+            "const": false
+          },
+          "loaders": {
+            "minItems": 5
+          }
+        },
+        "example": {
+          "gameVersion": "1.21.1",
+          "category": "release",
+          "description": "",
+          "descriptionLoaded": false,
+          "runtimeJdk": 21,
+          "installedJdk": [
+            21
+          ],
+          "loaders": [
+            {
+              "type": "vanilla",
+              "supported": true,
+              "runtimeJdk": 0,
+              "installerJdk": 0
+            },
+            {
+              "type": "fabric",
+              "supported": true,
+              "runtimeJdk": 0,
+              "installerJdk": 0
+            },
+            {
+              "type": "forge",
+              "supported": true,
+              "runtimeJdk": 21,
+              "installerJdk": 21
+            },
+            {
+              "type": "neoforge",
+              "supported": true,
+              "runtimeJdk": 21,
+              "installerJdk": 21
+            },
+            {
+              "type": "quilt",
+              "supported": false,
+              "runtimeJdk": 0,
+              "installerJdk": 0
+            }
+          ],
+          "jitAvailable": true,
+          "vulkan": "",
+          "vulkanStatus": "notApplicable"
+        }
+      }
+    ],
+    "echoArgs": {
+      "gameVersion": "gameVersion"
+    }
+  },
+  {
+    "name": "listActivityHistory",
+    "domain": "history",
+    "description": "搜索或刷新真实活动账本，按首页分类返回当日统计、总数和当前页。",
+    "args": [
+      {
+        "name": "filter",
+        "description": "过滤条件",
+        "type": "string",
+        "required": false,
+        "enum": [
+          "all",
+          "game",
+          "download",
+          "export",
+          "abnormal"
+        ]
+      },
+      {
+        "name": "query",
+        "description": "过滤文本",
+        "type": "string",
+        "required": false
+      },
+      {
+        "name": "offset",
+        "description": "分页起点",
+        "type": "integer",
+        "required": false
+      },
+      {
+        "name": "refresh",
+        "description": "是否重新加载",
+        "type": "boolean",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "records": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "activityId": {
+              "type": "integer"
+            },
+            "title": {
+              "type": "string"
+            },
+            "category": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "hasEvidence": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "activityId",
+            "title",
+            "category",
+            "status",
+            "hasEvidence"
+          ]
+        }
+      },
+      "offset": {
+        "type": "integer"
+      },
+      "count": {
+        "type": "integer"
+      },
+      "today": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "done": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "interrupted": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "done",
+          "failed",
+          "interrupted"
+        ]
+      },
+      "localLogBytes": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "records",
+        "offset",
+        "count",
+        "today",
+        "localLogBytes"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "records": [],
+        "offset": 0,
+        "count": 0,
+        "today": {
+          "total": 0,
+          "done": 0,
+          "failed": 0,
+          "interrupted": 0
+        },
+        "localLogBytes": 0
+      },
+      "needsUser": {
+        "reason": "historyBusy"
+      }
+    },
+    "echoArgs": {
+      "offset": "offset"
+    },
+    "inputExamples": [
+      {},
+      {
+        "offset": 0
+      }
+    ]
+  },
+  {
+    "name": "openHistoryRecord",
+    "domain": "history",
+    "description": "打开原活动对应的详情、日志、导出、分享面板或错误结果。核对当前选中活动或已到达的路由与原业务参数。",
+    "args": [
+      {
+        "name": "activityId",
+        "description": "已列出的活动 ID",
+        "type": "integer",
+        "required": true,
+        "example": 1731870000000
+      },
+      {
+        "name": "action",
+        "description": "处理方式",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "overview",
+          "error",
+          "log",
+          "exportResult",
+          "share",
+          "customShare"
+        ]
+      }
+    ],
+    "results": [
+      "failed",
+      "needsUser",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "output": {
+      "activityId": {
+        "type": "integer"
+      },
+      "destinationReached": {
+        "type": "boolean"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "continueInLauncher"
+        },
+        "require": [
+          "activityId",
+          "destinationReached"
+        ],
+        "fields": {
+          "destinationReached": {
+            "const": true
+          }
+        },
+        "example": {
+          "destinationReached": true,
+          "activityId": 1731870000000
+        }
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "continueInLauncher",
+        "activityId": 1731870000000,
+        "destinationReached": true
+      }
+    },
+    "echoArgs": {
+      "activityId": "activityId"
+    }
+  },
+  {
+    "name": "manageActivityHistory",
+    "domain": "history",
+    "description": "在产品界面管理日志占用、分享记录，或经确认清空本地账本。",
+    "args": [
+      {
+        "name": "action",
+        "description": "管理选择",
+        "type": "string",
+        "required": true,
+        "enum": [
+          "storage",
+          "shares",
+          "clear"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unknown",
+      "unavailable"
+    ],
+    "userHandoff": true
+  },
+  {
+    "name": "inspectGameInstance",
+    "domain": "library",
+    "description": "核对实际安装的游戏与加载器身份；旧原版可提供预期游戏版本以校验清单和客户端。",
+    "args": [
+      {
+        "name": "instance",
+        "description": "本地实例名称",
+        "type": "string",
+        "required": true,
+        "example": "Fabric 1.21.1"
+      },
+      {
+        "name": "gameVersion",
+        "description": "核验旧版元数据的可选游戏版本",
+        "type": "string",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "unknown",
+      "failed",
+      "needsUser",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "instance": {
+        "type": "string"
+      },
+      "gameVersion": {
+        "type": "string"
+      },
+      "loader": {
+        "type": "string"
+      },
+      "loaderVersion": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "instance",
+        "gameVersion"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "instance": "Fabric 1.21.1",
+        "gameVersion": "1.21.1",
+        "loader": "fabric",
+        "loaderVersion": "0.16.10"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    },
+    "echoArgs": {
+      "instance": "instance"
+    }
+  },
+  {
+    "name": "focusRunningGame",
+    "domain": "library",
+    "description": "用户明确要返回当前正在运行的游戏时，复用启动器原有聚焦操作。仅请求把已有游戏带到前台，不创建新的 JVM。要打开指定实例请使用 launchGameInstance。",
+    "args": [],
+    "results": [
+      "accepted",
+      "failed",
+      "needsUser",
+      "initializing"
+    ],
+    "examples": {
+      "accepted": {
+        "reason": "existingWindowFocusRequested"
+      },
+      "needsUser": {
+        "reason": "LAUNCHER_NOT_INTERACTIVE"
+      }
+    }
+  },
+  {
+    "name": "getTaskControlOperation",
+    "domain": "library",
+    "description": "查询暂停、恢复、重试、取消或包选项确认的原操作。按原行引用或确认引用查询；实际出队、调度拒绝、选择已提交和自然终态分别报告。 使用原操作返回的 operationRef；如是等待用户时收到的临时引用，应先用 getLauncherHandoff 读取原业务结果。",
+    "args": [
+      {
+        "name": "operationRef",
+        "type": "string",
+        "required": true,
+        "description": "控制返回的操作号；回包丢失时等于原任务行 ref 或本轮 choiceRef。"
+      }
+    ],
+    "results": [
+      "ready",
+      "accepted",
+      "failed",
+      "unknown",
+      "initializing",
+      "unavailable"
+    ],
+    "output": {
+      "operationRef": {
+        "type": "string"
+      },
+      "selectedTaskId": {
+        "type": "string"
+      },
+      "originalActivityId": {
+        "type": "integer"
+      },
+      "taskId": {
+        "type": "string"
+      },
+      "activityId": {
+        "type": "integer"
+      },
+      "action": {
+        "type": "string"
+      },
+      "started": {
+        "type": "boolean"
+      },
+      "choiceState": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "phase": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "operationRef",
+        "taskId",
+        "activityId",
+        "outcome",
+        "originalActivityId",
+        "selectedTaskId",
+        "action",
+        "started",
+        "choiceState",
+        "phase"
+      ],
+      "accepted": [
+        "operationRef",
+        "taskId",
+        "activityId",
+        "outcome",
+        "originalActivityId",
+        "selectedTaskId",
+        "action",
+        "started",
+        "choiceState",
+        "phase"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "operationRef": "7cc6a8e9-e662-477a-b58a-000000000003",
+        "selectedTaskId": "mc:Fabric 1.21.1",
+        "originalActivityId": 1731870000000,
+        "taskId": "mc:Fabric 1.21.1",
+        "activityId": 1731870000000,
+        "action": "pause",
+        "started": true,
+        "choiceState": "notApplicable",
+        "outcome": "pending",
+        "phase": "downloading"
+      },
+      "ready": {
+        "operationRef": "7cc6a8e9-e662-477a-b58a-000000000003",
+        "selectedTaskId": "mc:Fabric 1.21.1",
+        "originalActivityId": 1731870000000,
+        "taskId": "mc:Fabric 1.21.1",
+        "activityId": 1731870000000,
+        "action": "pause",
+        "started": true,
+        "choiceState": "notApplicable",
+        "outcome": "returned",
+        "phase": "paused"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "accepted"
+        },
+        "require": [
+          "outcome"
+        ],
+        "fields": {
+          "outcome": {
+            "const": "pending"
+          }
+        },
+        "example": {
+          "operationRef": "7cc6a8e9-e662-477a-b58a-000000000003",
+          "selectedTaskId": "mc:Fabric 1.21.1",
+          "originalActivityId": 1731870000000,
+          "taskId": "mc:Fabric 1.21.1",
+          "activityId": 1731870000000,
+          "action": "pause",
+          "started": true,
+          "choiceState": "notApplicable",
+          "outcome": "pending",
+          "phase": "downloading"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "outcome"
+        ],
+        "fields": {
+          "outcome": {
+            "const": "returned"
+          }
+        },
+        "example": {
+          "operationRef": "7cc6a8e9-e662-477a-b58a-000000000003",
+          "selectedTaskId": "mc:Fabric 1.21.1",
+          "originalActivityId": 1731870000000,
+          "taskId": "mc:Fabric 1.21.1",
+          "activityId": 1731870000000,
+          "action": "pause",
+          "started": true,
+          "choiceState": "notApplicable",
+          "outcome": "returned",
+          "phase": "paused"
+        }
+      }
+    ],
+    "echoArgs": {
+      "operationRef": "operationRef"
+    },
+    "inputExamples": [
+      {
+        "operationRef": "7cc6a8e9-e662-477a-b58a-000000000003"
+      }
+    ]
+  }
+]

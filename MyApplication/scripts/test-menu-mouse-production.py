@@ -141,7 +141,10 @@ AmclInputSource normalizeInputSource(int source){return static_cast<AmclInputSou
 static void releaseMenuToolControls(bool retireRegistration=true);
 '''
 prefix += source[source.index('struct MenuToolOwner {'):source.index('static void releaseMenuToolControls(')]
-production=definition('struct MenuToolHeldSnapshot')+';\n'+'\n'.join(definition(name,baseline_source if name in sampling_names else source) for name in [
+production=definition('struct MenuToolHeldSnapshot')+';\n'+definition('struct SchemaCarriedMenuDrag')+(
+    ';\nSchemaCarriedMenuDrag s_schemaCarriedMenuDrag;\n'
+)+'\n'.join(definition(name,baseline_source if name in sampling_names else source) for name in [
+    'static amcl::input::TouchPublicationContext touchPublicationIdentityLocked(',
     'amcl::input::TouchPublicationContext touchPublicationContextLocked(', 'bool touchAdmissionAcceptsUiContinuationLocked(',
     'static void reconcileMenuToolProcessLocked(', 'static MenuToolHeldSnapshot menuToolHeldSnapshot(',
     'static bool menuToolMouseHeldLocked(', 'static void sampleInputInvariants(',

@@ -1114,6 +1114,21 @@ void TestBatchRollbackAndOverflow() {
     CHECK(recoveredOutput.size() == 2u);
     CHECK(recoveredOutput[0].payload.physicalKey.action == AMCL_INPUT_ACTION_DOWN);
     CHECK(recoveredOutput[1].payload.physicalKey.action == AMCL_INPUT_ACTION_UP);
+
+    // 普通批先释放原 owner、再按下同一键并新增另一键；末条 epoch 失效时仅撤本批，
+    // 下次真实 UP 仍必须对应最初的 DOWN，不能被降为 ownerless 或替兄弟建立持有。
+    auto original = Key(3, 9, AMCL_INPUT_ACTION_DOWN);
+    CHECK(gApi->submitEvent(&original) == AMCL_INPUT_OK);
+    const auto beforeRollback = HostObs();
+    AmclInputEvent late[] = {Key(3, 9, AMCL_INPUT_ACTION_UP), original,
+        Key(4, 8, AMCL_INPUT_ACTION_DOWN), Key(3, 9, AMCL_INPUT_ACTION_UP)};
+    late[3].header.focusEpoch = Snapshot().focusEpoch + 1;
+    CHECK(gApi->submitBatch(late, 4) == AMCL_INPUT_ERROR_STALE);
+    CHECK(HostObs().lastSequence == beforeRollback.lastSequence && Snapshot().heldControlCount == 1);
+    const auto kept = Drain(session.consumer);
+    CHECK(kept.size() == 1 && kept[0].payload.physicalKey.action == AMCL_INPUT_ACTION_DOWN);
+    CHECK(gApi->submitEvent(&late[0]) == AMCL_INPUT_OK);
+    CHECK(Drain(session.consumer).front().payload.physicalKey.action == AMCL_INPUT_ACTION_UP);
 }
 
 void TestAbsolutePositionBoundBatchContract() {

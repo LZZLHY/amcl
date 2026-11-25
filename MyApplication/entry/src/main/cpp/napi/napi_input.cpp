@@ -4,10 +4,12 @@
  * napi_input.cpp — 输入事件 / 控件区域 / XComponent 尺寸 NAPI 实现
  */
 #include "napi_input.h"
+#include "../platform/window_host.h"
 #include "napi_helpers.h"
 
 #include "../input/platform_input_ingress.h"
 #include "../input/adapters/backend_input_bridge.h"
+#include "../input/adapters/glfw_input_adapter.h"
 #include "../input/input_trace.h"
 #include "../input/input_latency_observation.h"
 #if AMCL_INPUT_TRACE
@@ -95,8 +97,8 @@ napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
 // One physical-key publication: current gate validation, typed submit and
 // legacy routing are indivisible with respect to surface destruction.
 napi_value PhysicalKeyTransaction(napi_env env, napi_callback_info info) {
-    size_t argc = 9;
-    napi_value args[9];
+    size_t argc = 10;
+    napi_value args[10];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     uint32_t key = 0, scan = 0, hid = 0, typedAction = 0, mods = 0, locks = 0;
     int64_t device = 0;
@@ -111,17 +113,98 @@ napi_value PhysicalKeyTransaction(napi_env env, napi_callback_info info) {
     if (argc >= 8) napi_get_value_int32(env, args[7], &mappedKey);
     if (argc >= 9) napi_get_value_int32(env, args[8], &mappedAction);
 
-    amcl::input::SurfaceInputGateTransaction gate;
-    const AmclLegacyPhysicalOutcome outcome =
-        amcl::input::PlatformInputPhysicalKeyTransaction(
-        key, scan, hid, typedAction, mods, locks,
-        static_cast<uint64_t>(device), mappedKey, mappedAction,
-        static_cast<bool>(gate), ohos_route_physical_key_event_checked);
+    bool retireKey = false;
+    if (argc >= 10) napi_get_value_bool(env, args[9], &retireKey);
+    const auto submit = [&](bool allowed) {
+        return amcl::input::PlatformInputPhysicalKeyTransaction(key, scan, hid, typedAction, mods, locks,
+            static_cast<uint64_t>(device), mappedKey, mappedAction, allowed, ohos_route_physical_key_event_checked);
+    };
+    AmclLegacyPhysicalOutcome outcome;
+    if (retireKey && typedAction == AMCL_INPUT_ACTION_UP &&
+        mappedAction == static_cast<int32_t>(amcl::input::GlfwInputAction::kRelease)) {
+        // 页面丢焦时松开本页已持有的键；几何暂挂不能丢这次释放。仍与真实surface复位串行。
+        SurfaceLifecycleLock held;
+        outcome = submit(true);
+    } else {
+        amcl::input::SurfaceInputGateTransaction gate;
+        outcome = submit(static_cast<bool>(gate));
+    }
     napi_value out = nullptr;
     if (napi_create_int32(env, static_cast<int32_t>(outcome), &out) != napi_ok) {
         return amcl::napi::MakeUndefined(env);
     }
     return out;
+}
+
+/** 按字符串传当前SDL需求身份，保留完整64位精度；空表示没有可用的文本需求。 */
+napi_value PeekSdlTextInputDemand(napi_env env, napi_callback_info) {
+    const auto identity = amclWindowHostTextInputDemandIdentity();
+    return amcl::napi::WrapStringResult(env, identity ? std::to_string(identity).c_str() : "");
+}
+
+// 文本需求只投递合并唤醒，不传可能已过期的SDL事件值。注册的TSFN独占本会话。
+struct SdlTextDemandWake {
+    napi_threadsafe_function function = nullptr;
+};
+std::mutex g_sdlTextDemandMutex;
+SdlTextDemandWake* g_sdlTextDemandWake = nullptr;
+
+void WakeSdlTextDemand() {
+    std::lock_guard<std::mutex> lock(g_sdlTextDemandMutex);
+    if (g_sdlTextDemandWake) napi_call_threadsafe_function(g_sdlTextDemandWake->function, nullptr, napi_tsfn_nonblocking);
+}
+void CallJsForSdlTextDemand(napi_env env, napi_value callback, void*, void*) {
+    if (!env || !callback) return;
+    napi_value receiver = nullptr, result = nullptr;
+    napi_get_undefined(env, &receiver);
+    napi_call_function(env, receiver, callback, 0, nullptr, &result);
+}
+void FinalizeSdlTextDemandWake(napi_env, void* data, void*) {
+    auto* wake = static_cast<SdlTextDemandWake*>(data);
+    {
+        std::lock_guard<std::mutex> lock(g_sdlTextDemandMutex);
+        if (g_sdlTextDemandWake == wake) {
+            g_sdlTextDemandWake = nullptr;
+            amclWindowHostSetTextInputWake(nullptr);
+        }
+    }
+    delete wake;
+}
+
+napi_value OnSdlTextInputDemandChange(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value arg = nullptr;
+    napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr);
+    napi_valuetype type = napi_undefined;
+    const bool registering = argc && napi_typeof(env, arg, &type) == napi_ok && type == napi_function;
+    auto* next = registering ? new (std::nothrow) SdlTextDemandWake : nullptr;
+    if (registering && !next) return amcl::napi::MakeBoolResult(env, false);
+    if (next) {
+        napi_value name = nullptr;
+        if (napi_create_string_utf8(env, "SdlTextInputDemand", NAPI_AUTO_LENGTH, &name) != napi_ok ||
+            napi_create_threadsafe_function(env, arg, nullptr, name, 1, 1, next, FinalizeSdlTextDemandWake,
+                nullptr, CallJsForSdlTextDemand, &next->function) != napi_ok) {
+            delete next;
+            return amcl::napi::MakeBoolResult(env, false);
+        }
+        if (napi_unref_threadsafe_function(env, next->function) != napi_ok) {
+            napi_release_threadsafe_function(next->function, napi_tsfn_abort);
+            return amcl::napi::MakeBoolResult(env, false);
+        }
+    }
+    SdlTextDemandWake* previous = nullptr;
+    bool accepted = false;
+    {
+        std::lock_guard<std::mutex> lock(g_sdlTextDemandMutex);
+        accepted = amclWindowHostSetTextInputWake(next ? WakeSdlTextDemand : nullptr) != 0;
+        if (accepted) {
+            previous = g_sdlTextDemandWake;
+            g_sdlTextDemandWake = next;
+        }
+    }
+    if (previous) napi_release_threadsafe_function(previous->function, napi_tsfn_abort);
+    if (next && !accepted) napi_release_threadsafe_function(next->function, napi_tsfn_abort);
+    return amcl::napi::MakeBoolResult(env, accepted);
 }
 
 // Physical device add/remove forwarded from ArkTS inputDevice.on('change').
@@ -882,8 +965,8 @@ napi_value NoteAxisPanActive(napi_env env, napi_callback_info info) {
 }
 
 napi_value PhysicalMouseButtonTransaction(napi_env env, napi_callback_info info) {
-    size_t argc = 6;
-    napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t argc = 8;
+    napi_value args[8] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int64_t deviceId = 0;
     int32_t arkuiButton = -1, action = -1, mods = 0;
@@ -895,10 +978,15 @@ napi_value PhysicalMouseButtonTransaction(napi_env env, napi_callback_info info)
     if (argc >= 4) napi_get_value_int32(env, args[3], &mods);
     if (argc >= 5) napi_get_value_uint32(env, args[4], &deviceClass);
     if (argc >= 6) napi_get_value_int64(env, args[5], &monotonicTimeNs);
+    // 原按钮坐标与 MOVE 使用同一组件局部 vp；旧调用或无效坐标只保留按钮配对。
+    double x = 0.0, y = 0.0;
+    const bool hasPosition = argc >= 8 && napi_get_value_double(env, args[6], &x) == napi_ok &&
+        napi_get_value_double(env, args[7], &y) == napi_ok;
     ohos_route_arkui_physical_mouse_button(
         deviceId > 0 ? static_cast<uint64_t>(deviceId) : 0u,
         arkuiButton, action, mods, deviceClass,
-        monotonicTimeNs > 0 ? static_cast<uint64_t>(monotonicTimeNs) : 0u);
+        monotonicTimeNs > 0 ? static_cast<uint64_t>(monotonicTimeNs) : 0u,
+        hasPosition, x, y);
     return amcl::napi::MakeUndefined(env);
 }
 
@@ -1299,8 +1387,32 @@ napi_value TouchReceiptResult(napi_env env, const amcl::input::TouchPublicationR
 }
 
 /** 查询真实身份与当前操作，供Native安装后回执丢失、页面恢复及迟到回调进行幂等对账。 */
-napi_value TouchPublicationState(napi_env env, napi_callback_info) {
-    return TouchReceiptResult(env, amcl::input::QueryTouchPublication());
+napi_value TouchPublicationState(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value arg;
+    if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) != napi_ok || argc == 0)
+        return TouchReceiptResult(env, amcl::input::QueryTouchPublication());
+    void* memory = nullptr;
+    size_t bytes = 0;
+    uint64_t stamp[2]{};
+    if (napi_get_arraybuffer_info(env,arg,&memory,&bytes) != napi_ok || !memory || bytes != sizeof(stamp))
+        return amcl::napi::MakeUndefined(env);
+    std::memcpy(stamp, memory, sizeof(stamp));
+    amcl::input::TouchPublicationReceipt state;
+    if (!amcl::input::ReadTouchPublicationChange(stamp,state)) {
+        napi_value unchanged;
+        napi_get_null(env,&unchanged);
+        return unchanged;
+    }
+    napi_value receipt = TouchReceiptResult(env,state);
+    napi_valuetype type;
+    if (napi_typeof(env,receipt,&type) == napi_ok && type == napi_object) {
+        // 仅完整对象已构造时推进回执；旧 token 和新组修订都以无损 uint64 比较。
+        stamp[0] = state.fenced ? 0 : state.token;
+        stamp[1] = state.groupRevision;
+        std::memcpy(memory,stamp,sizeof(stamp));
+    }
+    return receipt;
 }
 
 /** fence先生效，零触点在Native事务内核实；UI仍须验证自己已认领角色为零。 */
@@ -1835,8 +1947,21 @@ static bool ReadTouchSchemaOptions(napi_env env, napi_value root, amcl::input::T
 }
 
 /** 会话及来源维护显式调用；不创建引用/线程，不由观察者读取快照隐式触发生产副作用。 */
-static napi_value MaintainTouchInput(napi_env env, napi_callback_info) {
-    const bool maintained=ohos_touch_input_maintain();
+static napi_value MaintainTouchInput(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    if (napi_get_cb_info(env,info,&argc,args,nullptr,nullptr) != napi_ok) return amcl::napi::MakeBoolResult(env,false);
+    double* frame = nullptr;
+    bool full = false;
+    if (argc) {
+        void* memory = nullptr;
+        size_t bytes = 0;
+        if (argc != 2 || napi_get_arraybuffer_info(env,args[0],&memory,&bytes) != napi_ok ||
+            bytes != 26*sizeof(double) || !memory || (reinterpret_cast<uintptr_t>(memory) % alignof(double)) != 0 ||
+            napi_get_value_bool(env,args[1],&full) != napi_ok) return amcl::napi::MakeBoolResult(env,false);
+        frame = static_cast<double*>(memory);
+    }
+    const bool maintained=frame ? ohos_touch_frontend_maintain(frame,full ? 25 : 2) : ohos_touch_input_maintain();
 #if AMCL_INPUT_TRACE
     // 必要维护已经返回且输入锁释放。沿原Host时钟至多7条记录+1条汇总、总4096字节，
     // 每条512字节先完整格式化再打印（低于HiLog官方4096字节单条上限），绝不发截断身份。
@@ -2375,17 +2500,27 @@ napi_value TextInputSessionSupported(napi_env env,
         env, amcl::input::PlatformInputTextSessionSupported());
 }
 
+/** 同一WindowHost事务验证并提交scoped命令；旧软键盘/非SDL继续调用原事务。 */
+template<typename Command>
+bool RunForSdlTextDemand(uint64_t demand, Command command) {
+    if (!demand) return command();
+    return amclWindowHostRunTextInputCommand(demand,
+        [](void* context) -> int { return (*static_cast<Command*>(context))() ? 1 : 0; }, &command) != 0;
+}
+
 napi_value BeginTextInputSession(napi_env env, napi_callback_info info) {
-    size_t argc = 1u;
-    napi_value args[1] = {};
+    size_t argc = 2u;
+    napi_value args[2] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint64_t id = 0u;
-    if (argc != 1u || !ReadTextSessionId(env, args[0], &id)) {
+    uint64_t id = 0u, demand = 0u;
+    if ((argc != 1u && argc != 2u) || !ReadTextSessionId(env, args[0], &id) ||
+        (argc == 2u && !ReadTouchIdentity(env, args[1], &demand))) {
         return amcl::napi::MakeBoolResult(env, false);
     }
     amcl::input::SurfaceInputGateTransaction gate;
-    return amcl::napi::MakeBoolResult(
-        env, gate && amcl::input::PlatformInputTextSessionBegin(id));
+    return amcl::napi::MakeBoolResult(env, gate && RunForSdlTextDemand(demand, [&] {
+        return amcl::input::PlatformInputTextSessionBegin(id, demand);
+    }));
 }
 
 napi_value EndTextInputSession(napi_env env, napi_callback_info info) {
@@ -2428,10 +2563,11 @@ napi_value CommitTextInput(napi_env env, napi_callback_info info) {
         return amcl::napi::MakeBoolResult(env, false);
     }
     amcl::input::SurfaceInputGateTransaction gate;
-    return amcl::napi::MakeBoolResult(
-        env, gate && amcl::input::PlatformInputTextCommit(
-            id, reinterpret_cast<const uint8_t*>(text.data()),
-            static_cast<uint32_t>(text.size())));
+    return amcl::napi::MakeBoolResult(env, gate &&
+        RunForSdlTextDemand(amcl::input::PlatformInputTextSessionDemand(id), [&] {
+            return amcl::input::PlatformInputTextCommit(
+                id, reinterpret_cast<const uint8_t*>(text.data()), static_cast<uint32_t>(text.size()));
+        }));
 }
 
 // textInputKeyTap(generation, ohosKeyCode, glfwKey) → 0/1/2（数值语义见 ingress 头的
@@ -2454,6 +2590,18 @@ napi_value TextInputKeyTap(napi_env env, napi_callback_info info) {
         napi_get_value_uint32(env, args[1], &ohosKeyCode) == napi_ok &&
         napi_get_value_int32(env, args[2], &glfwKey) == napi_ok) {
         amcl::input::SurfaceInputGateTransaction gate;
+        const uint64_t demand = gate ? amcl::input::PlatformInputTextSessionDemand(static_cast<uint64_t>(generation)) : 0;
+        if (demand != 0u) {
+            (void)RunForSdlTextDemand(demand, [&] {
+                const auto scoped = amcl::input::PlatformInputTextSessionKeyTap(
+                    static_cast<uint64_t>(generation), ohosKeyCode, glfwKey, true);
+                // 绑定SDL需求的编辑键必须走可追溯的typed队列，不得借匿名legacy后备通道。
+                if (scoped != amcl::input::PlatformInputTextKeyTapResult::NotTypedRoute)
+                    outcome = static_cast<int32_t>(scoped);
+                return true;
+            });
+            return amcl::napi::MakeIntResult(env, outcome);
+        }
         // 在任何Source loader/descriptor潜在等待之前捕获原Core资格；同ID重开也有新scope。
         AmclInputTextCoreResourceV1 originalText{};
         const uint64_t originalKeyboardScope=gate?amclInputOwnerL2KeyboardScopeV1():0;
@@ -2494,10 +2642,11 @@ napi_value UpdateTextInputEditing(napi_env env, napi_callback_info info) {
         return amcl::napi::MakeBoolResult(env, false);
     }
     amcl::input::SurfaceInputGateTransaction gate;
-    return amcl::napi::MakeBoolResult(
-        env, gate && amcl::input::PlatformInputTextEditing(
-            id, reinterpret_cast<const uint8_t*>(text.data()),
-            static_cast<uint32_t>(text.size()), start, length));
+    return amcl::napi::MakeBoolResult(env, gate &&
+        RunForSdlTextDemand(amcl::input::PlatformInputTextSessionDemand(id), [&] {
+            return amcl::input::PlatformInputTextEditing(
+                id, reinterpret_cast<const uint8_t*>(text.data()), static_cast<uint32_t>(text.size()), start, length);
+        }));
 }
 
 napi_value UpdateTextInputSelection(napi_env env, napi_callback_info info) {
@@ -2513,9 +2662,10 @@ napi_value UpdateTextInputSelection(napi_env env, napi_callback_info info) {
         return amcl::napi::MakeBoolResult(env, false);
     }
     amcl::input::SurfaceInputGateTransaction gate;
-    return amcl::napi::MakeBoolResult(
-        env, gate && amcl::input::PlatformInputTextSelection(
-            id, start, length));
+    return amcl::napi::MakeBoolResult(env, gate &&
+        RunForSdlTextDemand(amcl::input::PlatformInputTextSessionDemand(id), [&] {
+            return amcl::input::PlatformInputTextSelection(id, start, length);
+        }));
 }
 
 napi_value SubmitTextInputCandidates(napi_env env,
@@ -2651,6 +2801,8 @@ constexpr napi_property_descriptor kInputDescriptors[] = {
     NAPI_FUNC("configureInputProduct", ConfigureInputProduct),
     NAPI_FUNC("hardwareRawMouseAvailable", HardwareRawMouseAvailable),
     NAPI_FUNC("physicalKeyTransaction", PhysicalKeyTransaction),
+    NAPI_FUNC("peekSdlTextInputDemand", PeekSdlTextInputDemand),
+    NAPI_FUNC("onSdlTextInputDemandChange", OnSdlTextInputDemandChange),
     NAPI_FUNC("physicalMouseButtonTransaction", PhysicalMouseButtonTransaction),
     NAPI_FUNC("setCursorLocked", SetCursorLocked),
     NAPI_FUNC("noteCursorLockFocusLost", NoteCursorLockFocusLost),
@@ -2727,6 +2879,7 @@ constexpr napi_property_descriptor kInputDescriptors[] = {
     NAPI_FUNC("setLookAccel",        SetLookAccel),
     NAPI_FUNC("setControlSchema",    SetControlSchema),
     NAPI_FUNC("touchPublicationState", TouchPublicationState),
+    NAPI_FUNC("touchPublicationStateIfChanged", TouchPublicationState),
     NAPI_FUNC("readTouchGroups", ReadTouchGroups),
     NAPI_FUNC("confirmTouchGroups", ConfirmTouchGroups),
     NAPI_FUNC("isTouchGroupControlCurrent", IsTouchGroupControlCurrent),
@@ -2742,6 +2895,7 @@ constexpr napi_property_descriptor kInputDescriptors[] = {
     NAPI_FUNC("releaseTouchModal", ReleaseTouchModal),
     NAPI_FUNC("isTouchPublicationCurrent", IsTouchPublicationCurrent),
     NAPI_FUNC("maintainTouchInput", MaintainTouchInput),
+    NAPI_FUNC("maintainTouchFrontend", MaintainTouchInput),
     NAPI_FUNC("touchInteractionVisual", TouchInteractionVisual),
     NAPI_FUNC("gameGuiState", GameGuiState),
     NAPI_FUNC("gameGuiStateForSource", GameGuiStateForSource),

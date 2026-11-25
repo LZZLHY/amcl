@@ -100,11 +100,11 @@ enum class Channel : int {
     // "同一秒里 btnYield 与某条 btnXxx 成对出现" ⇒ 竞争存在且已被收敛到一条通道。
     LeftEdgeYielded,         // 左键边沿被拒（**总数**；下面四个细分之和必须等于它）
     // ⚠️ 总数保留原语义 —— 规范 §6.3 的判读规则建立在它上面。四个细分的排查方向完全不同，
-    // 拆开的理由、判读方式与"恒零桶为何不违反本文件规则"见计划 §107.4。
-    LeftEdgeYieldedNotOwner,   // DOWN：本通道不是优先级所有者
-    LeftEdgeYieldedDupDown,    // DOWN：是所有者但已有按下在飞行（平台重发 / 合成流重复）
+    // 拆开按下和抬起的拒收，便于检查真实设备及不同通道的配对行为。
+    LeftEdgeYieldedNotOwner,   // DOWN：与其他来源重叠，或无法确认为新的手势
+    LeftEdgeYieldedDupDown,    // DOWN：原设备和通道仍持有这个按钮
     LeftEdgeYieldedNoPress,    // UP：当前没有按下在飞行（抬起多于按下）
-    LeftEdgeYieldedOtherOwner, // UP：持有者是另一条通道 —— **按设计不可达**，非零即真信号
+    LeftEdgeYieldedOtherOwner, // UP：仍有按下，但这次的通道、设备或时间无法结束持有
     WheelYielded,            // 滚轮样本被策略层拒绝（非所有者）
 
     // ---- native XComponent mouse 回调（与 ArkUI onMouse 并列的另一条鼠标通道）----

@@ -7,6 +7,7 @@
     {"jar":"lwjgl-egl.jar","module":"egl","kind":"bridge","artifact":"libamcl_lwjgl_egl.so","stage":"cmake","requiredSymbols":["eglGetProcAddress"],"scope":"AMCL EGL late-load 桥经 graphics_runtime 当前后端查询地址；EGL 扩展由设备能力决定"},
     {"jar":"lwjgl-freetype.jar","module":"freetype","kind":"c-api","artifact":"libfreetype.so","requiredSource":"all-generated","scope":"全部生成绑定 apiGetFunctionAddress 必需入口"},
     {"jar":"lwjgl-glfw.jar","module":"glfw","kind":"bridge","artifact":"libglfw.so","stage":"cmake","requiredSource":["GLFW.java","GLFWNativeEGL.java","GLFWVulkan.java"],"scope":"OHOS GLFW 主接口、EGL 句柄和 Vulkan 查询；Win32/Cocoa/GLX/X11/Wayland 原生窗口接口不属于 OHOS"},
+    {"jar":"lwjgl-jemalloc.jar","module":"jemalloc","kind":"c-api","artifact":"libamcl_lwjgl_jemalloc.so","requiredSource":"all-generated","scope":"完整 je_ C API 和 malloc_message 数据符号来自随包独立 OHOS 分配器"},
     {"jar":"lwjgl-nanovg.jar","module":"nanovg","kind":"jni","artifact":"liblwjgl_nanovg.so","scope":"NanoVG/NanoSVG 与 GL2/GL3/GLES2/GLES3 的完整生成 JNI；GPU 函数由当前 context 查询"},
     {"jar":"lwjgl-openal.jar","module":"openal","kind":"system-dispatch","artifact":"libopenal.so","stage":"cmake","requiredSymbols":["alGetProcAddress","alcGetProcAddress","alcOpenDevice"],"scope":"OpenAL Soft 提供核心查询；AL/ALC 扩展由设备/context 的过程表提供，不能按导出表误判"},
     {"jar":"lwjgl-opengl.jar","module":"opengl","kind":"jni","artifact":"liblwjgl_opengl.so","scope":"完整 OHOS 生成 JNI；WGL 是 Windows 条件接口，GL 功能和扩展通过渲染后端查询"},

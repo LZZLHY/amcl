@@ -3,6 +3,7 @@
  * 发布记录及外跳流程不变，实色筛选按钮继续使用填充色与反色文字。
  */
 import { applyNativeTheme } from '../components/AppTheme';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { DistributionPolicy } from 'commons';
 /**
  * ChangelogPage.ets — 更新日志页
@@ -70,6 +71,35 @@ struct ChangelogPage {
   private storeTrack: boolean = DistributionPolicy.isStore()
   private onUpdated_: () => void = () => { this.reloadFromCache_() }
 
+  /** 从与页面相同的发布记录分页，类别必须属于当前渠道返回的筛选项。 */
+  private async skillAction_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (this.loading) return { 'state': 'initializing' };
+    if (method === 'openLatestRelease') {
+      if (this.storeTrack || (this.releases.length > 0 && !this.hasUpdate_())) return { 'state': 'unavailable', 'reason': 'noReleaseLink' };
+      const opened = await this.openReleaseListOrUpdate_();
+      return { 'state': opened ? 'needsUser' : 'failed', 'surface': 'browser' };
+    }
+    if (method !== 'readReleaseNotes') return { 'state': 'failed', 'reason': 'unknownOperation' };
+    const filter = String(args['category'] ?? '');
+    if (filter.length > 0 && !this.chips.some((chip: FilterChip): boolean => chip.type === filter)) {
+      return { 'state': 'failed', 'reason': 'invalidCategory' };
+    }
+    const offset = Number(args['offset'] ?? 0);
+    if (!Number.isSafeInteger(offset) || offset < 0) return { 'state': 'failed', 'reason': 'invalidOffset' };
+    this.filter = filter;
+    const releases = this.visibleReleases_();
+    return { 'state': 'ready', 'source': this.sourceLabel_(), 'total': releases.length, 'offset': offset,
+      'releases': releases.slice(offset,offset + 8).map((r: ChangelogRelease): SkillFields =>
+        ({ 'version': r.versionName, 'preview': r.prerelease, 'entries': this.entriesOf_(r).map((e: ChangelogEntry): string => e.text) })) };
+  }
+
+  private bindSkill_(): void {
+    LauncherSkillBus.bind('changelog', this, (method: string, args: SkillFields): Promise<SkillFields> => this.skillAction_(method,args), (): boolean => {
+      const page = this.getUIContext().getRouter().getState().name;
+      return page === 'ChangelogPage' || page === 'pages/ChangelogPage';
+    });
+  }
+
   aboutToAppear() {
     this.applyTheme_()
     this.currentCode = UpdateChecker.currentVersionCode()
@@ -77,7 +107,7 @@ struct ChangelogPage {
     this.load_()
   }
 
-  aboutToDisappear() {
+  aboutToDisappear() { LauncherSkillBus.unbind('changelog',this);
     offChangelogUpdated(this.onUpdated_)
   }
 
@@ -153,25 +183,33 @@ struct ChangelogPage {
     return latest.versionCode > this.currentCode
   }
 
+  /** 无目录时页面提供发布列表，有更新时打开该条记录。两种调用沿用同一渠道检查。 */
+  private openReleaseListOrUpdate_(): Promise<boolean> {
+    const latest = this.latestRelease_();
+    return this.openUrl_(latest === null ? APP_REPO_URL + '/releases' : latest.url || APP_REPO_URL + '/releases/latest');
+  }
+
   private safeToast_(message: string): void {
     try {
       this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 })
     } catch (e) { /* UI 实例已销毁，忽略 */ }
   }
 
-  private openUrl_(url: string): void {
+  private async openUrl_(url: string): Promise<boolean> {
     // 更新日志在store仅本地阅读，所有二级动作/错误兜底均不得外跳网页。
-    if (DistributionPolicy.isStore()) return;
+    if (DistributionPolicy.isStore()) return false;
     try {
       let want: Want = {
         action: 'ohos.want.action.viewData',
         entities: ['entity.system.browsable'],
         uri: url,
       }
-      this.context.startAbility(want)
+      await this.context.startAbility(want)
+      return true
     } catch (e) {
       hilog.error(0x0000, TAG, 'openUrl failed: %{public}s', (e as Error).message)
       this.safeToast_('无法打开浏览器，请手动访问 ' + url)
+      return false
     }
   }
 
@@ -185,7 +223,7 @@ struct ChangelogPage {
   }
 
   /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
-  onPageShow(): void { this.applyTheme_(); }
+  onPageShow(): void { this.bindSkill_(); this.applyTheme_(); }
 
   build() {
     Column() {
@@ -218,7 +256,7 @@ struct ChangelogPage {
           .type(ButtonType.Capsule).height(42)
           .fontSize(14).fontWeight(600)
           .backgroundColor(this.theme.primary).fontColor(this.theme.textOnPrimary)
-          .onClick(() => { this.openUrl_(APP_REPO_URL + '/releases') })
+          .onClick(() => { this.openReleaseListOrUpdate_() })
       }
     }
     .width('100%').layoutWeight(1)
@@ -259,10 +297,7 @@ struct ChangelogPage {
         .type(ButtonType.Normal).borderRadius(9)
         .height(32).padding({ left: 12, right: 12 })
         .backgroundColor(this.theme.primary)
-        .onClick(() => {
-          let latest = this.latestRelease_()
-          this.openUrl_(latest !== null && latest.url.length > 0 ? latest.url : APP_REPO_URL + '/releases/latest')
-        })
+        .onClick(() => { this.openReleaseListOrUpdate_() })
       } else {
         Row({ space: 4 }) {
           AppIcon({ name: AppIconName.Check, iconSize: 12, color: this.theme.successText })

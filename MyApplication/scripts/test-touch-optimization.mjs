@@ -219,7 +219,11 @@ const bodies=names.map(name=>optionOwner.members.find(node=>node.name?.getText(o
 const compiled=compiler.transpileModule('class TouchEditorSubject{'+bodies.join('\n')+'}\nmodule.exports=TouchEditorSubject;',
   {compilerOptions:{target:compiler.ScriptTarget.ES2020,module:compiler.ModuleKind.CommonJS}}).outputText;
 const box={exports:{}};
-new Function('module','normalizeTouchPreferences','TouchConfiguration',compiled)(box,normalizeTouchPreferences,model.TouchConfiguration);
+// 控件委托给共享草稿函数；保留真实的规范化、变更判定与提交回调。
+const {touchFlagDraft,touchNumberDraft,touchChoiceDraft} =
+  makePureEtsLoader({gamecontrol:model})('entry/src/main/ets/runtime/TouchOptionDraft.ets');
+new Function('module','normalizeTouchPreferences','TouchConfiguration','touchFlagDraft','touchNumberDraft','touchChoiceDraft',compiled)(
+  box,normalizeTouchPreferences,model.TouchConfiguration,touchFlagDraft,touchNumberDraft,touchChoiceDraft);
 const subject=new box.exports(),changes=[];
 subject.value=normalizeTouchPreferences({menuMode:'touchpad',menuTwoFingerScroll:true,joystickCenter:'floating'});
 subject.onChange=(value,key)=>changes.push({value,key});

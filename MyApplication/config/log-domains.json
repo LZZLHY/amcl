@@ -52,6 +52,7 @@
     "PreLaunchValidator": "launch",
     "PreLaunchCheckSheet": "launch",
     "SessionMarker": "launch",
+    "GameSession": "launch",
     "SessionRecovery": "launch",
     "GameDialog": "launch",
     "ModAudio": "launch",

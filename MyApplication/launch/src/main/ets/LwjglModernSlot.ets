@@ -16,13 +16,14 @@ export interface LwjglModernJar {
 
 export const LWJGL_MODERN_VERSION = '3.4.2';
 export const LWJGL_MODERN_SOURCE_COMMIT = '32593afe25e2f1394c3425673f1b71a0122f5cd4';
-export const LWJGL_MODERN_MANIFEST_SHA256 = 'ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0';
-export const LWJGL_MODERN_MARKER = 'amcl.lwjgl.modern-slot\nversion=3.4.2\nsource=32593afe25e2f1394c3425673f1b71a0122f5cd4\nmanifest=ce6baeb404b399de8f298c8f23d85940f18de636a88cac09f2d988219d898fd0\n';
+export const LWJGL_MODERN_MANIFEST_SHA256 = '3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e';
+export const LWJGL_MODERN_MARKER = 'amcl.lwjgl.modern-slot\nversion=3.4.2\nsource=32593afe25e2f1394c3425673f1b71a0122f5cd4\nmanifest=3ad6f89b9aa89e79c1432dae0a945a948f0be24818438d5ce3c2d948e8b0ff6e\n';
 
 export const LWJGL_MODERN_JARS: LwjglModernJar[] = [
   { name: 'lwjgl-egl.jar', size: 156718, sha256: '996784168f35a0384a53a8363fb2bcaf12d6ce997b2f677e275bf6a425b0510d' },
   { name: 'lwjgl-freetype.jar', size: 480076, sha256: '06791a74fd3f60b6f35663c63578e5ece2df73614129dbc3ad4e34e2a1a4201b' },
   { name: 'lwjgl-glfw.jar', size: 160146, sha256: 'ae954c72bf7645ebf1a6caf0643dd439a806a3c4480fe216821b87f32b5d116a' },
+  { name: 'lwjgl-jemalloc.jar', size: 50284, sha256: '1c3c9014ba26f522bfa9eee3959e9a3d4e5261d4256cc393aac8b855243bd97b' },
   { name: 'lwjgl-nanovg.jar', size: 84001, sha256: '8ae37432408e865bac3595ead3e330430280758fa19b4faf0c47715ffc165380' },
   { name: 'lwjgl-openal.jar', size: 155021, sha256: 'a9e6c05ce90f50074b93d9e987df2e6be693504a33adb6b5c7d6786855b5a910' },
   { name: 'lwjgl-opengl.jar', size: 954157, sha256: '027beefe18102b6393236ec632aeb5533c02ce788b4fdcb678018cc22bfdafbf' },

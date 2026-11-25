@@ -1,9 +1,14 @@
 #include "../platform/desktop_gamepad.h"
+#include "../platform/desktop_gamepad_mapping.h"
+#include "../platform/gamepad_reader.h"
+#include "../platform/mobile_gamepad_publication.h"
+#include <deviceinfo.h>
 #include "napi_desktop.h"
 #include "napi_helpers.h"
 #include "../platform/native_gl.h"
 #include "../platform/desktop_command_queue.h"
 #include "../platform/desktop_event_signal.h"
+#include "../platform/system_clipboard.h"
 #include <database/pasteboard/oh_pasteboard.h>
 #include <database/udmf/udmf.h>
 #include <database/udmf/uds.h>
@@ -116,47 +121,63 @@ int32_t ClipboardRead(char* target, size_t capacity) {
     OH_Pasteboard_Destroy(board);
     return result;
 }
-int32_t ClipboardWrite(const char* text) {
-    if (!text || strlen(text) > 4 * 1024 * 1024) return -1;
-    OH_Pasteboard* board = OH_Pasteboard_Create();
-    OH_UdmfData* data = OH_UdmfData_Create();
-    OH_UdmfRecord* record = OH_UdmfRecord_Create();
-    OH_UdsPlainText* plain = OH_UdsPlainText_Create();
-    int result = -1;
-    if (board && data && record && plain && OH_UdsPlainText_SetContent(plain, text) == 0 &&
-        OH_UdmfRecord_AddPlainText(record, plain) == 0 && OH_UdmfData_AddRecord(data, record) == 0)
-        result = OH_Pasteboard_SetData(board, data);
-    if (plain) OH_UdsPlainText_Destroy(plain);
-    if (record) OH_UdmfRecord_Destroy(record);
-    if (data) OH_UdmfData_Destroy(data);
-    if (board) OH_Pasteboard_Destroy(board);
-    return result;
-}
 }
 
 extern "C" __attribute__((visibility("default")))
 const AmclDesktopHostV1* amclDesktopHostGetV1() {
     static const AmclDesktopHostV1 api = { AMCL_DESKTOP_HOST_MAGIC,
         sizeof(AmclDesktopHostV1), static_cast<uint32_t>(getpid()),
-        Submit, Snapshot, RequestClose, ClipboardRead, ClipboardWrite, amcl::desktop::ReadGamepad,
+        Submit, Snapshot, RequestClose, ClipboardRead, amcl::clipboard::WritePlainText, amcl::desktop::ReadGamepad,
         EventEpoch, WaitEvents, WakeEvents, TakeDrop };
     return published.load(std::memory_order_acquire) ? &api : nullptr;
 }
 
 namespace {
-bool PublishDescriptor() {
+// 桌面窗口和手柄共享原 PID 文件。它由桌面宿主管理，不参加移动游戏的创建/回收。
+bool PublishDesktopDescriptor(bool attachDesktop) {
+    const char* type = OH_GetDeviceType();
+    const bool isDesktop = type && strcmp(type, "2in1") == 0;
+    if (!isDesktop) return false;
+    const bool gamepad = amcl::desktop::SupportsGamepadCapture(type, OH_GetSdkApiVersion());
     char path[160]{};
-    snprintf(path, sizeof(path), "/data/storage/el2/base/files/.amcl_desktop_host_%d.lock", getpid());
+    amclGamepadReaderPath(path, sizeof(path));
     const int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return false;
     bool ok = false;
     if (flock(fd, LOCK_EX) == 0) {
-        const uintptr_t getter = reinterpret_cast<uintptr_t>(&amclDesktopHostGetV1);
-        ok = pwrite(fd, &getter, sizeof(getter), 0) == sizeof(getter) && ftruncate(fd, sizeof(getter)) == 0;
-        if (ok) published.store(true, std::memory_order_release);
+        const AmclGamepadReaderDescriptor record {
+            reinterpret_cast<uintptr_t>(&amclDesktopHostGetV1),
+            1, sizeof(AmclDesktopGamepad), static_cast<uint32_t>(getpid()),
+            gamepad ? reinterpret_cast<uintptr_t>(&amcl::desktop::amclGamepadRead) : 0
+        };
+        ok = pwrite(fd, &record, sizeof(record), 0) == sizeof(record) && ftruncate(fd, sizeof(record)) == 0;
+        if (ok && attachDesktop) published.store(true, std::memory_order_release);
         flock(fd, LOCK_UN);
     }
     close(fd); return ok;
+}
+
+std::mutex gamepadPublicationMutex;
+amcl::desktop::MobileGamepadPublication mobileGamepadPublication;
+napi_env mobileGamepadEnv = nullptr;
+
+bool ConfigureMobileGamepad(napi_env env, bool enabled, bool envCleanup = false) {
+    std::lock_guard<std::mutex> lock(gamepadPublicationMutex);
+    if (mobileGamepadEnv && mobileGamepadEnv != env) return false;
+    if (envCleanup && mobileGamepadEnv != env) return true;
+    char path[160]{};
+    amclGamepadReaderPath(path, sizeof(path));
+    const AmclGamepadReaderDescriptor record{0, 1, sizeof(AmclDesktopGamepad), static_cast<uint32_t>(getpid()),
+        reinterpret_cast<uintptr_t>(&amcl::desktop::amclGamepadRead)};
+    if (enabled) mobileGamepadEnv = env;
+    const bool ok = mobileGamepadPublication.Configure(enabled, path, record, amcl::desktop::SetNativeGamepadMode);
+    if (!mobileGamepadPublication.OwnsFile()) mobileGamepadEnv = nullptr;
+    return ok;
+}
+
+void CleanupMobileGamepad(void* data) {
+    // 页面的临时失焦不撤资格；只有实际认领采集的 NAPI 环境退休，才兜底关闭自己的读端。
+    ConfigureMobileGamepad(static_cast<napi_env>(data), false, true);
 }
 void WakeJs(napi_env env, napi_value callback, void*, void*) {
     if (!env || !callback) return;
@@ -271,7 +292,7 @@ napi_value Attach(napi_env env, napi_callback_info info) {
         drops.clear(); WakeEvents();
     }
     if (old) napi_release_threadsafe_function(old, napi_tsfn_abort);
-    if (!PublishDescriptor()) { Cleanup(env); generation = 0; }
+    if (!PublishDesktopDescriptor(true)) { Cleanup(env); generation = 0; }
     napi_value result; napi_create_double(env, generation, &result); return result;
 }
 napi_value Detach(napi_env env, napi_callback_info info) {
@@ -309,6 +330,8 @@ napi_value Complete(napi_env env, napi_callback_info info) {
         return amcl::napi::MakeBoolResult(env, false);
     std::lock_guard<std::mutex> lock(hostMutex);
     const bool accepted = ownerEnv == env && commands.complete(gen, seq, error);
+    // 发布窗口快照早于命令确认；唤醒正在等待该序号的 SDL 线程读取最终结果。
+    if (accepted) WakeEvents();
     completionChanged.notify_all();
     return amcl::napi::MakeBoolResult(env, accepted);
 }
@@ -316,12 +339,26 @@ napi_value GamepadMode(napi_env env, napi_callback_info info) {
     size_t count=1; napi_value value; bool enabled=false;
     napi_get_cb_info(env,info,&count,&value,nullptr,nullptr);
     if(count!=1 || napi_get_value_bool(env,value,&enabled)!=napi_ok) return amcl::napi::MakeBoolResult(env,false);
+    const char* type = OH_GetDeviceType();
+    if (type && strcmp(type, "2in1") != 0) {
+        if (enabled && !amcl::desktop::SupportsGamepadCapture(type, OH_GetSdkApiVersion()))
+            return amcl::napi::MakeBoolResult(env, false);
+        return amcl::napi::MakeBoolResult(env, ConfigureMobileGamepad(env, enabled));
+    }
+    if (enabled && !PublishDesktopDescriptor(false)) {
+        amcl::desktop::SetNativeGamepadMode(false);
+        return amcl::napi::MakeBoolResult(env, false);
+    }
     return amcl::napi::MakeBoolResult(env,amcl::desktop::SetNativeGamepadMode(enabled));
 }
 napi_value GamepadFocus(napi_env env, napi_callback_info info) {
-    size_t count=1; napi_value value; bool focused=false;
-    napi_get_cb_info(env,info,&count,&value,nullptr,nullptr);
-    if(count==1 && napi_get_value_bool(env,value,&focused)==napi_ok) amcl::desktop::SetGamepadFocus(focused);
+    // 合约扩展保留旧单参数调用。新宿主以第二参独立标明来源已切换，失焦不撤实体身份。
+    size_t count = 2; napi_value values[2]{}; bool focused = false, routed = false;
+    napi_get_cb_info(env, info, &count, values, nullptr, nullptr);
+    if (count >= 1 && napi_get_value_bool(env, values[0], &focused) == napi_ok &&
+        (count == 1 || napi_get_value_bool(env, values[1], &routed) == napi_ok)) {
+        amcl::desktop::SetGamepadFocus(focused, count == 2 ? std::optional<bool>(routed) : std::nullopt);
+    }
     return amcl::napi::MakeUndefined(env);
 }
 napi_value CloseRequested(napi_env env, napi_callback_info info) {
@@ -387,6 +424,14 @@ napi_value PublishDrop(napi_env env, napi_callback_info info) {
 }
 namespace amcl::napi {
 void registerDesktopNapi(napi_env env, napi_value exports) {
+    // 原桌面共享服务保留常驻发布；移动端只在启用原生手柄时同步发布，普通启动不创建 PID 文件。
+    const char* type = OH_GetDeviceType();
+    if (type && strcmp(type, "2in1") == 0) {
+        static std::once_flag earlyDesktopReader;
+        std::call_once(earlyDesktopReader, [] { PublishDesktopDescriptor(false); });
+    } else {
+        napi_add_env_cleanup_hook(env, CleanupMobileGamepad, env);
+    }
     const napi_property_descriptor methods[] = {
         {"desktopPublishDrop", nullptr, PublishDrop, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"desktopSetGamepadNativeMode", nullptr, GamepadMode, nullptr, nullptr, nullptr, napi_default, nullptr},

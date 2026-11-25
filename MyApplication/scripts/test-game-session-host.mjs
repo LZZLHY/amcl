@@ -17,7 +17,8 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
 
 /** 只替换宿主依赖的系统/子系统边缘；所有生命周期决策由实际Host类执行。 */
 function fixture({ isolated = false, realSources = false, hostSource = undefined, sharedLook = undefined,
-  timerFaults = false, touchApi = undefined, keepScreenOn = true, initialKeepScreenOn = false } = {}) {
+  timerFaults = false, touchApi = undefined, keepScreenOn = true, initialKeepScreenOn = false,
+  deviceType = 'phone', api = 26 } = {}) {
 
   const calls = [];
   const state = { running: true, grab: false, now: 0, throwOn: new Set(), deferredEnter: undefined, deferredRestore: undefined,
@@ -53,6 +54,8 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
     listeners = new Set();
     start() { record('text-start'); }
     maintain() { record('text-reconcile'); }
+    bindPhysicalDemandReader(read) { this.readPhysicalDemand=read; }
+    setPhysicalDemandIdentity(identity) { this.physicalDemandIdentity=identity; record('text-demand',identity); }
     stop() { record('text-stop'); return this.snapshot(); }
     snapshot() { return { stopOutcome: state.textStopOutcome ?? 'Completed', failure: '',
       callbackFenced: true, localLeaseClosed: true, platformDetachResolved: true }; }
@@ -75,11 +78,23 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
   const pointer = { sync: (...values) => record('pointer-sync', ...values), tick: () => record('pointer-tick'), restore: () => record('pointer-restore') };
   const native = { configureInputProduct: () => { record('product-configure'); return state.sourceOwnerUnavailable ? 5 : 0; },
     sendSourceKeyEvent: () => true, sendSourceMouseEvent: () => true, sendSourceScrollEvent: () => true, sendSourceCursorSample: () => true,
-    setCursorLocked: (...values) => record('cursor-lock', ...values), desktopGamepadFocus: value => record('pad-focus', value),
+    setCursorLocked: (...values) => record('cursor-lock', ...values), desktopGamepadFocus: (focus, routed) => record('pad-focus', focus, routed),
+    desktopSetGamepadNativeMode: enabled => { record('pad-capture',enabled); return !enabled || state.nativeGamepadCaptureReady === true; },
     onGrabChange: callback => { record(callback ? 'grab-subscribe' : 'grab-unsubscribe'); state.grabCallback = callback; },
+    peekSdlTextInputDemand: () => { record('sdl-text-read'); return state.sdlTextIdentity??''; },
+    onSdlTextInputDemandChange: callback => {
+      record(callback ? 'sdl-text-subscribe' : 'sdl-text-unsubscribe'); state.sdlTextCallback=callback; return true;
+    },
     cancelAllInput: () => record('native-cancel'), uninstallWindowInputFilters: id => record('filter-retire', id),
     isGrabbed: () => { record('grab-read'); return state.grab; }, cursorLockWatchdogTick: () => false,
     inputInvariantTick: () => record('invariant'), mcIsRunning: () => state.running, mcForceExit: () => record('force-exit'),
+    mcLauncherRestartPending: () => state.phoneExitPending === true,
+    mcPrepareLauncherRestart: async () => {
+      record('prepare-restart');
+      if (state.restartPreparation !== undefined) await state.restartPreparation.promise;
+      return state.handoffExpired !== true;
+    },
+    mcDeclineLauncherRestart: () => record('decline-restart'),
     gameGuiStartSession: activity => { record('gui-start', activity); return 17; },
     gameGuiStopSession: scope => { record('gui-stop', scope); return true; },
     setOhosFrameRateForeground: (...values) => record('ability-foreground', ...values) };
@@ -108,6 +123,8 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
     },
   };
   const context = { windowStage: { getMainWindowSync: () => mainWindow },
+    restartApp: async want => { record('ui-restart', want); },
+    getApplicationContext: () => ({ restartApp: want => record('app-restart', want) }),
     startAbility: async want => { record('return-ability', want.parameters.gameExitActivityId);
     if (state.handoffCallback !== undefined) state.handoffCallback();
     if (state.handoff !== undefined) await state.handoff.promise; } };
@@ -130,20 +147,22 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
   const env = environment({ commons: { ActivityLogger: Logger, LOG_DOMAIN_LAUNCH: 1,
     // 记录真实Host的故障出口及原错误，仅作为诊断oracle，不改变异常和清理政策。
     AppLogger: { warn: (_tag,text,error) => record('fault',text,error?.message ?? String(error)),
-      error: noop, info: noop, debug: noop, flush: () => record('log-flush') } }, sourceOverrides,
-    globals: { ...timerEdges, AppStorage: { get: key => key === 'desktopGameProcess' ? isolated
-      : key === 'nativeGamepadRouteRequested' ? state.nativeGamepadRequested
-      : key === 'nativeGamepadCaptureReady' ? state.nativeGamepadCaptureReady : undefined } },
+      error: noop, info: (tag) => { if (tag === 'GameSession') record('restart-log'); },
+      debug: noop, flush: () => record('log-flush') } }, sourceOverrides,
+    globals: { ...timerEdges, AppStorage: { get: key => key === 'desktopGameProcess' ? isolated : undefined } },
     imports: {
-      '@kit.AbilityKit': { appRecovery: { restartApp: () => record('restart-app') } },
+      '@kit.AbilityKit': {},
       '@kit.BasicServicesKit': { systemDateTime: { TimeType: { ACTIVE: 1 }, getUptime: () => { if(state.clockThrows)throw Error('controlled clock failure'); return state.now; } } },
+      '@ohos.deviceInfo': { default: { deviceType, sdkApiVersion: api } },
       '@kit.ArkUI': { window: { WindowEventType: windowEvents } },
-      'feature_system': { PreferenceManager: class { get gameKeepScreenOn() { return state.keepScreenOn; } } },
+      'feature_system': { PreferenceManager: class { get gameKeepScreenOn() { return state.keepScreenOn; }
+        get desktopNativeGamepad() { record('pad-setting-read'); return state.nativeGamepadRequested === true; } } },
 
       'gamecontrol': gamecontrol,
       'launch': plan, 'libentry.so': { default: native },
       'entry/ProductInputProfile': { ProductInputProfile: { freeze: () => record('product-freeze'),
-        current: () => ({ productKind: 0, runtimeApi: 26, supportsCursorLock: true }), selection: () => ({ desktopWindow: isolated }) } },
+        canChooseNativeGamepad: () => deviceType === '2in1' || api >= 21,
+        current: () => ({ productKind: 0, runtimeApi: api, supportsCursorLock: true }), selection: () => ({ desktopWindow: isolated }) } },
       'entry/ProductGameWindowCoordinator': { ProductGameWindowCoordinator: Window },
       // 只替换Native发回token/释放回执的边缘，Client journal和原lease准入使用完整生产类；不声称consumer Ready。
       '../components/EntrySourceControlClient': { createEntrySourceControlClient: () => {
@@ -199,6 +218,42 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
   return { host, env, calls, state, windows, context, count, run, attach, prepare, module, ends, registry, native, store,
     deviceConnections, deviceMonitor, connectionListeners, publishConnection, mainWindow, windowEvents };
 }
+
+// 同一真实Host验证主动通知，平台只交换状态/唤醒；失焦、抓取与手机兼容分开覆盖。
+{
+  const sdlWire='v=v1;abi=SDL3;slot=LWJGL3;window=SDL3;binding=libSDL3.so;policy=sdl-present-1';
+  for (const [desktop, planWire] of [[true,sdlWire],[true,wire],[false,sdlWire]]) {
+    const f=fixture({isolated:desktop}); const lease=f.attach();
+    f.host.configureProduct(); f.host.prepare(f.store); f.host.bindPlan(planWire); f.host.bindPlan(planWire);
+    f.host.markRunning(); f.host.setFrontendState(lease,true,9);
+    if (desktop && planWire===sdlWire) {
+      assert.equal(f.count('sdl-text-subscribe'),1,'单会话单注册');
+      const wake=f.state.sdlTextCallback;
+      assert.equal(f.host.textInputRuntime.physicalDemandIdentity,'');
+      f.state.sdlTextIdentity='2'; wake();
+      assert.equal(f.host.textInputRuntime.physicalDemandIdentity,'2','无需时钟即可通知打开');
+      f.state.sdlTextIdentity='';
+      assert.equal(f.host.textInputRuntime.readPhysicalDemand(),'','回调直接读取实际需求');
+      wake(); assert.equal(f.host.textInputRuntime.physicalDemandIdentity,'');
+      f.state.sdlTextIdentity='2'; wake();
+      f.host.setFrontendState(lease,false,9);
+      wake(); assert.equal(f.host.textInputRuntime.physicalDemandIdentity,'','SDL请求不能盖掉失焦');
+      f.host.setFrontendState(lease,true,9);
+      assert.equal(f.host.textInputRuntime.physicalDemandIdentity,'2');
+      f.state.grabCallback(true);
+      wake(); assert.equal(f.host.textInputRuntime.physicalDemandIdentity,'','SDL请求不能盖掉抓取');
+      f.host.stop('text-test'); await flush();
+      const reads=f.count('sdl-text-read');
+      wake(); assert.equal(f.count('sdl-text-read'),reads,'旧JS通知不得借退场会话读回状态');
+      assert.equal(f.count('sdl-text-unsubscribe'),1);
+    } else {
+      assert.equal(f.count('sdl-text-subscribe'),0);
+      assert.equal(f.count('text-demand'),0,'桌面非SDL与手机SDL均保留原IME策略');
+      f.host.stop('text-test'); await flush();
+    }
+  }
+}
+console.log('PASS actual Host desktop SDL text-demand subscription, focus/grab fences, and compatible routes');
 
 // 新连接接口须走真实Manager/Runtime/Client，不允许通过补一个恒true reader使旧夹具“通过”。
 // 平台边缘只发布Registry已经产生的原add/remove事件；Native端只记录独立token回执，未承诺ABI消费。
@@ -497,9 +552,50 @@ for (const mode of ['deferred-success', 'deferred-reject', 'synchronous-reject',
 }
 {
   const f = fixture(); f.attach(); f.prepare(); f.host.markRunning(); f.state.throwOn.add('force-exit');
-  await f.host.requestExit(); assert.equal(f.count('force-exit'), 1); assert.equal(f.count('restart-app'), 1);
+  await f.host.requestExit(); assert.equal(f.count('force-exit'), 1);
+  assert.equal(f.count('ui-restart') + f.count('app-restart'), 0, '普通强退故障不能冒充正常退出');
 }
-console.log('PASS real host exit matrix: deferred success/reject, synchronous failure, native ACK failure, duplicates and shared-process restart');
+console.log('PASS real host exit matrix: deferred success/reject, synchronous failure, native ACK failure and duplicates');
+
+// 让真实运行轮询消费Native退出事实。SDK拒绝或交接失效交回Native，避免用force-exit抢跑系统。
+for (const [api, deviceType, pending, failure, requested] of [
+  [20, 'phone', true, '', 'app-restart'],
+  [21, 'phone', true, 'app-restart', 'app-restart'],
+  [22, 'phone', true, '', 'ui-restart'],
+  [22, 'phone', true, 'restart-log', 'ui-restart'],
+  [26, 'phone', true, 'ui-restart', 'ui-restart'],
+  [26, 'phone', true, 'expired', ''],
+  [26, 'phone', false, '', ''],
+  [26, 'tablet', true, '', ''],
+]) {
+  const f = fixture({ api, deviceType }); f.attach(); f.prepare(); f.host.markRunning();
+  f.state.phoneExitPending = pending;
+  if (failure === 'expired') f.state.handoffExpired = true;
+  else if (failure) f.state.throwOn.add(failure);
+  f.state.running = false; f.run(1000); await f.host.requestExit();
+  const qualified = deviceType === 'phone' && pending;
+  assert.equal(f.count('prepare-restart'), qualified ? 1 : 0);
+  assert.equal(f.count('force-exit'), qualified ? 0 : 1);
+  assert.equal(f.count('decline-restart'), failure && failure !== 'restart-log' ? 1 : 0);
+  const requests = f.calls.filter(row => row[0] === 'ui-restart' || row[0] === 'app-restart');
+  assert.deepEqual(requests, requested ? [[requested, { bundleName: 'com.amcl.launcher', abilityName: 'EntryAbility' }]] : []);
+  if (requested) {
+    const flushIndex = f.calls.findIndex(row => row[0] === 'log-flush');
+    const prepareIndex = f.calls.findIndex(row => row[0] === 'prepare-restart');
+    const requestIndex = f.calls.findIndex(row => row[0] === requested);
+    assert.ok(flushIndex < prepareIndex && prepareIndex < requestIndex);
+  }
+}
+{
+  const f = fixture(); f.attach(); f.prepare(); f.host.markRunning();
+  f.state.phoneExitPending = true; f.state.restartPreparation = deferred();
+  const exiting = f.host.requestExit(); await flush();
+  assert.equal(f.count('prepare-restart'), 1);
+  assert.equal(f.count('ui-restart'), 0, '持久日志关闭前不能交给系统结束进程');
+  f.state.restartPreparation.resolve(); await exiting;
+  assert.equal(f.count('ui-restart'), 1);
+}
+console.log('PASS phone menu exit handoff: API20/21 ApplicationContext and API22+ UIAbilityContext, failure release and unrelated exit routes');
 
 // 主动退出尚无Native退出hook时也必须在本地等待期限后尝试ACK。平台请求永不settle、
 // 超时后才成功/拒绝、timer建立/撤销失败分别验证；所有迟到闭包不能重复退出或重开输入。
@@ -699,11 +795,12 @@ for (const [actualWire, expectedRoute] of [[wire, 'mapped'],
   assert.equal(f.host.nativeGamepadRoute().applied, 'mapped');
   f.host.bindPlan(actualWire); f.host.setFrontendState(lease,true,1);
   assert.equal(f.host.nativeGamepadRoute().applied, expectedRoute);
-  assert.equal(f.calls.filter(call=>call[0]==='pad-focus').at(-1)[1], expectedRoute==='native');
+  if (expectedRoute==='native') assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1), ['pad-focus',true,true]);
+  else assert.equal(f.count('pad-capture'),0,'LWJGL2 没有标准出口，保留映射且不启动采集');
   f.state.nativeGamepadRequested=false; f.state.nativeGamepadCaptureReady=false;
   f.run(250);
   assert.equal(f.host.nativeGamepadRoute().requestedNative,true,'本局不能采用新设置替代冻结请求');
-  assert.equal(f.host.nativeGamepadRoute().platformCaptureReady,true,'本局不能从后来平台字段热借另一capture事实');
+  assert.equal(f.host.nativeGamepadRoute().platformCaptureReady,expectedRoute==='native','只有具备实际出口并完成初始化的本局确认采集');
   if(expectedRoute==='native'){
     // Native之后的正式Host没有另一个合法计划/请求写点；不是把任意可造DTO
     // 当成该产品正在发生的回切。真正的resolver contract组合在独立政策测试执行。
@@ -720,11 +817,43 @@ for (const [actualWire, expectedRoute] of [[wire, 'mapped'],
   f.host.bindPlan('v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2');
   f.host.setFrontendState(lease,true,1);
   assert.equal(f.host.nativeGamepadRoute().status,'pending');
-  assert.equal(f.calls.filter(call=>call[0]==='pad-focus').at(-1)[1],false,'映射旧持有未结束不能同时开native焦点');
+  assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1),['pad-focus',false,false],'映射旧持有未结束不能同时公开设备或原生焦点');
   f.state.rejectMappedRetirement=false; f.run(250);
   assert.equal(f.host.nativeGamepadRoute().applied,'native');
   assert.equal(f.calls.filter(call=>call[0]==='pad-focus').at(-1)[1],true);
   f.host.stop('route-test'); await flush();
+}
+// 同一 Host 入口也覆盖手机共享进程、平板两种进程策略。初始化失败、旧平台和关闭时不公开连接。
+for (const [deviceType, isolated, api, requested, ready] of [
+  ['phone',false,21,true,true], ['tablet',true,21,true,true], ['tablet',false,26,true,true],
+  ['phone',false,20,true,true], ['phone',false,26,true,false], ['tablet',true,26,false,true],
+  ['2in1',true,20,true,true]
+]) {
+  const f=fixture({deviceType,isolated,api});
+  f.state.nativeGamepadRequested=requested;
+  f.state.nativeGamepadCaptureReady=ready;
+  const front=f.attach();
+  f.host.configureProduct();
+  f.host.prepare(f.store);
+  assert.equal(f.count('pad-capture'),0);
+  const glfw='v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2';
+  f.host.bindPlan(glfw);
+  const attempted=api>=21 && requested;
+  const applied=attempted && ready;
+  assert.equal(f.host.nativeGamepadRoute().applied,applied?'native':'mapped');
+  assert.equal(f.count('pad-capture'),attempted?1:0);
+  f.state.nativeGamepadRequested=!requested;
+  f.host.setFrontendState(front,true,1);
+  f.host.detach(front);
+  const next=f.attach();
+  f.host.prepare(f.store);
+  f.host.setFrontendState(next,false,1);
+  f.run(250);
+  assert.equal(f.count('pad-capture'),attempted?1:0,'换页和维护不重新注册或读取下一局偏好');
+  if(applied) assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1),['pad-focus',false,true]);
+  f.host.stop('finish'); await flush();
+  if(attempted) assert.deepEqual(f.calls.filter(call=>call[0]==='pad-capture').at(-1),['pad-capture',false]);
+  if(applied) assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1),['pad-focus',false,false]);
 }
 console.log('PASS real Host native route: ABI qualification, frozen preference, actual apply and focus exclusivity');
 
@@ -758,7 +887,10 @@ function frontendRouteScope(hostSource = undefined, retireDuringRead = false) {
     assert.equal(otherLease.id,first.id);
     assert.equal(other.host.nativeGamepadRouteForFrontend(first),undefined,'另一会话相同编号不可借');
     const maintained=f.count('mapped-choice');f.host.detach(second);f.run(250);
-    assert.ok(f.count('mapped-choice')>maintained,'关闭UI观察后必要route维护继续');
+    assert.equal(f.count('mapped-choice'),maintained,'稳定路线不重复应用');
+    // 无前端时模拟来源实际开关失配，必要维护仍须独立恢复本局已确认路线。
+    f.host.gamepad.setMappedOutputEnabled(true);
+    f.run(250);assert.equal(f.host.nativeGamepadRoute().applied,'native');
     other.host.stop('route-read-test');
   }
   f.host.stop('route-read-test');

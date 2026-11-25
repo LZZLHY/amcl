@@ -6,6 +6,8 @@
  * 所有异步回调绑定 accountId 与 epoch，避免切账号或关闭页面后污染另一份编辑状态。
  */
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { ThemeColors, AppIconName, AppLogger, LOG_DOMAIN_ACCOUNT } from 'commons';
 import { AppearanceAsset, AppearanceKind, AppearanceModel, getAccountManager } from 'account';
 import { AppIcon } from './AppIcon';
@@ -36,6 +38,7 @@ export struct OfflineAppearanceEditor {
   @State private error: string = '';
   @State private notice: string = '';
   @State private pendingDeleteId: string = '';
+  private removingAsset_: string = '';
   /** 当前库页签与管理模式属于视图状态，切换时不提交或重置账号外观草稿。 */
   @State private activeKind: AppearanceKind = 'skin';
   @State private managing: boolean = false;
@@ -47,9 +50,65 @@ export struct OfflineAppearanceEditor {
   private alive: boolean = false;
 
   /** 新建或重新绑定时重新加载草稿；耗时内容走异步服务，UI 不同步解码 PNG。 */
-  aboutToAppear(): void { this.alive = true; this.reload_(); }
+  /** 操作引用只在当前账号草稿有效；纹理取自应用库，不接受来源地址。 */
+  private playerEditRef_: string = '';
+  private observedDraft_: string = '';
+
+  private async skillAppearance_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (!this.ready || !this.alive || this.busy) return { 'state': 'busy' };
+    // 已保存的账号修订和仍在界面的草稿是两个对象。人手修改后，旧凭据不能覆盖或关闭该草稿。
+    const current = JSON.stringify([this.accountId, this.revision, this.username, this.selectedSkinId, this.selectedCapeId, this.model]);
+    if (current !== this.observedDraft_) {
+      this.observedDraft_ = current;
+      this.playerEditRef_ = util.generateRandomUUID();
+    }
+    if (method === 'readOfflineAppearance') {
+      const assets = this.skins.concat(this.capes);
+      return { 'state': 'ready', 'editorRef': this.playerEditRef_, 'revision': this.revision,
+        'playerName':this.username,'storedName':this.confirmedName, 'skin': this.selectedSkinId, 'cape': this.selectedCapeId, 'model': this.model,
+        'assets': assets.map((a: AppearanceAsset): SkillFields => ({ 'id': a.id, 'kind':a.kind,
+          'width':a.width,'height':a.height,'used':getAccountManager().isAppearanceAssetUsed(a.id) })) };
+    }
+    if (args['editorRef'] !== this.playerEditRef_ || args['revision'] !== this.revision) return { 'state': 'failed', 'reason': 'staleDraft' };
+    if (this.pendingDeleteId) return { 'state':'needsUser', 'reason':'assetConfirmation' };
+    if (method === 'importAppearanceImage') {
+      const kind = args['kind'];
+      if (kind !== 'skin' && kind !== 'cape') return { 'state': 'failed', 'reason':'kind' };
+      return this.import_(kind as AppearanceKind, method);
+    }
+    if (method === 'requestRemoveAppearanceAsset') {
+      const asset = this.skins.concat(this.capes).find((a: AppearanceAsset): boolean => a.id === args['assetId']);
+      if (!asset || getAccountManager().isAppearanceAssetUsed(asset.id)) return { 'state':'unavailable','reason':'missingOrInUse' };
+      this.changeKind_(asset.kind); this.managing = true;
+      await this.remove_(asset);
+      const epoch = this.epoch;
+      LauncherSkillBus.followUserCondition(method, (): boolean => this.removingAsset_ === asset.id ||
+        (this.alive && this.epoch === epoch && this.pendingDeleteId === asset.id));
+      return { 'state': this.pendingDeleteId === asset.id ? 'needsUser' : 'unknown' };
+    }
+    if (method === 'discardOfflineAppearance') { this.close_(); return { 'state': 'cancelled' }; }
+    if (method !== 'saveOfflineAppearance') return { 'state': 'failed', 'reason': 'unknownOperation' };
+    const name = String(args['playerName']);
+    const skin = String(args['skin']); const cape = String(args['cape']); const model = args['model'];
+    if (!name.trim() || name.length>16 || /[\u0000-\u001f\u007f]/.test(name) || (skin && !this.skins.some((a: AppearanceAsset): boolean => a.id === skin)) ||
+      (cape && !this.capes.some((a: AppearanceAsset): boolean => a.id === cape)) || (model !== 'CLASSIC' && model !== 'SLIM')) {
+      return { 'state':'failed','reason':'invalidDraft' };
+    }
+    const prev = this.revision;
+    this.username = name; this.selectedSkinId = skin; this.selectedCapeId = cape;
+    this.model = this.oldSkin_() ? 'CLASSIC' : model as AppearanceModel;
+    await this.apply_();
+    if (!this.alive || this.error || this.revision <= prev || this.confirmedName !== name.trim()) return { 'state':'unknown' };
+    return { 'state':'ready','playerName':this.confirmedName,'skin':this.selectedSkinId,'cape':this.selectedCapeId,'model':this.model,'revision':this.revision };
+  }
+
+  aboutToAppear(): void {
+    this.alive = true;
+    LauncherSkillBus.bind('offlineAppearance',this,(m: string,a: SkillFields): Promise<SkillFields> => this.skillAppearance_(m,a),(): boolean => this.alive);
+    this.reload_();
+  }
   /** 关闭仅使回调退役，不取消已经由用户确认的共享库导入或账号保存事务。 */
-  aboutToDisappear(): void { this.alive = false; this.epoch++; }
+  aboutToDisappear(): void { LauncherSkillBus.unbind('offlineAppearance',this); this.alive = false; this.epoch++; }
   private onAccountChange_(): void { if (this.alive) this.reload_(); }
 
   /** UIAbilityContext 由主 Ability 统一缓存，文件选择只从当前可用的界面上下文发起。 */
@@ -62,6 +121,7 @@ export struct OfflineAppearanceEditor {
 
   /** 清空上次账号状态后读取当前账号，失败保留返回入口并展示可理解的错误。 */
   private async reload_(): Promise<void> {
+    this.playerEditRef_ = util.generateRandomUUID();
     const epoch = ++this.epoch;
     const id = this.accountId;
     this.ready = false; this.busy = true; this.saving = false;
@@ -163,19 +223,23 @@ export struct OfflineAppearanceEditor {
    * 系统选择器返回后再导入共享库；关闭或切换期间的结果不改变视图草稿。
    * 导入完成并不自动改变任何账号的当前皮肤，用户仍需选择并点击应用。
    */
-  private async import_(kind: AppearanceKind): Promise<void> {
-    if (this.busy) return;
+  private async import_(kind: AppearanceKind, method: string = ''): Promise<SkillFields> {
+    if (this.busy) return { 'state': 'busy' };
     const context = this.context_();
-    if (context === undefined) { this.error = '界面尚未就绪，无法选择文件'; return; }
+    if (context === undefined) { this.error = '界面尚未就绪，无法选择文件'; return { 'state': 'unavailable' }; }
     const epoch = this.epoch, id = this.accountId;
     this.busy = true; this.error = ''; this.notice = ''; this.pendingDeleteId = '';
     try {
+      if (method) LauncherSkillBus.awaitingUser(method);
       const imported = await this.editor.importFile(context, kind);
-      if (!this.current_(epoch, id) || imported === null) return;
+      if (!this.current_(epoch, id)) return { 'state':'unknown' };
+      if (!imported) return { 'state':'cancelled' };
       this.skins = this.editor.list('skin'); this.capes = this.editor.list('cape');
       this.notice = '已加入共享' + (kind === 'skin' ? '皮肤库' : '披风库') + '，选择后可应用到此账号';
+      return { 'state':'ready','assetId':imported.id,'kind':kind };
     } catch (error) {
       if (this.current_(epoch, id)) this.error = (error as Error).message;
+      return { 'state':'failed','reason':'importFailure' };
     } finally {
       if (this.current_(epoch, id)) this.busy = false;
     }
@@ -198,6 +262,7 @@ export struct OfflineAppearanceEditor {
     const epoch = this.epoch, id = this.accountId;
     this.busy = true; this.error = ''; this.notice = '';
     try {
+      this.removingAsset_ = asset.id;
       await this.editor.removeAsset(asset.id);
       if (!this.current_(epoch, id)) return;
       if (this.selectedSkinId === asset.id) this.selectedSkinId = '';
@@ -207,6 +272,7 @@ export struct OfflineAppearanceEditor {
     } catch (error) {
       if (this.current_(epoch, id)) this.error = (error as Error).message;
     } finally {
+      this.removingAsset_ = '';
       if (this.current_(epoch, id)) { this.busy = false; this.pendingDeleteId = ''; }
     }
   }

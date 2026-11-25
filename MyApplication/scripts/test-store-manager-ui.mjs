@@ -115,7 +115,7 @@ collectEvents(indexComponent);
 assert.equal(events.filter(event => event.name === 'onResourcesChanged').length, 1);
 assert.equal(events.filter(event => event.name === 'onSelectVersion').length, 2, '首页与版本Sheet均使用实际接线');
 assert.equal(events.filter(event => event.name === 'onVersionIsolationChange').length, 1);
-const sourceMethods = ['forceStoreSourceRecheck_', 'onVersionFilesChanged_', 'selectManagedVersion_',
+const sourceMethods = ['forceStoreSourceRecheck_', 'onVersionFilesChanged_', 'selectManagedVersion_', 'saveLauncherChange_',
   'changeManagedIsolation_', 'observeExportActivities_', 'refreshStoreManager_', 'checkStoreVersions_'].map(name => {
   const member = indexComponent.members.find(value => value.name?.getText(indexAst) === name);
   assert(member, name); return member.getText(indexAst);
@@ -148,7 +148,10 @@ function sourceChangeFixture(store = true) {
     storeManagerAction_: 'export', storeScanError_: '', mcVersion: 'selected', versionIsolation: true,
     availableVersions: ['selected'], orphanVersionDirs: [], context: { filesDir: '/app' },
     registry: { listAll: () => [] }, mcRoot: () => observations.root,
-    scanInstalledModsCount() { observations.stats++; }, savePreferences() { observations.preferences++; },
+    scanInstalledModsCount() { observations.stats++; }, safeToast_() {},
+    getPrefManager_() { return this.testPrefs; }, testPrefs:{ async saveLauncherFields(values) {
+      Object.assign(this,values); observations.preferences++;
+    } },
     // 本套件只测商店源核验；真实JDK计算由test-home-version-state直接执行现有方法验证。
     updateJdkReadyState() {},
   });
@@ -190,6 +193,9 @@ for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
   const normal = sourceChangeFixture(false);
   normal.page[`invokeEvent${eventIndex}`](event.name === 'onVersionIsolationChange' ? false : 'other');
   await settleSource(); assert.equal(normal.reads.length, 0, 'default不引入导出源扫描');
+  if (event.name === 'onVersionIsolationChange') {
+    assert.equal(normal.observations.stats, 1, '普通产品切换隔离后立即重新读取首页模组数');
+  }
   assert.equal(normal.page.storeCheckGeneration_, 20, 'default不改变store核验状态');
 }
 {

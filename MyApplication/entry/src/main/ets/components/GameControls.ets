@@ -14,12 +14,9 @@ import { EditorPalette } from './TouchEditorTheme'
  */
 import testNapi from 'libentry.so';
 import { ControlSchemaEntry, ControlSchemaMsg } from 'libentry.so';
-import { EntryTouchSession, EntryTouchVisual, EntryTouchObservationSnapshot } from './EntryTouchSession';
+import { EntryTouchSession, EntryTouchVisual } from './EntryTouchSession';
 import { RuntimeTouchLayout, RuntimeTouchEntry, runtimeTouchContext, projectRuntimeTouchLayout,
   runtimeTouchControlVisible, layoutCapabilityIssue, RuntimeTouchOverlay, appendRuntimeTouchOverlay } from 'gamecontrol';
-import { getGameSessionHost } from '../runtime/GameSessionHost'
-import { EntryInputObservationResult, EntryInputObservationRegistration, registerEntryInputObservation,
-  unregisterEntryInputObservation } from './EntryInputObservationPort'
 import { componentUtils } from '@kit.ArkUI';
 import { TouchSurfaceController, TouchSurfaceCandidate } from './TouchSurfaceController';
 import { EntryTouchModalLease, acquireEntryTouchModal, releaseEntryTouchModal,
@@ -260,9 +257,6 @@ export struct GameControls {
   private observationGeneration: number = 0
   /** 每个原组件实例最多64条输入入口阶段记录；无@State，不驱动呈现或输入资格。 */
   private imeRouteTraceCount: number = 0
-  private observationRegistration: EntryInputObservationRegistration | undefined = undefined
-  private observationResumeTeaching: boolean = false
-  private feedbackClearComplete: boolean = true
   @State private guiState: GameGuiState=new GameGuiState()
   @State private mouseOpen: boolean=false
   @State private guiHint: boolean=false
@@ -571,8 +565,8 @@ export struct GameControls {
   /** 多摇杆方案只移动实际被native认领的那个控件，索引按同一可见schema顺序解释。 */
   private usesNativeJoystick(item: ControlItem): boolean {
     if (!this.cOwnsJoystick() || this.touchVisual.joystickIndex < 0) return false
-    const controls: ControlItem[] = this.displayedControls().filter((control: ControlItem): boolean => this.isControlVisible(control))
-    return controls.findIndex((control: ControlItem): boolean => control.id === item.id) === this.touchVisual.joystickIndex
+    // 已展示布局的 entries 与原生 schema 同序，包含展开的子控件；直接读回已认领的下标。
+    return this.runtimeLayout.entries[this.touchVisual.joystickIndex]?.item.id === item.id
   }
   @Prop @Watch('onGrabChanged') isGrabbed: boolean = false
   @Prop @Watch('onPageActiveChanged') pageActive: boolean = true
@@ -588,11 +582,11 @@ export struct GameControls {
 
   // 编辑模式
   @State editing: boolean = false
-  /** 同一模态下先选择任务，再挂载唯一编辑器；两个界面不共享未保存草稿。 */
-  @State private editorMode: string = 'choose'
+  /** 设置目录与手感使用同一份草稿；切入其他工具时仍由宿主持有游戏输入隔离。 */
+  @State private editorMode: string = 'settings'
   @State private editorSettingsProfile: string = ''
   @State private editorSettingsSection: string = ''
-  @State private editorChoiceBusy: boolean = false
+  @State private editorRecoveryBusy: boolean = false
   /** 读取草稿和取得输入暂停期间也独占请求，避免连续点击并发打开编辑覆盖层。 */
   private editorOpening: boolean = false
   /** 本组件持有的编辑租约与暂停状态；只释放自己取得的那一份，不干扰子编辑器租约。 */
@@ -1095,7 +1089,7 @@ export struct GameControls {
     } else if (lease!==undefined) this.feedbackRegistrationWarned=false
   }
 
-  /** 订阅仅捕获本组件原资源；恢复第一次当前快照只重设教学基线，不补旧进度/输入。 */
+  /** 视觉订阅绑定原组件与触控来源，第一次有效快照建立本次教学基线。 */
   private subscribeTouchObservation_(): void {
     const appearance: number=this.appearanceGeneration
     const generation: number=this.observationGeneration
@@ -1108,58 +1102,8 @@ export struct GameControls {
       if (baseline) {
         baseline=false; this.touchGuide.baseline(state.guide)
       }
-      // 原教学只在当前原Source提供真实guide快照时恢复；桥暂缺时保留等待，不把
-      // 观察关闭期间的旧增量追认为成果，也不写markSeen/markClosed等用户持久偏好。
-      if (this.observationResumeTeaching && state.guide.available) {
-        this.observationResumeTeaching=false; this.touchGuide.baseline(state.guide)
-        this.tutorialOpen=true; this.syncGuideObservation()
-      }
       this.syncGuideBounds(); this.maybeOpenLearning(); this.observeLearning()
     })
-  }
-
-  /**
-   * 只操作原显示观察；不动Source、pageActive、schema、准入、按键记录和持久偏好。
-   * 先撤观察代再外部注销，释放失败也围住旧闭包。on只接当前快照及未来反馈边沿，
-   * broker没有当前按下基线接口，故清旧高亮并明确UnknownUntilNextEdge，不补造PRESS。
-   */
-  private operateTouchObservation_(action: string): EntryInputObservationResult {
-    if (action!=='read' && (action==='on')!==this.observationEnabled) {
-      if (this.observationGeneration>=Number.MAX_SAFE_INTEGER) return this.touchObservationResult_('IdentityExhausted')
-      this.observationGeneration++; this.observationEnabled=action==='on'
-      if (!this.observationEnabled) {
-        this.touchSession.unsubscribeVisual()
-        this.observationResumeTeaching=this.tutorialOpen
-        this.tutorialOpen=false; this.guideScrollRequested=false; this.syncGuideObservation(); this.syncGuideBounds()
-        const lease: EntryControlFeedbackLease | undefined=this.feedbackLease
-        this.feedbackLease=undefined
-        try { this.feedbackClearComplete=lease===undefined || releaseEntryControlFeedback(lease) }
-        catch (_) { this.feedbackClearComplete=false }
-        this.btnVisMap.forEach((state: BtnVisState): void => { state.pressed=false }); this.btnPressedVer++
-        this.touchVisual=new EntryTouchVisual()
-      } else {
-        this.subscribeTouchObservation_(); this.nextFeedbackAttempt=0; this.ensureTouchFeedback_()
-        // 受控Want只恢复订阅。当前快照由下一次原16ms时钟投递，不直接GUI/JNI读取或额外tick。
-      }
-    }
-    return this.touchObservationResult_(this.observationEnabled ? 'Observing' :
-      (this.feedbackClearComplete ? 'ObserversRetired' : 'ObserversRetiredNativeClearUnknown'))
-  }
-
-  /** 读取原计数与资格，不推进publication/Native维护或构造新输入；字段用于固定沙箱回读。 */
-  private touchObservationResult_(outcome: string): EntryInputObservationResult {
-    const source: EntryTouchObservationSnapshot=this.touchSession.observationSnapshot()
-    const result: EntryInputObservationResult=new EntryInputObservationResult()
-    result.outcome=outcome; result.appearance=this.appearanceGeneration; result.enabled=this.observationEnabled
-    result.activity=this.observationRegistration?.activity ?? 0
-    result.feedbackLease=this.feedbackLease?.id ?? 0; result.feedbackClearComplete=this.feedbackClearComplete
-    result.visualSubscribed=source.visualSubscribed; result.guiSubscribed=source.guiSubscribed
-    result.geometrySubscribed=source.geometrySubscribed; result.sourceCurrent=source.sourceCurrent
-    result.timerActive=source.timerActive; result.guiReads=source.guiReads
-    result.geometryDeliveries=source.geometryDeliveries; result.visualDeliveries=source.visualDeliveries
-    result.gyroStatus=source.gyroStatus; result.pageActive=this.pageActive; result.schemaActive=this.schemaActive
-    result.publicationToken=this.uiPublicationToken
-    return result
   }
 
   /** Native安装后才请求同一候选呈现；这里只改变UI快照，didLayout确认以前所有新意图仍受fence。 */
@@ -1429,29 +1373,17 @@ export struct GameControls {
     })
     this.subscribeTouchObservation_()
     const appearance: number=expectedAppearanceGeneration
-    const observationHost=getGameSessionHost()
-    // 无路由ID时Host可先准备activity0，随后正常启动才bindActivity。只在原心跳上
-    // 等原Host实际绑定后登记，不另开时钟、不取得新Host，也不凭Want创造活动/来源。
-    const registerObservation: () => void=(): void => {
-      if (this.observationRegistration!==undefined || !this.mounted || !this.pageActive ||
-        appearance!==this.appearanceGeneration || session!==this.touchSession || !session.hasCurrentSource()) return
-      this.observationRegistration=registerEntryInputObservation(observationHost,appearance,
-        (action: string): EntryInputObservationResult | undefined => {
-          if (!this.mounted || appearance!==this.appearanceGeneration || session!==this.touchSession || !session.hasCurrentSource()) return undefined
-          return this.operateTouchObservation_(action)
-        })
-    }
-    registerObservation()
     this.touchSession.setHeartbeat((): void => {
       if (!this.mounted || appearance!==this.appearanceGeneration || session!==this.touchSession) return
-      this.reconcileTouchSurface_(); registerObservation()
+      this.reconcileTouchSurface_()
     })
     this.registerRegions()
     this.profileVer++
     // 进度读取也冻结本次实际控制器；同组件重建不能让已捕获的旧 reader 借后来
     // touchSurface 报告新 token/operation。正常退订之外，原控制器 dispose 仍给出 Retired。
     const configurationSurface: TouchSurfaceController = this.touchSurface
-    store.addInputConfigurationListener(this.configurationListener, 'touch-controls', () => configurationSurface.status())
+    store.addInputConfigurationListener(this.configurationListener, 'touch-controls',
+      (scratch?: InputConfigurationProgress): InputConfigurationProgress => configurationSurface.status(scratch))
     this.subscribeConfigurationStatus_(store)
     // 监听物理设备插拔。⚠️ 这里曾写「按钮显隐随插拔实时变化」——**不成立**，
     // `this.capability` 是只写不读的（理由与三句假注释的原文见该字段处）。
@@ -1577,7 +1509,6 @@ export struct GameControls {
     if (groupRegistration.length > 0) {
       try { testNapi.onTouchGroupsChanged(null,groupRegistration) } catch (_) {}
     }
-    unregisterEntryInputObservation(this.observationRegistration); this.observationRegistration=undefined
     this.observationEnabled=false; this.observationGeneration++
     this.mounted = false
     this.touchSurface.dispose()
@@ -2129,7 +2060,8 @@ export struct GameControls {
       this.desiredProfile = cloneLayout(this.profile)
       this.profileVer++
       this.onLayoutChanged()
-      this.editorMode='choose'; this.editorSettingsProfile=''; this.editorSettingsSection=''
+      this.editorMode='settings'; this.editorSettingsProfile=''; this.editorSettingsSection=''
+      this.editorRecoveryBusy=false
       this.editing = true
       this.syncGuideBounds()
       opened = true
@@ -2225,10 +2157,12 @@ export struct GameControls {
     }
   }
 
-  /** 子编辑器进入阶段失败不是保存成功；关闭覆盖层并让用户看到原始失败原因。 */
-  private editorInitializationFailed_(message: string): void {
+  /** 子页尚未就绪时由宿主恢复入场快照；回滚未确认前保留编辑隔离和重试入口。 */
+  private async editorInitializationFailed_(message: string): Promise<void> {
+    if (!this.mounted || !this.editing) return
     this.showEditorError_(message)
-    this.finishEditor_(null)
+    this.editorMode='recovery'
+    await this.recoverEditor_()
   }
 
   /** 系统按钮的显示文字：visibility 随档位变化（全部/仅菜单/显示）；其余用控件自身标签。 */
@@ -3444,60 +3378,89 @@ export struct GameControls {
       .onTouch((event: TouchEvent): void => { event.stopPropagation() })
   }
 
-  /** 选择页没有子编辑器替宿主结束事务，必须确认取消后才能释放最后的租约。 */
-  private async closeEditorChoice_(): Promise<void> {
-    if (!this.mounted || !this.editing || this.editorMode!=='choose' || this.editorChoiceBusy) return
+  /** 恢复成功才发布原方案并恢复输入，重复点击和销毁后的旧回执均不能结束新会话。 */
+  private async recoverEditor_(): Promise<void> {
+    if (!this.mounted || !this.editing || this.editorMode!=='recovery' || this.editorRecoveryBusy) return
     const appearance: number=this.appearanceGeneration
-    this.editorChoiceBusy=true
+    this.editorRecoveryBusy=true
     try {
       if (!(await getLayoutStore().restoreEditorTransaction())) throw new Error('原编辑事务恢复未确认')
       if (this.mounted && appearance===this.appearanceGeneration) this.finishEditor_(null)
-    } catch(error) { this.showEditorError_('关闭操控菜单失败：'+(error as Error).message) }
-    finally { if (appearance===this.appearanceGeneration) this.editorChoiceBusy=false }
+    } catch(error) { this.showEditorError_('恢复设置失败：'+(error as Error).message) }
+    finally { if (appearance===this.appearanceGeneration) this.editorRecoveryBusy=false }
   }
 
-  /** 游戏中复用同一隔离租约；选择任务不写盘，关闭选择页也不产生方案副本。 */
+  /** 手感页已完成草稿处置才回调。分辨率不编辑方案，进入按键布局时才建立下一份快照。 */
+  private openSettingsTool_(tool: string): void {
+    if (!this.mounted || !this.editing || this.editorMode!=='settings') return
+    if (tool==='resolution' && this.allowLiveResolution) this.editorMode='resolution'
+    if (tool==='layout') {
+      getLayoutStore().beginEditorTransaction()
+      this.editorMode='layout'
+    }
+  }
+
+  /** 离开分辨率回到设置目录、具体分类或摆键画布；比例回执仍由原来的游戏会话管理。 */
+  private leaveResolutionFor_(section: string): void {
+    if (!this.mounted || !this.editing || this.editorMode!=='resolution' || !this.allowLiveResolution) return
+    if (section==='layout') {
+      getLayoutStore().beginEditorTransaction()
+      this.editorMode='layout'
+    } else {
+      this.returnToSettings_(section==='home' ? '' : section)
+    }
+  }
+
+  /** 旧子页提交或回滚以后，以此刻的活动方案作为新草稿基线，宿主模态保持不动。 */
+  private returnToSettings_(section: string, profileName: string = ''): void {
+    getLayoutStore().beginEditorTransaction()
+    this.editorSettingsProfile=profileName || getLayoutStore().getActiveProfile().name
+    this.editorSettingsSection=section
+    this.editorMode='settings'
+  }
+
+  /** 设置和两个工具一次只挂一个；所有路径共享同一游戏模态和当前已确认方案。 */
   @Builder
   EditorOverlay() {
-    if (this.editorMode==='choose') {
-      Scroll() {
+    if (this.editorMode==='recovery') {
       Column({space:12}) {
-        Text('操控').fontSize(20).fontColor(this.palette.text)
-        Button('编辑按键布局').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='layout' })
-        Button('手感与输入').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='settings' })
-        if (this.allowLiveResolution) {
-          Button('游戏分辨率').fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).height(48).width('100%').onClick((): void => { this.editorMode='resolution' }).id('open-game-resolution')
-        }
-        Button('关闭').fontColor(this.palette.text).backgroundColor(this.palette.surface).height(48).width('100%').onClick((): void => { this.closeEditorChoice_() })
-      }.padding(20).width('100%')
-      }.width(Math.min(360,this.compWidth-24)).constraintSize({maxHeight:this.compHeight*0.9})
-        .backgroundColor(this.palette.panel).borderRadius(16).enabled(!this.editorChoiceBusy)
+        Text('正在恢复游戏设置').fontSize(20).fontColor(this.palette.text)
+        Button('重试返回游戏').height(44).enabled(!this.editorRecoveryBusy)
+          .onClick((): void => { this.recoverEditor_() })
+      }.padding(20).backgroundColor(this.palette.panel).borderRadius(16)
     } else if (this.editorMode==='resolution') {
       if (this.allowLiveResolution) {
         GameResolutionPanel({ palette: this.palette, screenWidth: this.compWidth, screenHeight: this.compHeight,
-          onDone: (): void => { this.editorMode='choose' } })
+          profileName:this.editorSettingsProfile || this.profile.name,
+          onNavigate:(section: string): void => { this.leaveResolutionFor_(section) },
+          onReturnGame:(): void => { this.finishEditor_(null) },
+          onDone: (): void => { this.leaveResolutionFor_('home') } })
       }
     } else if (this.editorMode==='settings') {
       InputSettingsEditor({palette:this.palette,targetProfileName:this.editorSettingsProfile || this.profile.name,screenWidth:this.compWidth,screenHeight:this.compHeight,
-        initialSection:this.editorSettingsSection,
+        initialSection:this.editorSettingsSection,inGameSettings:true,allowLiveResolution:this.allowLiveResolution,
+        onOpenGameTool:(tool: string): void => { this.openSettingsTool_(tool) },
         resolvedActionKeys:this.touchSession.actionKeys(),gyroscopeStatus:this.touchSession.gyroscopeStatus(),
         onDone:(result: LayoutProfile | null): void => { this.finishEditor_(result) },
         onInitializationFailed:(message: string): void => { this.editorInitializationFailed_(message) }})
-    } else {
-      LayoutEditor({palette:this.palette,targetProfileName:this.profile.name,canRestoreGroups:true,
+    } else if (this.editorMode==='layout') {
+      LayoutEditor({palette:this.palette,targetProfileName:this.editorSettingsProfile || this.profile.name,canRestoreGroups:true,
         screenWidth:this.compWidth,screenHeight:this.compHeight,gameGui:this.guiState,
         onOpenSettings:(result: LayoutProfile | null,section: string): void => {
           // 原布局已确认结束，宿主模态继续持有；新检查点只覆盖接下来的设置任务。
-          const store=getLayoutStore(); store.beginEditorTransaction()
-          this.editorSettingsProfile=(result ?? store.getActiveProfile()).name
-          this.editorSettingsSection=section; this.editorMode='settings'
+          this.returnToSettings_(section,result?.name ?? '')
         },
         onRestoreGroups:(): void => {
           // 这是用户新发起的恢复意图，必须舍弃上次未知回执的序号；维护循环仍重试自己的原身份。
           this.groupRestoreRequested=true
           this.groupRestoreSequence=''
         },
-        onDone:(result: LayoutProfile | null): void => { this.finishEditor_(result) },
+        onDone:(result: LayoutProfile | null): void => {
+          // 摆键取消后回到设置，保存才发布新布局并回游戏；原子页已经归还自己的租约。
+          if (!this.mounted || !this.editing || this.editorMode!=='layout') return
+          if (result!==null) this.finishEditor_(result)
+          else this.returnToSettings_('')
+        },
         onInitializationFailed:(message: string): void => { this.editorInitializationFailed_(message) }})
     }
   }

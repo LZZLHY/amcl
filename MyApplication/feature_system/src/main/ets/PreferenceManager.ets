@@ -11,7 +11,7 @@ import { ThemeMode, ThemeAccent, ThemeSelection, THEME_SELECTION_KEY,
   decodeThemeSelection, encodeThemeSelection, normalizeThemeMode, normalizeThemeAccent } from 'commons';
 import { DockLightMode, normalizeDockLightMode } from 'commons';
 import { ImmersiveLightPreferences, migrateImmersiveLightPreferences,
-  decodeImmersiveLightPreferences, encodeImmersiveLightPreferences } from 'commons';
+  validImmersiveLightPreferences, decodeImmersiveLightPreferences, encodeImmersiveLightPreferences } from 'commons';
 import { SUPPORTED_JDK_VERSION, isJdkSlotVersion, JDK_AUTO } from 'commons';
 import { DEFAULT_GAME_LANGUAGE, normalizeGlobalGameLanguage } from 'commons';
 import { formatError } from 'commons';
@@ -19,6 +19,16 @@ import { normalizeResolutionPreference } from 'commons';
 import { DEFAULT_PHONE_SHEET_HEIGHT_PERCENT, PHONE_SHEET_HEIGHT_STORAGE_KEY, normalizePhoneSheetHeightPercent } from 'commons';
 
 const TAG = 'PreferenceManager'
+const LAUNCHER_FIELD_DEFAULTS: Record<string, LaunchPreferenceValue> = {
+      'mcVersion':'1.20.4', 'versionOrder':'', 'useNewWindow':false, 'versionIsolation':true, 'mcXmx':0,
+      'virtualMemoryMode':false, 'jdkVersion':JDK_AUTO, 'jdkSource':'auto', 'jdkChannel':'stable',
+      'jdkAutoCheck':true, 'jdkWebEnabled':false, 'jdkLastCheck':0, 'mcSource':'auto', 'modSource':'auto',
+      'gameLanguage':DEFAULT_GAME_LANGUAGE, 'ohosFrameRateCap':0, 'ohosFixedRefreshRate':0,
+      'cacheRemoteMeta':true, 'accelDownload':false, 'mcStorageLocation':'sandbox',
+      'gameKeepScreenOn':true,'tabletIndependentGameProcess':true,
+      'glRenderer':'mobileglues','graphicsProfileExplicit':false,'devRendererOverride':''
+    };
+
 const PREF_NAME = 'amcl_settings'
 const OHOS_FRAME_RATE_CAP_MIN: number = 30
 const OHOS_FRAME_RATE_CAP_MAX: number = 240
@@ -41,6 +51,7 @@ class ImmersiveLightWriteState {
  * 对象，旧异步续体一直持原对象；普通组件重建/manager重建不清掉在途事务或磁盘未知态。
  */
 class FrozenSettingsWriteState {
+  absent: Set<string> = new Set<string>();
   tail: Promise<void> = Promise.resolve();
   originals: Map<string, LaunchPreferenceValue> = new Map<string, LaunchPreferenceValue>();
 }
@@ -57,6 +68,7 @@ class StoreDebugWriteState {
  * JVM字段；普通JDK/语言void写入口据此保留该字段，不扩大冻结输入设置的允许键集合。
  */
 class ResolutionWriteState {
+  choiceFields: Map<string,string> = new Map<string,string>();
   tail: Promise<void> = Promise.resolve();
   originals: Map<string, LaunchPreferenceValue> = new Map<string, LaunchPreferenceValue>();
   jvmKeys: Set<string> = new Set<string>();
@@ -122,8 +134,8 @@ export class PreferenceManager {
   private static phoneSheetHeightOwners: Map<string, PhoneSheetHeightWriteState> = new Map<string, PhoneSheetHeightWriteState>();
   private phoneSheetHeightWrites: PhoneSheetHeightWriteState | undefined = undefined;
 
-  /** 只读已确认值；保存期间不把Preferences的临时缓存当下局可采用的选择。 */
-  get desktopNativeGamepad(): boolean { return this.readFrozenSetting_('desktopNativeGamepad', false) as boolean; }
+  /** 各设备共用已有偏好键；仅确认的布尔 true 能开启原生输入，缺项或损坏值沿用键鼠映射。 */
+  get desktopNativeGamepad(): boolean { return this.readFrozenSetting_('desktopNativeGamepad', false) === true; }
 
   private pref: LaunchPreferenceStore;
   private readonly preferencesDirectory: string;
@@ -201,13 +213,15 @@ export class PreferenceManager {
   }
 
   /**
-   * 仅保存原amcl_settings中的两个已存在字段。先在原owner队列中读确认基线，再put和await
+   * 保存设备输入偏好和用户在前台确认的隐私选择。先在原owner队列中读确认基线，再put和await
    * flush；失败只回滚本键，不覆盖另一键。回滚未确认时传播“磁盘未知”，保原基线供显式
    * 重试；后继事务仍串行，不能普通mount清墓碑或把旧任务接到后来owner。这个Promise
    * 只证明持久保存，不激活本局的Native手柄或已冻结交互路线。
    */
   private saveFrozenSetting_(key: string, value: LaunchPreferenceValue, fallback: LaunchPreferenceValue): Promise<void> {
-    if (key !== 'desktopNativeGamepad' && key !== 'desktopInteraction') return Promise.reject(new Error('不是本次冻结设置字段'));
+    if (key !== 'desktopNativeGamepad' && key !== 'desktopInteraction' && key !== 'privacyAgreed') {
+      return Promise.reject(new Error('不是本次确认的设置字段'));
+    }
     const state: FrozenSettingsWriteState | undefined = this.frozenSettings;
     if (ProcessPreferences.isGameProcess()) return Promise.reject(new Error('请在启动器设置中修改本项设置'));
     if (state === undefined) return Promise.reject(new Error('无法确认设置存储目录，请重新打开启动器'));
@@ -254,18 +268,206 @@ export class PreferenceManager {
   }
 
   // ===== 基础读写 =====
+  /** 在途刷盘与磁盘回滚未知期间保留旧读屏障，但不能向机器把屏障值声明为已查实的磁盘结果。 */
+  launcherPreferencesConfirmed(): boolean { return this.frozenSettings !== undefined && this.frozenSettings.originals.size === 0; }
+  versionPreferencesConfirmed(version: string): boolean {
+    return this.resolutionWrites !== undefined && !this.resolutionWrites.originals.has('verLaunch.'+version);
+  }
+  /** 仅对明确缺键采用产品默认值。读拒绝、类型或数据损坏、事务待定均传播给接口层。 */
+  private readRawIfPresent_(key: string): LaunchPreferenceValue | undefined {
+    if (!this.frozenSettings || this.frozenSettings.originals.has(key) || this.resolutionWrites?.originals.has(key)) {
+      throw new Error('偏好事务待确认');
+    }
+    // LaunchPreferenceStore 没有 hasSync。两个不同缺省只会在真正缺键时分别原样返回；
+    // 已存 false 会在两次读取中都得到 false，已存空串不会被误认作键不存在。
+    const first=this.pref.getSync(key,false);
+    if (first!==false) return first;
+    const second=this.pref.getSync(key,true);
+    if (second===true) return undefined;
+    if (second!==false) throw new Error('偏好读取期间已变化');
+    return false;
+  }
+
+  private strictRaw_(key: string, fallback: LaunchPreferenceValue): LaunchPreferenceValue {
+    const existing=this.readRawIfPresent_(key);
+    if (existing === undefined) return fallback;
+    if (typeof existing !== typeof fallback) throw new Error('偏好存储类型无效');
+    return existing;
+  }
+
+  strictLauncherField(key: string): LaunchPreferenceValue {
+    const extra: Record<string, LaunchPreferenceValue> = {'customJvmArgs':'','resolutionScalePercent':0,'appUpdateChannel':'stable',
+      'desktopNativeGamepad':false,'desktopInteraction':'auto','modMicrophoneEnabled':false};
+    const defaults = LAUNCHER_FIELD_DEFAULTS;
+    if (!Object.keys(defaults).includes(key) && !Object.keys(extra).includes(key)) throw new Error('未知设置项');
+    if ((key === 'gameKeepScreenOn' && PreferenceManager.gameKeepScreenOnBeforeSave.has(this.preferencesDirectory)) ||
+      (key === 'customJvmArgs' && this.customJvmArgsWrites?.original !== undefined) ||
+      (key === 'modMicrophoneEnabled' && this.microphoneWrites?.original !== undefined) ||
+      (key === 'appUpdateChannel' && (this.appUpdateChannelWrites?.originalChannel !== undefined || (this.appUpdateChannelWrites?.selectionPending ?? 0) > 0))) throw new Error('设置尚未确认');
+    const fallback = Object.keys(defaults).includes(key) ? defaults[key] : extra[key];
+    const value = this.strictRaw_(key,fallback);
+    const choices: Record<string,string[]> = {'mcSource':['auto','official','mirror'],'modSource':['auto','official','mcim'],
+      'jdkSource':['auto','github','gitee','web','mirror'],'jdkChannel':['stable','preview'],'appUpdateChannel':['stable','preview'],
+      'mcStorageLocation':['sandbox','external'],'desktopInteraction':['auto','touch','desktop']};
+    if ((typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) ||
+      (choices[key] && !choices[key].includes(value as string)) ||
+      (key === 'jdkVersion' && value !== JDK_AUTO && !isJdkSlotVersion(value as string)) ||
+      (key === 'gameLanguage' && normalizeGlobalGameLanguage(value as string) !== value) ||
+      (key === 'ohosFrameRateCap' && this.normalizeOhosFrameRateCap(value as number) !== value) ||
+      (key === 'ohosFixedRefreshRate' && this.normalizeOhosFixedRefreshRate(value as number) !== value) ||
+      (key === 'resolutionScalePercent' && value !== 0 && normalizeResolutionPreference(value as number) !== value)) throw new Error('偏好值无效');
+    return value;
+  }
+
+  strictVersionOrder(): string[] {
+    const stored = this.readRawIfPresent_('versionOrder');
+    if (stored === undefined) return [];
+    if (typeof stored !== 'string') throw new Error('版本顺序存储类型无效');
+    const value = JSON.parse(stored) as Object;
+    if (!Array.isArray(value) || !value.every((item: Object): boolean => typeof item === 'string' && item.length > 0) ||
+      new Set<string>(value as string[]).size !== value.length) throw new Error('版本顺序记录损坏');
+    return value as string[];
+  }
+
+  strictVersionOverride(version: string): VersionLaunchOverride {
+    if (!version || !this.versionPreferencesConfirmed(version)) throw new Error('实例设置未确认');
+    const stored = this.readRawIfPresent_('verLaunch.'+version);
+    if (stored === undefined) return this.defaultVersionOverride();
+    return this.decodeStrictVersion_(stored);
+  }
+
+  private decodeStrictVersion_(stored: LaunchPreferenceValue): VersionLaunchOverride {
+    if (typeof stored !== 'string' || !stored) throw new Error('实例设置格式损坏');
+    const v = JSON.parse(stored) as Record<string,Object>;
+    if (!v || typeof v !== 'object' || Array.isArray(v) ||
+      (v['xmx'] !== undefined && (typeof v['xmx'] !== 'number' || !Number.isSafeInteger(v['xmx'] as number) || (v['xmx'] as number)<0)) ||
+      (v['renderScalePercent'] !== undefined && (typeof v['renderScalePercent'] !== 'number' ||
+        normalizeResolutionPreference(v['renderScalePercent'] as number) !== v['renderScalePercent'])) ||
+      (v['jdkVersion'] !== undefined && (typeof v['jdkVersion'] !== 'string' ||
+        (v['jdkVersion'] !== '' && v['jdkVersion'] !== JDK_AUTO && !isJdkSlotVersion(v['jdkVersion'] as string)))) ||
+      (v['customJvmArgs'] !== undefined && typeof v['customJvmArgs'] !== 'string') ||
+      (v['gameLanguage'] !== undefined && (typeof v['gameLanguage'] !== 'string' ||
+        (v['gameLanguage'] !== '' && normalizeGlobalGameLanguage(v['gameLanguage'] as string) !== v['gameLanguage'])))) {
+      throw new Error('实例偏好记录损坏');
+    }
+    return this.versionOverrideForWrite_(stored);
+  }
+
+  strictTheme(): ThemeSelection {
+    if (this.themeSelectionWrites?.original !== undefined) throw new Error('主题尚未确认');
+    const raw=this.readRawIfPresent_(THEME_SELECTION_KEY);
+    if (raw===undefined) {
+      const legacy=this.strictRaw_('themeMode',ThemeMode.SYSTEM) as number;
+      if (normalizeThemeMode(legacy)!==legacy) throw new Error('旧主题值无效');
+      return new ThemeSelection(normalizeThemeMode(legacy));
+    }
+    if (typeof raw!=='string') throw new Error('主题记录类型无效');
+    const v=JSON.parse(raw) as ThemeSelection;
+    if (!v || v.version!==1 || typeof v.mode!=='number' || normalizeThemeMode(v.mode)!==v.mode ||
+      typeof v.accent!=='string' || normalizeThemeAccent(v.accent)!==v.accent) throw new Error('主题记录损坏');
+    return v;
+  }
+
+  strictSheetHeight(): number {
+    if(this.phoneSheetHeightWrites?.original!==undefined) throw new Error('面板高度未确认');
+    const value=this.strictRaw_(PHONE_SHEET_HEIGHT_STORAGE_KEY,DEFAULT_PHONE_SHEET_HEIGHT_PERCENT) as number;
+    if(normalizePhoneSheetHeightPercent(value)!==value) throw new Error('面板高度损坏');
+    return value;
+  }
+
+  strictImmersiveLight(): ImmersiveLightPreferences {
+    if(this.immersiveLightWrites?.original!==undefined) throw new Error('光感设置未确认');
+    const raw=this.readRawIfPresent_(IMMERSIVE_LIGHT_KEY);
+    if (raw===undefined) {
+      const mode=this.strictRaw_('dockLightMode',DockLightMode.AUTO) as string;
+      if(normalizeDockLightMode(mode)!==mode) throw new Error('旧光感模式无效');
+      return migrateImmersiveLightPreferences(normalizeDockLightMode(mode));
+    }
+    if (typeof raw!=='string') throw new Error('光感设置格式无效');
+    const v=JSON.parse(raw) as ImmersiveLightPreferences;
+    if(!validImmersiveLightPreferences(v)) throw new Error('光感设置无效');
+    return v;
+  }
+
+  /** 跨首页实例的同目录确认队列。只处理启动器已定义的标量设置，关联的 JDK 来源/通道一起提交。 */
+  saveLauncherFields(fields: Record<string, LaunchPreferenceValue>, active: () => boolean = (): boolean => true,
+    initialStorageOnly: boolean = false): Promise<void> {
+    const defaults = LAUNCHER_FIELD_DEFAULTS;
+    const writes: Record<string, LaunchPreferenceValue> = {};
+    const keys = Object.keys(fields);
+    if (keys.length === 0 || keys.some((k: string): boolean => !Object.keys(defaults).includes(k) ||
+      typeof defaults[k] !== typeof fields[k])) return Promise.reject(new Error('无效的启动器偏好设置'));
+    keys.forEach((key: string): void => { writes[key] = fields[key]; });
+    const state = this.frozenSettings;
+    if (!state || ProcessPreferences.isGameProcess()) return Promise.reject(new Error('启动器偏好所有者不可用'));
+    const task = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess() || !active()) throw new Error('偏好所有者已改变');
+      // 只有首次目录判定使用此条件。在同一写队列里检查，不能覆盖另一个窗口先提交的选择。
+      if (initialStorageOnly) {
+        if (keys.length !== 1 || keys[0] !== 'mcStorageLocation') throw new Error('首次目录选择仅限存储位置');
+        if (this.storedMcStorageLocation() !== undefined) return;
+      }
+      if (writes['jdkSource'] === 'web' && this.jdkWebEnabled !== true) throw new Error('AMCL JDK 来源未启用');
+      if (writes['jdkWebEnabled'] === false && this.jdkSource === 'web') writes['jdkSource'] = 'auto';
+      const names = Object.keys(writes);
+      const original = new Map<string, LaunchPreferenceValue>();
+      const absent = new Set<string>();
+      for (const key of names) {
+        // 用不同fallback辨认不存在的键，不把合法的空字符串或 false 当作缺失。
+        if (state.originals.has(key)) {
+          original.set(key,state.originals.get(key) as LaunchPreferenceValue);
+          if (state.absent.has(key)) absent.add(key);
+        } else {
+          const a = this.pref.getSync(key,false);
+          const b = this.pref.getSync(key,true);
+          if (a !== b) absent.add(key);
+          original.set(key, a !== b ? defaults[key] : a);
+        }
+      }
+      for (const key of names) {
+        state.originals.set(key,original.get(key) as LaunchPreferenceValue);
+        if (absent.has(key)) state.absent.add(key); else state.absent.delete(key);
+      }
+      try {
+        for (const key of names) this.pref.putSync(key,writes[key]);
+        await this.pref.flush();
+        if (!active()) throw new Error('设置提交期间目标已变化');
+        for (const key of names) {
+          const missing: LaunchPreferenceValue = typeof writes[key] === 'boolean' ? '' : false;
+          if (this.pref.getSync(key,missing) !== writes[key]) throw new Error('已写设置回读不符');
+        }
+      } catch (error) {
+        try {
+          for (const key of names) {
+            if (absent.has(key)) this.pref.deleteSync(key);
+            else this.pref.putSync(key,original.get(key) as LaunchPreferenceValue);
+          }
+          await this.pref.flush();
+        } catch (_) { throw new Error('保存失败，旧偏好落盘状态待确认'); }
+        for (const key of names) { state.originals.delete(key); state.absent.delete(key); }
+        throw error as Error;
+      }
+      for (const key of names) { state.originals.delete(key); state.absent.delete(key); }
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
 
   getString(key: string, def: string): string {
+    if (this.frozenSettings?.originals.has(key)) return this.frozenSettings.originals.get(key) as string;
     try { return this.pref.getSync(key, def) as string; }
     catch (e) { return def; }
   }
 
   getNumber(key: string, def: number): number {
+    if (this.frozenSettings?.originals.has(key)) return this.frozenSettings.originals.get(key) as number;
     try { return this.pref.getSync(key, def) as number; }
     catch (e) { return def; }
   }
 
   getBool(key: string, def: boolean): boolean {
+    if (this.frozenSettings?.originals.has(key)) return this.frozenSettings.originals.get(key) as boolean;
     try { return this.pref.getSync(key, def) as boolean; }
     catch (e) { return def; }
   }
@@ -377,13 +579,17 @@ export class PreferenceManager {
     const owner: PreferenceManager = new PreferenceManager(context);
     const state: ModMicrophoneWriteState | undefined = owner.microphoneWrites;
     if (state === undefined || ProcessPreferences.isGameProcess()) return Promise.reject(new Error('无法捕获启动器确认设置'));
-    const task: Promise<LaunchPreferenceSnapshot> = state.tail.then(async (): Promise<LaunchPreferenceSnapshot> => {
+    const preferences = owner.frozenSettings;
+    if (preferences === undefined) return Promise.reject(new Error('设置队列不可用'));
+    const task: Promise<LaunchPreferenceSnapshot> = Promise.all([state.tail,preferences.tail]).then(async (): Promise<LaunchPreferenceSnapshot> => {
       if (state.original !== undefined) throw new Error('麦克风设置回滚尚未确认，请重试');
+      if (preferences.originals.size > 0) throw new Error('设置回滚尚未确认，请重试');
       const snapshot: LaunchPreferenceSnapshot = await ProcessPreferences.captureOwner(context, PREF_NAME);
       snapshot.values[GAME_KEEP_SCREEN_ON_KEY] = owner.gameKeepScreenOn;
       return snapshot;
     });
     state.tail = task.then((): void => {}, (): void => {});
+    preferences.tail = state.tail;
     return task;
   }
 
@@ -394,7 +600,7 @@ export class PreferenceManager {
    */
   get tabletIndependentGameProcess(): boolean {
     try {
-      const value = this.pref.getSync('tabletIndependentGameProcess', true);
+      const value = this.getBool('tabletIndependentGameProcess', true);
       return typeof value === 'boolean' ? value : false;
     } catch (e) {
       hilog.warn(0x0000, TAG, 'Cannot read tablet process preference: %{public}s', formatError(e));
@@ -408,20 +614,7 @@ export class PreferenceManager {
    * 原错误继续交给 UI。回滚也失败时不冒充磁盘一致，用户仍会看到保存失败并可重试。
    */
   async saveTabletIndependentGameProcess(value: boolean): Promise<void> {
-    if (ProcessPreferences.isGameProcess()) throw new Error('请在启动器设置中修改独立游戏进程');
-    const previous: boolean = this.tabletIndependentGameProcess;
-    try {
-      await this.pref.put('tabletIndependentGameProcess', value);
-      await this.pref.flush();
-    } catch (e) {
-      try {
-        this.pref.putSync('tabletIndependentGameProcess', previous);
-        await this.pref.flush();
-      } catch (rollbackError) {
-        hilog.warn(0x0000, TAG, 'Tablet process preference rollback failed: %{public}s', formatError(rollbackError));
-      }
-      throw e as Error;
-    }
+    await this.saveLauncherFields({'tabletIndependentGameProcess':value});
   }
 
   /** 老数据与缺失快照字段默认开启，只有明确保存的 false 才关闭游戏保亮。 */
@@ -439,16 +632,7 @@ export class PreferenceManager {
     const previous: boolean = this.gameKeepScreenOn;
     pending.set(this.preferencesDirectory, previous);
     try {
-      this.pref.putSync(GAME_KEEP_SCREEN_ON_KEY, enabled);
-      await this.pref.flush();
-    } catch (error) {
-      try {
-        this.pref.putSync(GAME_KEEP_SCREEN_ON_KEY, previous);
-        await this.pref.flush();
-      } catch (rollbackError) {
-        hilog.warn(0x0000, TAG, 'Game keep screen on rollback failed: %{public}s', formatError(rollbackError));
-      }
-      throw error as Error;
+      await this.saveLauncherFields({'gameKeepScreenOn':enabled});
     } finally {
       pending.delete(this.preferencesDirectory);
     }
@@ -655,8 +839,20 @@ export class PreferenceManager {
    * 是否已同意隐私政策（开屏隐私弹窗用）。默认 false → 首次启动弹政策同意框。
    * 上架（平板）合规要求：用户须先同意隐私政策方可使用。同意后落盘，后续不再弹。
    */
-  get privacyAgreed(): boolean { return this.getBool('privacyAgreed', false); }
-  set privacyAgreed(v: boolean) { this.put('privacyAgreed', v); }
+  get privacyAgreed(): boolean { return this.readPrivacyConsent() === true; }
+  /** 界面遇到未决数据须保留弹窗。机器另外能区分“尚未同意”和“无法读取”。 */
+  readPrivacyConsent(): boolean | undefined {
+    if (!this.frozenSettings || this.frozenSettings.originals.has('privacyAgreed')) return undefined;
+    try {
+      const value = this.pref.getSync('privacyAgreed',false);
+      return typeof value === 'boolean' ? value : undefined;
+    } catch (_) { return undefined; }
+  }
+  /** 只由用户点击隐私同意的回调调用。等待偏好持久提交并核对后才放行应用。 */
+  async recordPrivacyConsent(): Promise<boolean> {
+    await this.saveFrozenSetting_('privacyAgreed',true,false);
+    return this.readPrivacyConsent() === true;
+  }
 
   get versionIsolation(): boolean { return this.getBool('versionIsolation', true); }
   set versionIsolation(v: boolean) { this.put('versionIsolation', v); }
@@ -739,6 +935,19 @@ export class PreferenceManager {
     this.put('ohosFrameRateCap', this.normalizeOhosFrameRateCap(v));
   }
 
+  /** 单独保存用户明确请求的屏幕刷新率；旧的调度上限及缺省行为沿用原键。 */
+  get ohosFixedRefreshRate(): number {
+    return this.normalizeOhosFixedRefreshRate(this.getNumber('ohosFixedRefreshRate', 0));
+  }
+  set ohosFixedRefreshRate(v: number) {
+    this.put('ohosFixedRefreshRate', this.normalizeOhosFixedRefreshRate(v));
+  }
+
+  private normalizeOhosFixedRefreshRate(v: number): number {
+    // NativeVSync 支持到 144 Hz；屏幕实际支持的档位由游戏窗口在运行中核对。
+    return v >= OHOS_FRAME_RATE_CAP_MIN && v <= 144 && Math.floor(v) === v ? v : 0;
+  }
+
   private normalizeOhosFrameRateCap(v: number): number {
     if (v === 0) return 0;
     if (v < OHOS_FRAME_RATE_CAP_MIN || v > OHOS_FRAME_RATE_CAP_MAX || Math.floor(v) !== v) {
@@ -748,13 +957,35 @@ export class PreferenceManager {
   }
 
   /**
-   * 游戏数据(.minecraft)存储位置：'sandbox'(默认) | 'external'。
+   * 游戏数据位置。兼容 getter 的缺省是旧版沙箱；新安装的首选由 GameStorage 准备并耐久确认。
    * external = 公共 Download/com.amcl.launcher/.minecraft（文件管理器显示为 AMCL），卸载应用后数据仍保留
    * （需 Phase 0 探针确认设备支持）。
    * 切换是带权限申请 + 可选迁移的独立动作，故不进 loadAll/saveAll 批量快照，避免被批量覆盖。
    */
   get mcStorageLocation(): string { return this.getString('mcStorageLocation', 'sandbox'); }
   set mcStorageLocation(v: string) { this.put('mcStorageLocation', v); }
+
+  /** 只在从未选定根时返回 undefined，区分默认内部的旧安装和已持久保存的内部选择。 */
+  storedMcStorageLocation(): string | undefined {
+    const value = this.readRawIfPresent_('mcStorageLocation');
+    if (value === undefined) return undefined;
+    if (typeof value === 'string' && (value === 'sandbox' || value === 'external')) return value;
+    throw new Error('已存游戏数据位置无效');
+  }
+
+  /** 多个首页共用原写队列。提交/回滚结束后在同一同步片段读取位置，并允许发布对应的会话根。 */
+  async confirmedMcStorageLocation(apply?: (value: string | undefined) => void): Promise<string | undefined> {
+    const owner = this.frozenSettings;
+    if (!owner) throw new Error('启动器偏好所有者不可用');
+    let pending: Promise<void>;
+    do {
+      pending = owner.tail;
+      await pending;
+    } while (pending !== owner.tail);
+    const value = this.storedMcStorageLocation();
+    if (apply) apply(value);
+    return value;
+  }
 
   /**
    * 手机端「外部存储」学到的公共应用目录（…/Download/com.amcl.launcher）。'' = 尚未学到。
@@ -1039,6 +1270,52 @@ export class PreferenceManager {
     }
   }
 
+  /** 确认具名 JDK 选择实际刷盘，等待期间被其他选择替换时不认领该值。 */
+  async confirmVersionJdk(versionId: string, expected: string): Promise<boolean> {
+    if (ProcessPreferences.isGameProcess() || !versionId || this.getVersionOverride(versionId).jdkVersion !== expected) return false;
+    await this.pref.flush();
+    return this.getVersionOverride(versionId).jdkVersion === expected;
+  }
+
+  /** 与分辨率/JVM 参数共用同一 verLaunch 记录队列，避免从旧的整份覆盖快照覆盖其他字段。 */
+  saveVersionChoice(version: string, field: string, value: string): Promise<void> {
+    const state = this.resolutionWrites;
+    if (!state || !version || typeof value !== 'string' || (field !== 'language' && field !== 'jdk') ||
+      ProcessPreferences.isGameProcess()) return Promise.reject(new Error('版本选择无法保存'));
+    const key = 'verLaunch.'+version;
+    const task = state.tail.then(async (): Promise<void> => {
+      if (ProcessPreferences.isGameProcess()) throw new Error('请从启动器更改版本设置');
+      const baseline = state.originals.has(key) ? state.originals.get(key) as LaunchPreferenceValue : this.pref.getSync(key,'');
+      const previous = this.versionOverrideForWrite_(baseline);
+      const next = this.versionOverrideForWrite_(baseline);
+      if (field === 'jdk') next.jdkVersion = value; else next.gameLanguage = value;
+      state.originals.set(key,baseline);
+      state.choiceFields.set(key,field);
+      try {
+        this.writeVersionOverrideSync_(key,next);
+        await this.pref.flush();
+        const actual = this.versionOverrideForWrite_(this.pref.getSync(key,''));
+        if ((field === 'jdk' ? actual.jdkVersion : actual.gameLanguage) !== value) throw new Error('实例设置回读不符');
+      } catch (error) {
+        try {
+          const restore=this.versionOverrideForWrite_(this.pref.getSync(key,''));
+          if (field === 'jdk') restore.jdkVersion=previous.jdkVersion; else restore.gameLanguage=previous.gameLanguage;
+          state.originals.set(key,JSON.stringify(restore));
+          this.writeVersionOverrideSync_(key,restore);
+          await this.pref.flush();
+        } catch (_) { throw new Error('版本设置回滚尚未确认'); }
+        state.originals.delete(key);
+        state.choiceFields.delete(key);
+        throw error as Error;
+      }
+      state.originals.delete(key);
+      state.choiceFields.delete(key);
+    });
+    state.tail = task.then((): void => {}, (): void => {});
+    return task;
+  }
+
+
   /**
    * 写入某版本的启动配置覆盖。全字段都为空（=全沿用全局）时删除 key，
    * 避免存储里堆空记录。
@@ -1056,6 +1333,9 @@ export class PreferenceManager {
     let legacyConfirmed: VersionLaunchOverride | undefined = undefined;
     if (this.resolutionWrites?.originals.has(key)) {
       const current: VersionLaunchOverride = this.versionOverrideForWrite_(this.pref.getSync(key, ''));
+      const protectedChoice = this.resolutionWrites.choiceFields.get(key);
+      if (protectedChoice === 'jdk') next.jdkVersion=current.jdkVersion;
+      if (protectedChoice === 'language') next.gameLanguage=current.gameLanguage;
       next.renderScalePercent = normalizeResolutionPreference(current.renderScalePercent);
       if (this.resolutionWrites.jvmKeys.has(key)) {
         const baseline: VersionLaunchOverride = this.versionOverrideForWrite_(
@@ -1101,27 +1381,27 @@ export class PreferenceManager {
    *   - customJvmArgs : 全局参数 + 单版本参数 拼接（单版本在后，优先级更高）
    * fromGlobal = 该版本无任何覆盖（纯沿用全局）。
    */
-  resolveLaunch(versionId: string): EffectiveLaunchConfig {
-    let o = this.getVersionOverride(versionId);
+  resolveLaunch(versionId: string, strict: boolean = false): EffectiveLaunchConfig {
+    let o = strict ? (versionId ? this.strictVersionOverride(versionId) : this.defaultVersionOverride()) : this.getVersionOverride(versionId);
     let merged: string[] = [];
-    let g = this.customJvmArgs.trim();
+    let g = (strict ? this.strictLauncherField('customJvmArgs') as string : this.customJvmArgs).trim();
     if (g.length > 0) merged.push(g);
     let v = o.customJvmArgs.trim();
     if (v.length > 0) merged.push(v);
     // 虚拟内存（堆文件）模式：注入 marker，由 C 层 launchWithProfileImpl 识别并
     // 转成 -XX:AllocateHeapAt。放在末尾即可（marker 无覆盖语义、不参与去重）。
-    if (this.virtualMemoryMode) merged.push('-Damcl.heapfile=1');
+    if (strict ? this.strictLauncherField('virtualMemoryMode') === true : this.virtualMemoryMode) merged.push('-Damcl.heapfile=1');
     // 游戏语言（启动器权威）：单版本非空则用单版本，否则跟随全局；作为 marker 注入，
     // 由 C 层 applyGameLanguage 写进该版本 options.txt 的 lang。lang 恒非空（全局默认
     // zh_cn），故每次启动都会按选择校正语言。marker 本身不下传 JVM（native 消费）。
-    let lang = o.gameLanguage.length > 0 ? o.gameLanguage : this.gameLanguage;
+    let lang = o.gameLanguage.length > 0 ? o.gameLanguage : strict ? this.strictLauncherField('gameLanguage') as string : this.gameLanguage;
     if (lang.length > 0) merged.push('-Damcl.gamelang=' + lang);
     return {
-      xmx: o.xmx > 0 ? o.xmx : this.mcXmx,
+      xmx: o.xmx > 0 ? o.xmx : strict ? this.strictLauncherField('mcXmx') as number : this.mcXmx,
       jdkVersion: o.jdkVersion,
       customJvmArgs: merged.join(' '),
       gameLanguage: lang,
-      renderScalePercent: normalizeResolutionPreference(o.renderScalePercent) || this.resolutionScalePercent,
+      renderScalePercent: normalizeResolutionPreference(o.renderScalePercent) || (strict ? this.strictLauncherField('resolutionScalePercent') as number : this.resolutionScalePercent),
       fromGlobal: o.xmx <= 0 && o.jdkVersion.length === 0 && o.customJvmArgs.length === 0
         && o.gameLanguage.length === 0 && normalizeResolutionPreference(o.renderScalePercent) === 0,
     };

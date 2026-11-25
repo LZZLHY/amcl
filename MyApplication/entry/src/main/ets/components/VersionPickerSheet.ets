@@ -24,8 +24,8 @@ import { ThemeColors } from 'commons';
 import { AppIcon } from './AppIcon';
 import { AppIconName } from 'commons';
 import { VersionBlockIcon } from './VersionBlockIcon';
-import { detectLoaderFromId, extractGameVersionFromId } from 'mods';
-import { resolveInstalledLoader, resolveInstalledMcVersion } from 'mods';
+import { extractGameVersionFromId, resolveInstalledGameId, getModpackIconPath } from 'mods';
+import { getInstalledBadgeInfo, getInstalledBadgeInfoResolved, resolveInstalledVersionCategory } from './LoaderCatalog';
 
 @Component
 export struct VersionPickerSheet {
@@ -73,16 +73,17 @@ export struct VersionPickerSheet {
     return this.tabIdx_ === 1 ? 'external' : 'sandbox';
   }
 
+  /** 同名实例可以位于不同存储根，文字、图标和整合包封面都取当前页签。 */
+  private activeMcDir_(): string {
+    return this.tabIdx_ === 1 ? this.externalMcDir : this.sandboxMcDir;
+  }
+
   /** 版本副标题："MC 1.21.1 · Fabric" / "MC 1.20.4 · 原版" */
   private subtitleOf(id: string): string {
-    // 整合包/重命名版本名无版本号/loader 关键字 → 走快照/内容解析（按当前页签的根）
-    let root = this.tabIdx_ === 1 ? this.externalMcDir : this.sandboxMcDir;
-    let gv = root.length > 0 ? resolveInstalledMcVersion(root, id) : extractGameVersionFromId(id);
-    let loader = root.length > 0 ? resolveInstalledLoader(root, id) : detectLoaderFromId(id);
-    let loaderLabel = loader.length > 0
-      ? loader.charAt(0).toUpperCase() + loader.substring(1)
-      : '原版';
-    return (gv.length > 0 ? 'MC ' + gv : id) + ' · ' + loaderLabel;
+    const root = this.activeMcDir_();
+    const gv = root ? resolveInstalledGameId(root, id) : extractGameVersionFromId(id);
+    const badge = root ? getInstalledBadgeInfoResolved(root, id) : getInstalledBadgeInfo(id);
+    return (gv.length > 0 ? 'MC ' + gv : id) + ' · ' + badge.displayName;
   }
 
   private isSelected(id: string): boolean {
@@ -105,7 +106,11 @@ export struct VersionPickerSheet {
   @Builder
   VersionRow(id: string) {
     Row() {
-      VersionBlockIcon({ versionId: id, iconSize: 34, cornerRadius: 6 })
+      VersionBlockIcon({ versionId: id,
+        category: this.activeMcDir_() ? resolveInstalledVersionCategory(this.activeMcDir_(), id) : '',
+        iconIdPrefix: 'version-picker-icon-' + id,
+        overrideImagePath: this.activeMcDir_() ? getModpackIconPath(this.activeMcDir_(), id) : '',
+        iconSize: 34, cornerRadius: 6 })
       Column() {
         Text(id)
           .fontSize(15)

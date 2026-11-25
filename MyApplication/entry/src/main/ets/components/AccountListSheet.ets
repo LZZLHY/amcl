@@ -17,6 +17,10 @@ import { getTaskActivityOwner } from 'feature_core';
 import { Account, AccountType } from 'account';
 import { getAccountManager } from 'account';
 import { AuthlibInjectorAccount, AccountProfile } from 'account';
+import { ProductQaAccounts } from 'entry/ProductQaAccounts';
+import { util } from '@kit.ArkTS';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
+import { AccountRemovalChoice, AccountSheetActions, AddAccountActions } from '../runtime/AccountSheetActions';
 import { AddAccountSheet } from './AddAccountSheet';
 import { SkinCapeDetailSheet } from './SkinCapeDetailSheet';
 import { SkinCanvas3D } from './SkinCanvas3D';
@@ -109,16 +113,150 @@ export struct AccountListSheet {
   /** 刷新失败提示横幅（短暂显示，3s 自动消失）。 */
   @State refreshErrorMsg: string = '';
 
+  // 随当前面板分配匿名账号引用；对象被替换或重新打开后不得误操作同编号的另一份账号。
+  private accountRefs_: WeakMap<Account, string> = new WeakMap<Account, string>();
+  private roleRefs_: Map<string,string> = new Map<string,string>();
+  private loginRef_: string = '';
+  private loginState_: string = '';
+  private loginPhase_: string = '';
+  private removalState_: string = 'idle';
+  private removalRef_: string = '';
+  private closeAck_: (() => void) | undefined = undefined;
+  private loginAccount_: Account | undefined = undefined;
+
+  private accountRef_(acc: Account): string {
+    let ref = this.accountRefs_.get(acc);
+    if (!ref) { ref = util.generateRandomUUID(); this.accountRefs_.set(acc, ref); }
+    return ref;
+  }
+
+  private loginOutcome_(ref: string, state: string, id: string): void {
+    if (!this.alive || !ref || ref !== this.loginRef_ || this.loginState_ !== 'needsUser') return;
+    this.loginState_ = state; this.loginPhase_ = state;
+    if (state === 'ready') {
+      this.loginAccount_ = getAccountManager().findById(id);
+      if (!this.loginAccount_) this.loginState_ = 'unknown';
+    }
+  }
+
+  private async playerAccountAction_(method: string, args: SkillFields): Promise<SkillFields> {
+    const manager = getAccountManager();
+    if (!manager.isReady() || !this.alive) return { 'state': 'unavailable' };
+    const accounts = manager.list();
+    if (method === 'listPlayerAccounts') {
+      const selected = manager.getSelectedId() || (accounts.length ? accounts[0].id : '');
+      return { 'state': 'ready', 'removalState': this.removalState_, 'removalRef': this.removalRef_,
+        'accounts': accounts.map((a: Account): SkillFields => ({ 'accountRef': this.accountRef_(a), 'type': a.type, 'selected': a.id === selected })) };
+    }
+    if (method === 'readPlayerLogin') {
+      if (!this.loginRef_ || args['loginRef'] !== this.loginRef_) return { 'state': 'unknown' };
+      const result: SkillFields = { 'state': this.loginState_, 'loginRef': this.loginRef_, 'phase': this.loginPhase_ };
+      const saved = this.loginAccount_;
+      if (saved && manager.findById(saved.id) === saved) result['accountRef'] = this.accountRef_(saved);
+      return result;
+    }
+    if (this.busy_() || this.showAddSheet || this.showSkinDetail || this.pendingDeleteId.length > 0) return { 'state': 'busy' };
+    if (method === 'closePlayerAccounts') {
+      return new Promise<SkillFields>((resolve): void => {
+        const timer = setTimeout((): void => { this.closeAck_=undefined; resolve({ 'state':'unknown' }); },3000);
+        this.closeAck_=():void => { clearTimeout(timer); this.closeAck_=undefined; resolve({ 'state':'ready','closed':true }); };
+        this.onClose();
+      });
+    }
+    if (method === 'addOfflinePlayer' || method === 'beginPlayerLogin') {
+      const name = String(args['playerName'] ?? '');
+      if (method === 'addOfflinePlayer' && (name.length>16 || /[\u0000-\u001f\u007f]/.test(name))) return { 'state': 'failed', 'reason': 'invalidPlayerName' };
+      const ref = util.generateRandomUUID();
+      this.loginRef_ = ref; this.loginState_ = 'needsUser'; this.loginPhase_='opening'; this.loginAccount_ = undefined;
+      if (method === 'beginPlayerLogin') {
+        LauncherSkillBus.followUserCondition(method, (): boolean => this.alive && this.loginRef_ === ref && this.loginState_ === 'needsUser');
+      }
+      const command: SkillFields = { 'loginRef': ref, 'provider': String(args['provider'] ?? ''), 'playerName': name };
+      const response = await LauncherSkillBus.forward(this,'playerForm',method,command);
+      if (response['state'] !== 'needsUser' && this.loginState_ === 'needsUser') this.loginState_ = String(response['state']);
+      if (method === 'addOfflinePlayer' && this.loginAccount_) response['accountRef'] = this.accountRef_(this.loginAccount_);
+      response['loginRef'] = ref;
+      return response;
+    }
+    const account = accounts.find((a: Account): boolean => this.accountRefs_.get(a) === args['accountRef'] && typeof args['accountRef'] === 'string');
+    if (!account) return { 'state': 'failed', 'reason': 'staleAccount' };
+    if (method === 'selectPlayerAccount') {
+      const ok = await this.commitAccountMutation_(account.id, false, account);
+      return { 'state': ok && manager.findById(account.id) === account && manager.getSelectedId() === account.id ? 'ready' : 'unknown' };
+    }
+    if (method === 'checkPlayerAccount') {
+      const usable = account.type === AccountType.OFFLINE ? true : await account.isUsable();
+      if (manager.findById(account.id) !== account) return { 'state': 'unknown' };
+      return { 'state': 'ready', 'type': account.type, 'credential': account.type === AccountType.OFFLINE ? 'offline' : (usable ? 'local' : 'loginRequired') };
+    }
+    if (method === 'requestRemovePlayer') {
+      this.armDelete(account.id);
+      return { 'state': this.pendingDeleteId === account.id ? 'needsUser' : 'unavailable', 'accountRef': this.accountRef_(account) };
+    }
+    if (this.currentId !== account.id || manager.getSelected() !== account) return { 'state': 'failed', 'reason': 'selectAccountFirst' };
+    if (method === 'showPlayerProfile') { this.showAccountInformation_(); return { 'state': 'needsUser' }; }
+    if (method === 'refreshPlayerCredentials') {
+      if (account.type === AccountType.OFFLINE) return { 'state': 'unavailable' };
+      return { 'state': await this.refreshAccount(account) ? 'ready' : 'unknown' };
+    }
+    if (account.type === AccountType.AUTHLIB_INJECTOR && (method === 'readPlayerRoles' || method === 'choosePlayerRole')) {
+      const profiles = (account as AuthlibInjectorAccount).getAvailableProfiles();
+      const roles: SkillFields[] = [];
+      const prefix = this.accountRef_(account) + ':';
+      for (const profile of profiles) {
+        const key = prefix + profile.id;
+        let ref = this.roleRefs_.get(key);
+        if (!ref) { ref = util.generateRandomUUID(); this.roleRefs_.set(key,ref); }
+        if (method === 'choosePlayerRole' && ref === args['roleRef']) {
+          const ok = await this.switchToProfile(profile.id);
+          return { 'state': ok && manager.findById(account.id) === account && account.uuid === profile.id ? 'ready' : 'unknown', 'roleRef': ref };
+        }
+        roles.push({ 'roleRef': ref, 'selected': profile.id === account.uuid });
+      }
+      if (method === 'choosePlayerRole') return { 'state':'failed','reason':'roleChanged' };
+      this.showAccountSettings = true;
+      return { 'state':'ready', 'roles': roles };
+    }
+    if (method === 'openPlayerAppearance') {
+      this.openAppearance_();
+      return { 'state': this.showSkinDetail ? 'needsUser' : 'unavailable', 'hasSkin': this.currentSkinUrl.length > 0,
+        'hasCape': this.currentCapeUrl.length > 0, 'model': this.currentSkinVariant };
+    }
+    return { 'state': 'failed', 'reason': 'unknownOperation' };
+  }
+
   aboutToAppear() {
+    this.accountRefs_ = new WeakMap<Account,string>(); this.roleRefs_.clear();
+    this.loginRef_ = ''; this.loginState_ = ''; this.loginAccount_ = undefined;
+    LauncherSkillBus.bind('accounts',this,(method: string, args: SkillFields): Promise<SkillFields> => this.playerAccountAction_(method,args), (): boolean => this.alive);
+    LauncherSkillBus.bindOpener('playerForm',this, (_method: string, args: SkillFields): boolean => {
+      if (!this.alive || this.busy_() || this.showAddSheet || this.showSkinDetail || this.pendingDeleteId || args['loginRef'] !== this.loginRef_) return false;
+      this.showAddSheet = true; return true;
+    });
     this.alive = true;
     this.accountMutationEpoch++;
     this.accountMutationId = ''; this.accountMutationAction = '';
     this.refreshingId = ''; this.switchingProfileId = ''; this.refreshErrorMsg = '';
     this.refresh();
+    ProductQaAccounts.bind(this, (): AccountSheetActions => ({
+      ready: (): boolean => this.alive && !this.busy_() && !this.showAddSheet && !this.showSkinDetail
+        && AppStorage.get<boolean>('appInForeground') === true,
+      hasConfirmation: (): boolean => this.pendingDeleteId.length > 0,
+      openAdd: (): void => { this.showAddSheet = true; },
+      close: (): void => { this.onClose(); },
+      select: (target: Account): Promise<boolean> => this.commitAccountMutation_(target.id, false, target),
+      prepareRemove: (id: string): AccountRemovalChoice | undefined => this.prepareRemoval_(id),
+      confirmRemove: (choice: AccountRemovalChoice): Promise<boolean> => this.confirmRemoval_(choice),
+      cancelRemove: (choice: AccountRemovalChoice): boolean => this.cancelRemoval_(choice)
+    }));
   }
 
   /** 只退役本页状态回调，已经提交的账号操作仍需通知外层首页重读确认结果。 */
-  aboutToDisappear(): void { this.alive = false; this.accountMutationEpoch++; this.loginStateEpoch++; this.deleteConfirmationEpoch++; this.pendingDeleteId = ''; }
+  aboutToDisappear(): void {
+    this.closeAck_?.();
+    LauncherSkillBus.unbind('accounts', this); LauncherSkillBus.unbindOpener('playerForm', this);
+    ProductQaAccounts.unbind(this); this.alive = false; this.accountMutationEpoch++; this.loginStateEpoch++; this.deleteConfirmationEpoch++; this.pendingDeleteId = '';
+  }
 
   build() {
     Column() {
@@ -176,6 +314,9 @@ export struct AccountListSheet {
   @Builder
   AddAccountSheetBuilder() {
     AddAccountSheet({
+      onActionsReady: (actions: AddAccountActions): void => { ProductQaAccounts.addShown(this, actions); },
+      onPlayerLoginOutcome: (ref: string, state: string, id: string): void => { this.loginOutcome_(ref, state, id); },
+      onPlayerLoginPhase: (ref: string, phase: string): void => { if (this.loginState_==='needsUser' && ref===this.loginRef_) this.loginPhase_=phase; },
       theme: this.theme,
       bottomSafeHeight: this.bottomSafeHeight,
       onSuccess: () => {
@@ -618,16 +759,16 @@ export struct AccountListSheet {
   }
 
   /** 删除与新增/外观编辑共用管理器队列，不在等待期间先从UI移走账号。 */
-  private async removeAccount(id: string): Promise<void> {
-    await this.commitAccountMutation_(id, true);
+  private async removeAccount(id: string, choice?: AccountRemovalChoice): Promise<boolean> {
+    return this.commitAccountMutation_(id, true, choice?.target, choice?.selectedId);
   }
 
   /**
    * 选择和删除的共同确认屏障。生命周期世代只限制本页状态写入；保存已经成功后，
    * 即使用户通过系统手势收起本页，也要通知仍存活的父owner更新首页账号快照。
    */
-  private async commitAccountMutation_(id: string, remove: boolean): Promise<void> {
-    if (this.busy_()) return;
+  private async commitAccountMutation_(id: string, remove: boolean, expected?: Account, expectedSelection?: string): Promise<boolean> {
+    if (this.busy_()) return false;
     const epoch = ++this.accountMutationEpoch;
     const notify = this.onAccountsChanged;
     this.accountMutationId = id; this.accountMutationAction = remove ? 'remove' : 'select';
@@ -635,8 +776,8 @@ export struct AccountListSheet {
     let committed = false;
     try {
       const am = getAccountManager();
-      if (remove) await am.remove(id);
-      else await am.select(id);
+      if (remove) await am.remove(id, expected, expectedSelection);
+      else await am.select(id, expected);
       committed = true;
       if (remove) {
         // 新主线的活动摘要必须跟随真实持久确认，记录失败不能推翻已经成功的账号删除。
@@ -663,28 +804,54 @@ export struct AccountListSheet {
       try { notify(); }
       catch (error) { hilog.warn(0x0000, TAG, 'account owner notification failed: %{public}s', (error as Error).message); }
     }
+    return committed;
   }
 
   /**
    * 删除确认冻结目标 id 与本页世代，第二次明确点击才进入原删除提交队列。
    * 弹窗展示期间如果发生切换或页面退役，旧确认回调被拒绝；取消不改变账号。
    */
-  private armDelete(id: string): void {
-    if (!this.alive || this.busy_()) return;
-    const acc = getAccountManager().findById(id);
-    if (acc === undefined) return;
-    const epoch = this.accountMutationEpoch;
-    const confirmation = ++this.deleteConfirmationEpoch;
+  private prepareRemoval_(id: string): AccountRemovalChoice | undefined {
+    if (!this.alive || this.busy_()) return undefined;
+    const manager = getAccountManager();
+    const target = manager.findById(id);
+    if (target === undefined) return undefined;
     this.pendingDeleteId = id;
-    this.getUIContext().showAlertDialog({ title: '移除 ' + acc.getDisplayName() + '？',
+    return { target:target, selectedId:manager.getSelectedId(), epoch:this.accountMutationEpoch,
+      confirmation:++this.deleteConfirmationEpoch };
+  }
+
+  /** 同一页、同一目标、同一次确认才能消费计划，普通点击与开发会话共用。 */
+  private async confirmRemoval_(choice: AccountRemovalChoice): Promise<boolean> {
+    const manager = getAccountManager();
+    if (!this.alive || this.busy_() || choice.epoch !== this.accountMutationEpoch ||
+      this.pendingDeleteId !== choice.target.id || choice.confirmation !== this.deleteConfirmationEpoch ||
+      manager.getSelectedId() !== choice.selectedId || manager.findById(choice.target.id) !== choice.target) return false;
+    this.deleteConfirmationEpoch++;
+    this.pendingDeleteId = ''; this.showAccountSettings = false;
+    return this.removeAccount(choice.target.id, choice);
+  }
+
+  private cancelRemoval_(choice: AccountRemovalChoice): boolean {
+    if (choice.confirmation !== this.deleteConfirmationEpoch || choice.target.id !== this.pendingDeleteId) return false;
+    this.deleteConfirmationEpoch++; this.pendingDeleteId = ''; return true;
+  }
+
+  private armDelete(id: string): void {
+    const choice = this.prepareRemoval_(id);
+    if (choice === undefined) return;
+    this.removalRef_=this.accountRef_(choice.target); this.removalState_='pending';
+    let committing = false, offered = true;
+    LauncherSkillBus.followUserCondition('requestRemovePlayer', (): boolean => committing ||
+      (offered && this.alive && this.pendingDeleteId === id && this.deleteConfirmationEpoch === choice.confirmation));
+    const cancel=():void => { offered=false; if(this.cancelRemoval_(choice)) this.removalState_='cancelled'; };
+    this.getUIContext().showAlertDialog({ title: '移除 ' + choice.target.getDisplayName() + '？', cancel:cancel,
       message: '仅移除此设备保存的账号。游戏文件与共享皮肤、披风素材库会继续保留。',
-      primaryButton: { value: '取消', action: (): void => { if (confirmation === this.deleteConfirmationEpoch && this.pendingDeleteId === id) this.pendingDeleteId = ''; } },
-      secondaryButton: { value: '移除账号', fontColor: this.theme.errorText, action: (): void => {
-        if (this.alive && epoch === this.accountMutationEpoch && confirmation === this.deleteConfirmationEpoch && this.pendingDeleteId === id && !this.busy_()) {
-          this.showAccountSettings = false;
-          this.removeAccount(id);
-        }
-      } } });
+      primaryButton: { value: '取消', action: cancel },
+      secondaryButton: { value: '移除账号', fontColor: this.theme.errorText,
+        action: (): void => { offered=false; committing = true; this.confirmRemoval_(choice).then((ok:boolean):void=>{
+          if (this.removalRef_===this.accountRef_(choice.target)) this.removalState_=ok?'ready':'unknown';
+        }).finally((): void => { committing = false; }); } } });
   }
 
   /**
@@ -693,9 +860,9 @@ export struct AccountListSheet {
    * 排队的旧角色点击在刷新开始后也必须被拒绝。局部状态和错误计时器绑定本次
    * 页／操作世代与目标账号，页面退休后只保留已确认提交的父层通知。
    */
-  private async refreshAccount(acc: Account): Promise<void> {
-    if (!this.alive || this.busy_()) return;
-    if (acc.type !== AccountType.MICROSOFT && acc.type !== AccountType.AUTHLIB_INJECTOR) return;
+  private async refreshAccount(acc: Account): Promise<boolean> {
+    if (!this.alive || this.busy_()) return false;
+    if (acc.type !== AccountType.MICROSOFT && acc.type !== AccountType.AUTHLIB_INJECTOR) return false;
     const epoch = ++this.accountMutationEpoch;
     const id = acc.id;
     const notify = this.onAccountsChanged;
@@ -725,16 +892,17 @@ export struct AccountListSheet {
       if (this.alive && epoch === this.accountMutationEpoch && this.refreshingId === id) this.refreshingId = '';
     }
     if (committed) this.notifyConfirmedChange_(notify);
+    return committed;
   }
 
   /**
    * 第三方角色切换保持原服务调用和持久化顺序。与所有账号写操作互斥；await及
    * 错误计时器只能更新发起页与目标账号，成功保存即使遇到关闭也仍通知父owner。
    */
-  private async switchToProfile(profileId: string): Promise<void> {
-    if (!this.alive || this.busy_()) return;
+  private async switchToProfile(profileId: string): Promise<boolean> {
+    if (!this.alive || this.busy_()) return false;
     const acc = this.currentAcc;
-    if (acc === null || acc.type !== AccountType.AUTHLIB_INJECTOR) return;
+    if (acc === null || acc.type !== AccountType.AUTHLIB_INJECTOR) return false;
     const epoch = ++this.accountMutationEpoch;
     const id = acc.id;
     const notify = this.onAccountsChanged;
@@ -761,6 +929,7 @@ export struct AccountListSheet {
       if (this.alive && epoch === this.accountMutationEpoch && this.switchingProfileId === id) this.switchingProfileId = '';
     }
     if (committed) this.notifyConfirmedChange_(notify);
+    return committed;
   }
 
   /** 界面状态发布资格同时绑定页面世代及操作对象，不能只凭账号ID判断仍属于当前页。 */

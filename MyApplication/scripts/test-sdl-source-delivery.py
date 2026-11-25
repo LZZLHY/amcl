@@ -56,9 +56,14 @@ def main(args):
     # 永久 owned 文本门只选择这一份已知 fixture；正常来源门仍执行原完整场景，
     # 不接受任意 provider/脚本文档作为可执行输入，也不修改 SDK/Source 生产实现。
     owned_text=bool(getattr(args,'owned_text',False))
-    fixture=ROOT/'scripts/fixtures/input-consumer'/('sdl_owned_text_production.c.in' if owned_text else 'sdl_source_production.c.in')
+    menu_warp=bool(getattr(args,'menu_warp',False))
+    fixture_name='sdl_menu_warp_production.c.in' if menu_warp else ('sdl_owned_text_production.c.in' if owned_text else 'sdl_source_production.c.in')
+    fixture=ROOT/'scripts/fixtures/input-consumer'/fixture_name
     support=ROOT/'scripts/fixtures/input-consumer/sdl_source_support.cpp.in'
     tracked=borrowed_paths(cpp,sdk,base,library,fixture,support)
+    if menu_warp:
+        warp_support=fixture.with_name('sdl_menu_warp_support.cpp.in')
+        tracked.append(warp_support)
     before={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in tracked}
     spec=importlib.util.spec_from_file_location('sdl_look_helper',ROOT/'scripts/test-sdl-look-prefix.py')
     helper=importlib.util.module_from_spec(spec);spec.loader.exec_module(helper)
@@ -142,6 +147,29 @@ static SDL_AtomicInt host_text_state;
     for name in ['OPENHARMONY_ScancodeFromGlfwKey','OPENHARMONY_ButtonFromGlfwButton']:
         start,end=function_span(production,name)
         prelude=replace_function(prelude,name,production[start:end])
+    if menu_warp:
+        # 仅补dummy后端缺少的OHOS角色/传输边缘。SDL公共API与事件、neutral队列均用真身。
+        prelude=prelude.replace('Uint64 pump_order_limit;int pump_budget;bool pump_did_read;',
+            'Uint64 pump_order_limit;int pump_budget;bool pump_did_read; void (*SetLookCursor)(double,double); void (*SetGrabState)(int); Uint64 (*MenuWarp)(Uint32,Uint64,double,double);')
+        prelude+="""
+enum { OPENHARMONY_WINDOW_PRESENTED = 0 };
+static Uint64 host_unclassified_relative_release_count;
+void sourceSdkWarpSetup(Uint64);void sourceSdkWarpPresent(void);void sourceSdkWarpRelative(int,double,double);
+void sourceSdkWarpSnapshot(double*,double*);void sourceSdkWarpPosition(double,double);void sourceSdkWarpLookCursor(double,double);
+static OPENHARMONY_HostBridge *OPENHARMONY_GetHostBridge(void) { return &bridge; }
+typedef Uint64 (*OPENHARMONY_MenuWarpRequest)(Uint32, Uint64, double, double);
+"""
+        prelude+='\n'+helper.control.recipe.function(production,'OPENHARMONY_VerifyMenuAddress')+'\n'
+        signature=re.search(r'^static OPENHARMONY_MenuWarpRequest OPENHARMONY_GetMenuWarpRequest\([^;{}]*\)\s*\{',production,re.M)
+        if not signature:raise ValueError('Missing actual SDL warp transport resolver')
+        start=signature.start()
+        prelude+='\n'+helper.control.recipe.block(production,start)+'\n'
+        for name in ('OPENHARMONY_WarpMouse','OPENHARMONY_TryWarpMenuCursor','OPENHARMONY_WarpMenuGlobal','OPENHARMONY_GlobalMouseState','OPENHARMONY_SetRelativeMouseMode'):
+            prelude+='\n'+helper.control.recipe.function(production,name)+'\n'
+        if args.negative=='async-warp':
+            anchor='OPENHARMONY_PumpOrderedEvents(bridge, target);'
+            if prelude.count(anchor)!=1:raise ValueError('warp event boundary missing')
+            prelude=prelude.replace(anchor,'/* 负控：推迟到下一次普通poll。 */')
     if args.negative=='simplified-mapping':
         # 仅在外置consumer中恢复旧简化映射，证明新最终ABI断言能发现枚举错误；维护SDK和产品源不改。
         prelude=replace_function(prelude,'OPENHARMONY_ScancodeFromGlfwKey',
@@ -150,6 +178,9 @@ static SDL_AtomicInt host_text_state;
             'static Uint8 OPENHARMONY_ButtonFromGlfwButton(int button){return (Uint8)(button+1);}')
     (build/'consumer.c').write_text(fixture.read_text(encoding='utf-8').replace('@PRELUDE@',prelude),encoding='utf-8')
     shutil.copyfile(support,build/'support.cpp')
+    if menu_warp:
+        with (build/'support.cpp').open('a',encoding='utf8') as stream:
+            stream.write('\n'+warp_support.read_text(encoding='utf8'))
     names=['input/source/source_control.cpp','platform/input_ledger.cpp','platform/external_held_registry.cpp',
       'platform/external_held_edge_router.cpp','platform/legacy_output_runtime.cpp','platform/legacy_physical_edge_router.cpp',
       'input/delivery/control_delivery.cpp','input/delivery/look_execution.cpp','input/input_state_core.cpp','input/amcl_input_host_descriptor.cpp',
@@ -174,6 +205,9 @@ static SDL_AtomicInt host_text_state;
     text+='set_property(TARGET consumer PROPERTY C_STANDARD 11)\n'
     text+='set_source_files_properties("'+bridge.as_posix()+'" PROPERTIES LANGUAGE CXX)\n'
     text+='target_compile_definitions(consumer PRIVATE SDL_VIDEO_DRIVER_OPENHARMONY AMCL_CONTROL_DELIVERY_HOST_TESTING AMCL_INPUT_HOST_TESTING AMCL_INPUT_HOST_EXPORTS AMCL_INPUT_BRIDGE_HOST_TESTING _CRT_SECURE_NO_WARNINGS NOMINMAX EVENT_WINDOW_SIZE=8)\n'
+    if menu_warp and os.name=='nt':
+        # MSVC宿主把bridge作为C++编译；SDK须能用GetProcAddress核到其精确导出。
+        text+='target_link_options(consumer PRIVATE /EXPORT:inputBridge_requestCarriedMenuWarpV1 /EXPORT:inputBridge_sdlNextCarriedThroughV1)\n'
     if owned_text:
         # 文本门必须真实建立backend consumer，不能使用Core测试宏放松Ready准入。
         text=text.replace(' AMCL_INPUT_HOST_TESTING ',' ')
@@ -203,7 +237,7 @@ static SDL_AtomicInt host_text_state;
       'sdkStaticLibrary':{'path':str(library),'sha256':after[str(library)],'sha256Before':before[str(library)]},
       'sourcesBefore':before,'sourcesAfter':after,'sourceDrift':drift,
       'generatedSha256':generated_identity,
-      'boundary':'existing complete SDL static SDK + production Source/Core/backend/bridge/JNI bodies and actual SDK key/button mapping; window discovery, text, capture and menu cursor retain explicit fixture edges; source/library stability is separate from build provenance; no OHOS/game/device claim'},indent=2)+'\n',encoding='utf-8')
+      'boundary':('real SDL window/global warp + local/global/relative getters + ordered neutral and actual SDK queue on dummy video; synthetic eligible touch and OHOS role, no device' if menu_warp else 'existing complete SDL static SDK + production Source/Core/backend/bridge/JNI bodies and actual SDK key/button mapping; window discovery, text, capture and menu cursor retain explicit fixture edges; source/library stability is separate from build provenance; no OHOS/game/device claim')},indent=2)+'\n',encoding='utf-8')
     if args.negative:assert result.returncode!=0 and b'CHECK failed' in result.stderr,'negative must hit actual consumer behavior'
     else:result.check_returncode()
     if drift:raise RuntimeError('source drift while compiling consumer')
@@ -211,4 +245,5 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--sdk-host-tree',required=True)
     parser.add_argument('--out',required=True);parser.add_argument('--build-out',required=True);parser.add_argument('--cmake')
     parser.add_argument('--reuse-build',action='store_true',help='复用该任务已登记host缓存，证据另写新目录')
-    parser.add_argument('--negative',choices=['compat-bypass','budget2','simplified-mapping']);main(parser.parse_args())
+    parser.add_argument('--menu-warp',action='store_true',help='执行真实SDL与neutral的菜单主动设位回归')
+    parser.add_argument('--negative',choices=['compat-bypass','budget2','simplified-mapping','async-warp']);main(parser.parse_args())

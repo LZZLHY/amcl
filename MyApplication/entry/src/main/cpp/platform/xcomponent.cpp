@@ -891,20 +891,31 @@ static napi_value SetOhosFrameRateCap(napi_env env, napi_callback_info info) {
 
 static napi_value RefreshOhosFrameRateHint(napi_env env,
                                            napi_callback_info info) {
-    size_t argc = 1;
-    napi_value argv[1] = {nullptr};
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
     if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok ||
-        argc > 1) {
+        argc > 2) {
         return MakeBoolean(env, false);
     }
     int32_t displayRate = 0;
-    if (argc == 1 &&
+    if (argc >= 1 &&
         napi_get_value_int32(env, argv[0], &displayRate) != napi_ok) {
         return MakeBoolean(env, false);
     }
+    // 兼容旧的无参/单参调用；第二值必须是精确档位，0用于当前窗口撤回投票。
+    std::optional<int32_t> supportedFixedRate;
+    if (argc == 2) {
+        double rate = 0;
+        if (napi_get_value_double(env, argv[1], &rate) != napi_ok ||
+            !(rate >= 0 && rate <= amcl::ohos::kMaximumFixedRefreshRate) ||
+            rate != static_cast<int32_t>(rate)) {
+            return MakeBoolean(env, false);
+        }
+        supportedFixedRate = static_cast<int32_t>(rate);
+    }
     return MakeBoolean(
         env, amcl::ohos::RefreshExpectedFrameRateHintForDisplayRate(
-                 displayRate, "display-change"));
+                 displayRate, "display-change", supportedFixedRate));
 }
 
 static constexpr napi_property_descriptor kOhosRuntimeDescriptors[] = {

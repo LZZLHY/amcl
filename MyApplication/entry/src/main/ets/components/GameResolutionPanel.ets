@@ -1,6 +1,8 @@
 import testNapi from 'libentry.so';
 import { GameResolutionState, unavailableGameResolution, parseGameResolutionState, gameResolutionMessage } from '../runtime/GameResolutionState';
 import { EditorPalette } from './TouchEditorTheme';
+import { GameSettingsRail } from './GameSettingsNavigation';
+import { gameSettingsWide, gameSettingsWidth, gameSettingsHeight } from './GameSettingsWindow';
 
 /**
  * 本次游戏的手动比例与故障退出面板。编辑模式只提交会话请求，离开时停止读取状态。
@@ -14,6 +16,10 @@ export struct GameResolutionPanel {
   @Prop screenHeight: number = 400;
   /** 守卫确认终局后，退出入口不随后续状态读取失败而消失。 */
   @Prop exitOnly: boolean = false;
+  /** 方案名只标识当前编辑环境；本局分辨率不会写入这个方案。 */
+  @Prop profileName: string = '';
+  onNavigate: (section: string) => void = (_section: string): void => {};
+  onReturnGame: () => void = (): void => {};
   onDone: () => void = (): void => {};
   @State private snapshot: GameResolutionState = unavailableGameResolution();
   @State private draft: number = 100;
@@ -34,12 +40,14 @@ export struct GameResolutionPanel {
     this.timer = -1;
   }
   private refresh(): void {
-    if (!this.active) return;
+    // 已读到的终局必须保留：后续读失败不能让导航、滑杆或提交按钮重新开放。
+    if (!this.active || this.requiresRestart()) return;
     try { this.snapshot = parseGameResolutionState(testNapi.mcGetResolutionState()); }
     catch (_) { this.snapshot = unavailableGameResolution(); }
   }
   private apply(): void {
-    if (this.requiresRestart()) return;
+    // 点击与原生状态回读可能交错：失活、终局或已失去申请资格时不再派发。
+    if (!this.active || this.requiresRestart() || !this.snapshot.canRequest) return;
     this.error = '';
     try {
       if (!testNapi.mcRequestResolutionScale(this.draft)) this.error = '当前画面暂不能应用，请等待窗口就绪或重新启动游戏';
@@ -65,42 +73,158 @@ export struct GameResolutionPanel {
     } catch (_) { this.error = '结束确认未能打开，游戏仍在运行'; }
   }
 
-  build() {
-    Scroll() {
-      Column({ space: 12 }) {
-        Text(this.requiresRestart() ? '画面尺寸异常' : '本次游戏分辨率').fontSize(20).fontColor(this.palette.text)
-        if (!this.requiresRestart()) {
-          Text(this.draft + '%').fontSize(20).fontColor(this.palette.text)
-          Slider({ value: this.draft, min: 50, max: 100, step: 5 }).width('100%')
-            .trackColor(this.palette.surfaceActive).selectedColor(this.palette.accentFill).blockColor(this.palette.accent)
-            .onChange((value: number): void => { this.draft = value; }).id('resolution-live-slider')
-          // 作用范围直接写在行动上，不在标题下重复解释“本次游戏”。
-          Button('仅应用到本局游戏').width('100%').height(44)
-            .backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent)
-            .enabled(this.snapshot.canRequest)
-            .onClick((): void => { this.apply(); }).id('resolution-live-apply')
+  /** 路由只从正常的活动面板发给持有编辑事务的宿主，迟到的点击不能离开故障出口。 */
+  private navigate_(section: string): void {
+    if (!this.active || this.requiresRestart() || section === 'resolution') return;
+    if (section === 'home') this.onDone();
+    else if (section === 'game') this.onReturnGame();
+    else this.onNavigate(section);
+  }
+
+  /** 只有 Native 已核实实际绘制尺寸时才展示生效比例，等待或不可用时保留未知。 */
+  private confirmedPercent_(): string {
+    return this.snapshot.phase === 'confirmed' ? Math.round(this.snapshot.configuredPercent) + '%' : '—';
+  }
+
+  @Builder
+  private Header_(wide: boolean) {
+    Row({ space: 8 }) {
+      if (wide) {
+        Text('设置  ›  布局与画面').fontSize(14).fontColor(this.palette.muted).layoutWeight(1)
+      } else {
+        Button('‹ 设置').type(ButtonType.Normal).height(44).padding({ left: 6, right: 8 })
+          .fontSize(15).fontColor(this.palette.accent).backgroundColor(Color.Transparent)
+          .onClick((): void => { this.navigate_('home'); }).accessibilityText('返回设置目录')
+        Text('游戏分辨率').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette.text)
+          .layoutWeight(1).maxLines(2)
+        if (this.profileName.length > 0 && this.screenWidth >= 500) {
+          Text(this.profileName).fontSize(13).fontColor(this.palette.muted).maxLines(1)
+            .constraintSize({ maxWidth: '24%' }).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .accessibilityText('当前方案：' + this.profileName)
         }
-        Text(this.requiresRestart() ? '画面尺寸未能确认，请返回启动器后重新启动游戏' : gameResolutionMessage(this.snapshot))
-          .fontSize(14).fontColor(this.palette.text).id('resolution-live-status')
-        if (!this.requiresRestart() && this.snapshot.displayWidth > 0) {
+      }
+      Button('返回游戏').type(ButtonType.Normal).height(44).padding({ left: 10, right: 10 })
+        .fontSize(14).fontColor(this.palette.text).backgroundColor(Color.Transparent)
+        .onClick((): void => { this.navigate_('game'); }).id('resolution-live-return-game')
+    }.width('100%')
+  }
+
+  @Builder
+  private ScaleGroup_() {
+    Column({ space: 8 }) {
+      Text('渲染比例').fontSize(14).fontColor(this.palette.muted)
+      Column({ space: 8 }) {
+        Text(Math.round(this.draft) + '%').fontSize(36).fontWeight(FontWeight.Bold).fontColor(this.palette.accent)
+        Slider({ value: this.draft, min: 50, max: 100, step: 5 }).width('100%')
+          .trackColor(this.palette.stroke).selectedColor(this.palette.accentFill).blockColor(this.palette.accent)
+          .onChange((value: number): void => { this.draft = value; }).id('resolution-live-slider')
+          .accessibilityText('本次游戏渲染比例，' + Math.round(this.draft) + '%')
+        Row() {
+          Text('50%').fontSize(13).fontColor(this.palette.muted)
+          Blank()
+          Text('100%').fontSize(13).fontColor(this.palette.muted)
+        }.width('100%')
+      }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+        .backgroundColor(this.palette.surface).borderRadius(16)
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private StatusLine_(message: string) {
+    Text(message).width('100%').fontSize(15).fontColor(this.palette.text).id('resolution-live-status')
+  }
+
+  @Builder
+  private StateGroup_() {
+    Column({ space: 8 }) {
+      Text('本局状态').fontSize(14).fontColor(this.palette.muted)
+      Column({ space: 12 }) {
+        Row({ space: 12 }) {
+          Text('当前比例').fontSize(16).fontColor(this.palette.text).layoutWeight(1)
+          Text(this.confirmedPercent_()).fontSize(16).fontColor(this.palette.text)
+        }.width('100%')
+        Divider().strokeWidth(0.5).color(this.palette.stroke)
+        this.StatusLine_(gameResolutionMessage(this.snapshot))
+        if (this.snapshot.displayWidth > 0 && this.snapshot.displayHeight > 0) {
           Text('显示区域 ' + this.snapshot.displayWidth + ' × ' + this.snapshot.displayHeight)
             .fontSize(13).fontColor(this.palette.muted)
         }
-        if (this.error.length > 0) {
-          Text(this.error).fontSize(14).fontColor(this.palette.danger)
+        if (this.error.length > 0) { Text(this.error).fontSize(14).fontColor(this.palette.danger) }
+      }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+        .backgroundColor(this.palette.surface).borderRadius(16)
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  /** 正文可滚动，手机横屏、分屏和系统大字下均保留独立的返回和应用操作。 */
+  @Builder
+  private Content_(wide: boolean) {
+    this.Header_(wide)
+    Divider().strokeWidth(0.5).color(this.palette.stroke)
+    Scroll() {
+      Column({ space: wide ? 20 : 12 }) {
+        if (wide) {
+          Text('游戏分辨率').fontSize(32).fontWeight(FontWeight.Bold).fontColor(this.palette.text)
+          Text('调整这一局游戏的渲染比例。').fontSize(15).fontColor(this.palette.muted)
+        } else if (this.profileName.length > 0 && this.screenWidth < 500) {
+          Text('当前方案：' + this.profileName).fontSize(13).fontColor(this.palette.muted)
         }
-        if (this.requiresRestart()) {
-          Button('结束当前游戏').height(44).width('100%').onClick((): void => { this.confirmEndGame(); })
-            .backgroundColor(this.palette.surface).fontColor(this.palette.danger)
-            .id('resolution-live-end-game')
+        if (wide) {
+          Row({ space: 16 }) {
+            Column() { this.ScaleGroup_() }.layoutWeight(1)
+            Column() { this.StateGroup_() }.layoutWeight(1)
+          }.width('100%').alignItems(VerticalAlign.Top)
         } else {
-          Button('返回').height(44).width('100%').onClick((): void => { this.onDone(); }).id('resolution-live-back')
-            .backgroundColor(this.palette.surface).fontColor(this.palette.accent)
+          this.ScaleGroup_()
+          this.StateGroup_()
         }
-      }.padding(20).width('100%')
-    }.width(Math.min(360, Math.max(160, this.screenWidth - 24)))
-      .constraintSize({ maxHeight: Math.max(120, this.screenHeight * 0.9) })
-      .backgroundColor(this.palette.panel).borderRadius(16)
+      }.width('100%').padding({ top: wide ? 18 : 12, bottom: 14 }).alignItems(HorizontalAlign.Start)
+    }.width('100%').layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Auto)
+    Divider().strokeWidth(0.5).color(this.palette.stroke)
+    Row({ space: 8 }) {
+      if (this.screenWidth >= 600) {
+        Text('仅对当前游戏生效').fontSize(13).fontColor(this.palette.muted).layoutWeight(1)
+      } else { Blank() }
+      Button('返回').height(44).fontSize(15).fontColor(this.palette.text).backgroundColor(this.palette.surface)
+        .onClick((): void => { this.navigate_('home'); }).id('resolution-live-back')
+      Button('仅应用到本局游戏').height(44).fontSize(15).fontColor(this.palette.onAccent)
+        .backgroundColor(this.palette.accentFill).enabled(this.snapshot.canRequest)
+        .onClick((): void => { this.apply(); }).id('resolution-live-apply')
+    }.width('100%').padding({ top: 6, bottom: 6 })
+  }
+
+  /** 守卫也独立复用此出口。这里没有普通分辨率导航、设置事务或返回游戏操作。 */
+  @Builder
+  private Failure_() {
+    Scroll() {
+      Column({ space: 14 }) {
+        Text('画面尺寸异常').fontSize(21).fontWeight(FontWeight.Bold).fontColor(this.palette.text)
+        this.StatusLine_('画面尺寸未能确认，请返回启动器后重新启动游戏')
+        if (this.error.length > 0) { Text(this.error).fontSize(14).fontColor(this.palette.danger) }
+        Button('结束当前游戏').height(44).width('100%').onClick((): void => { this.confirmEndGame(); })
+          .backgroundColor(this.palette.surface).fontColor(this.palette.danger).id('resolution-live-end-game')
+      }.width('100%').padding(20).alignItems(HorizontalAlign.Start)
+    }.width(Math.max(1, Math.min(400, this.screenWidth - 16)))
+      .constraintSize({ maxHeight: Math.max(1, this.screenHeight - 12) }).backgroundColor(this.palette.panel).borderRadius(18)
+  }
+
+  build() {
+    Stack() {
+      if (this.requiresRestart()) {
+        this.Failure_()
+      } else {
+        Row() {
+          if (gameSettingsWide(this.screenWidth, this.screenHeight)) {
+            GameSettingsRail({ palette: this.palette, selected: 'resolution', profileName: this.profileName,
+              allowLiveResolution: true, onSelect: (section: string): void => { this.navigate_(section); } })
+          }
+          Column() { this.Content_(gameSettingsWide(this.screenWidth, this.screenHeight)) }
+            .layoutWeight(1).height('100%').padding({ left: 16, right: 16, top: 4, bottom: 2 })
+            .alignItems(HorizontalAlign.Start)
+        }.width(gameSettingsWidth(this.screenWidth,this.screenHeight)).height(gameSettingsHeight(this.screenWidth,this.screenHeight))
+          .id('game-settings-sheet')
+          .backgroundColor(this.palette.panel).borderRadius(this.palette.radiusPanel).clip(true)
+      }
+    }.width('100%').height('100%').backgroundColor(this.exitOnly ? Color.Transparent : this.palette.overlay)
       .onTouch((event: TouchEvent): void => { event.stopPropagation(); })
       .onMouse((event: MouseEvent): void => { event.stopPropagation(); })
   }

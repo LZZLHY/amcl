@@ -589,7 +589,9 @@ const browserTasks=[],browserLayoutCalls=[];const browser=new Browse();
 Object.assign(browser,{mcDir:'/settings/current',targetMcDir_:'/resource-picker/old',availableVersions:[],
   cacheRemoteMeta:true,queryInput_:'pack query',loaderInput_:'forge',headerCollapsed_:false,
   uiCtx:()=>({filesDir:slash(fixture)+'/browser-files'}),onStatusMessage(){},toast(message){throw new Error(message);},
-  runModpackInstall_(task){browserTasks.push(task);},
+  dismissLocalDraft_(){this.localArchiveOwner_?.(true);this.localArchiveOwner_=undefined;},
+  ownLocalArchive_:()=>()=>{},
+  runModpackInstall_(task,_lock,capture){browserTasks.push(task);capture?.(task,Promise.resolve());},
   getUIContext:()=>({animateTo(_options,apply){apply();}}),
   listScroller_:{scrollTo(){throw new Error('filter toggle must not scroll away results');}},
   // 本组验证安装目标和筛选选择保留，几何/手势策略由独立退让回归验证；明确记录这两个
@@ -607,6 +609,19 @@ assert.equal(browserTasks.length,1,'本地选择文件后先打开下载详情�
 assert.equal(browser.showLocalModpackDetail_,true);browser.localModpackName_='Local Custom';browser.confirmLocalModpack_();
 assert.equal(browserTasks[1].getInstallRoot(),'/settings/changed','Local import snapshots the settings root before awaiting the picker');
 assert.equal(browserTasks[1].getInstallName(),'Local Custom');
+// 执行生产具名处理和真实名称校验，纠错应复用本次最初的文件引用。
+const PreparePack=methodClass('entry/src/main/ets/launcherskill/BrowseSkill.ets',['run'],{
+  ResourceKind:Types.ResourceKind,LauncherSkillBus:{awaitingUser(){}},util:{generateRandomUUID:crypto.randomUUID},
+  textArg:(args,key)=>args[key]??'',result:(state,reason)=>({state,reason}),validateModpackVersionName:I.validateModpackVersionName});
+const prepare=new PreparePack();let draft=null;
+prepare.access=()=>({available:()=>true,kind:()=>Types.ResourceKind.MODPACK,detail:()=>null,local:()=>draft,contextKey:()=>'/mc',
+  importLocal:async()=>{draft={name:'Original',archive:'/copy/pack',root:'/mc',valid:true};return 'selected';},
+  renameLocal:name=>{draft.name=name;draft.valid=!I.validateModpackVersionName(name);}});
+const chosen=await prepare.run('chooseLocalModpack',{});
+const planArgs={selectionRef:chosen.selectionRef,instance:'A'.repeat(121)};
+assert.equal((await prepare.run('prepareLocalModpack',planArgs)).reason,'invalidInstance');assert.equal(draft.name,'Original');
+planArgs.instance='Corrected';assert.equal((await prepare.run('prepareLocalModpack',planArgs)).instance,'Corrected');
+passed('invalid modpack name retains the original selection and accepts a corrected name');
 browser.resumeModpack_({id:'persisted-pack',title:'Persisted',mcDir:'/original/instance-root'});
 assert.equal(browserTasks[2].getInstallRoot(),'/original/instance-root','Recovery keeps the original instance root');
 browser.setHeaderCollapsed(true);assert.equal(browser.headerCollapsed_,true);

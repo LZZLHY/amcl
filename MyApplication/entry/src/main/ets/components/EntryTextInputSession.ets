@@ -28,10 +28,12 @@ function isPowerOfTwoCount(count: number): boolean {
 
 /** Process-wide typed text sink. No accepted session writes legacy char events. */
 class EntryTextInputSessionSink implements TextInputSessionSink {
-  begin(_owner: string, generation: number): boolean {
+  begin(_owner: string, generation: number, demandIdentity: string = ''): boolean {
     try {
-      if (!testNapi.textInputSessionSupported() ||
-          !testNapi.beginTextInputSession(generation)) return false
+      if (!testNapi.textInputSessionSupported()) return false
+      const accepted: boolean = demandIdentity.length > 0
+        ? testNapi.beginTextInputSession(generation, demandIdentity) : testNapi.beginTextInputSession(generation)
+      if (!accepted) return false
       // Do not count candidate degradation at BEGIN time. InputMethodController
       // may not expose a candidate-list callback, but a session that never
       // receives candidate data has not exercised that unsupported path. The

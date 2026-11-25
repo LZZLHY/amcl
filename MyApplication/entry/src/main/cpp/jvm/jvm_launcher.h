@@ -118,6 +118,9 @@ int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWor
 int jvmInit(const char* runtimeFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,
             const char* trustedAppFilesDir);
 
+// 游戏入口显式选择手机正常退出冷启动；其他 JVM 调用仍走兼容重载。
+int jvmInit(const char* runtimeFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,
+            const char* trustedAppFilesDir, bool returnToLauncherOnExit);
 
 // 新协议：结构化参数列表，避免逗号拼接导致参数拆裂
 void jvmSetExtraArgsList(const std::vector<std::string>& args);

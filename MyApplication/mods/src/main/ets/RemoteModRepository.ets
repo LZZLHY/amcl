@@ -126,7 +126,7 @@ export class ModRepoError extends Error {
 /**
  * 从一个抛出物里取出**结构化**的失败事实。
  *
- * 文档：docs/guides/test-automation-contract.md §4.1（分类不得在边界处降级为字符串）
+ * 保留来源、HTTP 状态与分类，供调用方诊断搜索失败。
  *
  * 起因：`ModSearchController.loadPage` 的 catch 块过去只取 `.message`，
  * 于是 DNS 失败 / 429 限流 / 5xx / JSON 解析失败在状态里**完全不可区分** ——

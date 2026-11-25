@@ -36,8 +36,8 @@ struct Fixture {
         return value;
     }
     bool Edge(AmclInputChannel channel, uint64_t device, uint32_t button, bool down) {
-        const bool accepted = down ? amcl_input_policy_button_begin(channel, device, button)
-                                   : amcl_input_policy_button_end(channel, device, button);
+        const bool accepted = down ? amcl_input_policy_button_begin(channel, device, button, 0u, false)
+                                   : amcl_input_policy_button_end(channel, device, button, 0u);
         if (!accepted) return false;
         CHECK(PlatformInputPhysicalButtonTransaction(device, button,
             down ? AMCL_INPUT_ACTION_DOWN : AMCL_INPUT_ACTION_UP, 0, down ? 1 : 0,

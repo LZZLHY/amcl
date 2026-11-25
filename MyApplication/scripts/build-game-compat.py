@@ -73,7 +73,11 @@ def build(output=None, inputs=None):
         "compileClasspath": compile_receipt, "sources": [
             {"path": path.relative_to(ROOT).as_posix(), "sha256": sha(path.read_text(encoding="utf-8").encode("utf-8"))}
             for path in recipe if path.is_file()]}
-    (SOURCE / "artifact.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+    # SDK 同时读取这份已签入的身份清单；内容未变就保留原文件与读取句柄。
+    manifest = SOURCE / "artifact.json"
+    expected = json.dumps(identity, indent=2) + "\n"
+    if not manifest.exists() or manifest.read_text(encoding="utf-8") != expected:
+        manifest.write_text(expected, encoding="utf-8")
     (directory / "build-receipt.json").write_text(json.dumps({"schema": 1,
         "javac": subprocess.check_output([jdk_tool("javac"), "-version"], text=True).strip(),
         "javaOutputRelease": 21, "compileOnlyLockSha256": identity["compileOnlyLockSha256"],

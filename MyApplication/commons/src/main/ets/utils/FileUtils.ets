@@ -195,7 +195,7 @@ const ILLEGAL_VERSION_NAME_CHARS = /[\/\\:\*\?"<>\|]/;
 export function validateVersionName(name: string): string {
   let n = name.trim();
   if (n.length === 0) return '名称不能为空';
-  if (n === '.' || n === '..') return '名称不合法';
+  if (n.startsWith('.') || n === 'download-temp') return '名称不能是隐藏目录或下载暂存目录';
   if (ILLEGAL_VERSION_NAME_CHARS.test(n)) return '名称不能包含 / \\ : * ? " < > |';
   if (n.endsWith('.') || n.endsWith(' ')) return '名称不能以空格或点结尾';
   if (n.length > 120) return '名称过长（≤120 字符）';

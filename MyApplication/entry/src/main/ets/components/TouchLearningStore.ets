@@ -1,5 +1,6 @@
 /** 游戏内引导v3记录首次展示、重学请求与真实任务完成，独立小文件不污染布局或游戏选项。 */
 import fs from '@ohos.file.fs'
+import { BusinessError } from '@kit.BasicServicesKit'
 
 interface LearningRecord { version: number; seen: boolean; requested: boolean; finished: boolean; completed: number[] }
 export class TouchLearningStore {
@@ -8,6 +9,17 @@ export class TouchLearningStore {
   /** 旧模拟课堂的seen不代表学过游戏内引导；只介绍新版一次，主动关闭后不反复弹出。 */
   seen(): boolean { return this.read().seen }
   requested(): boolean { return this.read().requested }
+  /** 缺文件说明尚未预约；未知读取故障或损坏文件不能解释为“未预约”再覆盖。 */
+  strictRequested(): boolean {
+    try {
+      if (fs.statSync(this.path).size > 1024) throw new Error('引导记录过大');
+      const v=JSON.parse(fs.readTextSync(this.path)) as LearningRecord;
+      if (!v || v.version !== 3 || typeof v.seen !== 'boolean' || typeof v.requested !== 'boolean' ||
+        typeof v.finished !== 'boolean' || !Array.isArray(v.completed) || v.completed.length > 6 ||
+        v.completed.some((n:number):boolean=>!Number.isInteger(n) || n<0 || n>5)) throw new Error('引导记录损坏');
+      return v.requested;
+    } catch (error) { if ((error as BusinessError).code===13900002) return false; throw error as Error; }
+  }
   request(): boolean { const value: LearningRecord={version:3,seen:false,requested:true,finished:false,completed:[]}; return this.write(value) }
   markSeen(): boolean { const value: LearningRecord=this.read(); value.seen=true; value.requested=false; return this.write(value) }
   markClosed(completed: boolean): boolean {

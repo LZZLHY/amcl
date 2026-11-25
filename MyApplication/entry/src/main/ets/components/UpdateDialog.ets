@@ -33,6 +33,9 @@ import { UpdateReminderLevel, RequiredUpdateNotice, isRequiredUpdate,
   canDismissUpdateDiscovery } from './UpdateReminderPolicy';
 
 /** 可选运行时条目；复用更新说明面板但由宿主处理安装任务，不混用 App versionCode。 */
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingKeys, settingText, settingFailure, nextSettingsReceipt } from '../launcherskill/SettingsSkillValues';
+
 export interface UpdateDialogItem {
   id: string; title: string; current: string; target: string; sizeLabel: string; description: string;
 }
@@ -86,8 +89,45 @@ export struct UpdateDialog {
   items: UpdateDialogItem[] = []
   @State private selectedItems: string[] = []
   onInstallItems: (ids: string[]) => void = () => {}
+  private skillNoticeRef_: string = '';
+
+  /** 给当前已展示的更新提示绑定引用。只读已有提示，不用外部数据构造安装清单。 */
+  private async noticeSkill_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (method === 'getUpdateNotice' && settingKeys(args,[])) {
+      return {'state':'ready','reference':this.skillNoticeRef_,'required':this.isRequired_(),'version':this.newVersion,
+        'items':this.items.map((item: UpdateDialogItem): SettingsSkillData => ({'id':item.id,'title':item.title,
+          'current':item.current,'target':item.target,'selected':this.selectedItems.includes(item.id)}))};
+    }
+    if (method === 'chooseRuntimeUpdateItem' && settingKeys(args,['reference','id','selected']) &&
+      args['reference'] === this.skillNoticeRef_ && typeof args['selected'] === 'boolean') {
+      const id=settingText(args,'id');
+      if (!this.items.some((item: UpdateDialogItem): boolean => item.id === id)) return settingFailure('itemChanged');
+      this.selectNoticeItem_(id,args['selected'] as boolean);
+      return {'state':'ready','reference':this.skillNoticeRef_,'selected':this.selectedItems.slice()};
+    }
+    if (method === 'answerUpdateNotice' && settingKeys(args,['reference','answer']) && args['reference'] === this.skillNoticeRef_) {
+      const answer=settingText(args,'answer');
+      if (answer === 'later') {
+        this.onLater();
+        return {'state':'ready','required':this.isRequired_(),'outcome':this.isRequired_()?'notUsingFeature':'postponed'};
+      }
+      if (answer === 'review') {
+        this.detailsExpanded=true;
+        return {'state':'needsUser','reason':'confirmDisplayedTarget','reference':this.skillNoticeRef_};
+      }
+    }
+    return settingFailure('invalidOrExpiredNotice');
+  }
+
+  private selectNoticeItem_(id: string, selected: boolean): void {
+    if (selected && !this.selectedItems.includes(id)) this.selectedItems = this.selectedItems.concat([id]);
+    else if (!selected) this.selectedItems = this.selectedItems.filter((item: string): boolean => item !== id);
+  }
 
   aboutToAppear(): void {
+    this.skillNoticeRef_ = nextSettingsReceipt();
+    LauncherSkillBus.bind('updateNotice',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.noticeSkill_(method,args), (): boolean => !this.selfUpdating && AppStorage.get<boolean>('appInForeground') === true);
     this.selectedItems = this.items.map((item: UpdateDialogItem): string => item.id)
     this.onDismissGuardReady((): boolean => this.selfUpdating ? this.exitSelfUpdate()
       : canDismissUpdateDiscovery(this.reminderLevel, this.mandatory))
@@ -98,6 +138,7 @@ export struct UpdateDialog {
   onDownload: () => void = () => {}
   onLater: () => void = () => {}
   onViewChangelog: () => void = () => {}
+  aboutToDisappear(): void { LauncherSkillBus.unbind('updateNotice',this); this.skillNoticeRef_=''; }
 
   /** 在当前参数上求值，保证父层重新展示不同等级时不会沿用旧的提示状态。 */
   private isRequired_(): boolean { return isRequiredUpdate(this.reminderLevel, this.mandatory); }
@@ -324,8 +365,7 @@ export struct UpdateDialog {
               Checkbox({ name: item.id }).select(this.selectedItems.indexOf(item.id) >= 0)
                 .selectedColor(this.theme.actionText)
                 .onChange((selected: boolean): void => {
-                  this.selectedItems = selected ? this.selectedItems.concat([item.id])
-                    : this.selectedItems.filter((id: string): boolean => id !== item.id)
+                  this.selectNoticeItem_(item.id, selected);
                 })
               Column({ space: 4 }) {
                 Text(item.title + (item.sizeLabel.length > 0 ? ' · ' + item.sizeLabel : ''))

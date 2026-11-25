@@ -147,6 +147,15 @@ export class ModpackInstallTask implements UnifiedDownloadAdapter {
     this.notify_();
   }
 
+  /** 页面与开发会话确认同一个仍在队列中的计划，执行继续通过调度器领取运行资格。 */
+  confirmAndResume(registry: DownloadTaskRegistry, committed?: () => void,
+    onStarted?: (owner: UnifiedDownloadAdapter) => void): Promise<void> {
+    if (registry.getAdapter(this.view.id) !== this) throw new Error('安装任务已变化，请重新读取');
+    this.confirmSelection();
+    if (committed !== undefined) committed();
+    return registry.resume(this.view.id,onStarted);
+  }
+
   /** 只确认计划，执行必须再经 Registry.resume 获取调度槽。 */
   confirmSelection(): void {
     assertModpackRecoveryAvailable(this.req_.filesDir, this.req_.sessionId!);

@@ -89,7 +89,8 @@ struct McPhaseRowComp {
       case DownloadPhase.CLIENT:    return '主程序 jar' + (p.total > 0 ? ' (' + formatBytes(p.total) + ')' : '')
       case DownloadPhase.LIBRARIES: return '依赖库' + (p.total > 0 ? ' (' + p.current + ' / ' + p.total + ')' : '')
       case DownloadPhase.ASSETS:    return '游戏资源 (assets)' + (p.total > 0 ? ' (' + p.current + ' / ' + p.total + ')' : '')
-      case DownloadPhase.MODLOADER: return '安装 ModLoader'
+      // 阶段模型已经绑定到真正执行的加载器。
+      case DownloadPhase.MODLOADER: return p.label || '安装 ModLoader'
       case DownloadPhase.MERGE:     return '合并版本'
       default:                       return p.phase
     }
@@ -323,8 +324,7 @@ export struct TaskDetailView {
     let task = this.modpackAdapter_()
     if (task === undefined) return
     try {
-      task.confirmSelection()
-      this.registry_.resume(this.view.id).catch((error: Error): void => {
+      task.confirmAndResume(this.registry_).catch((error: Error): void => {
         this.getUIContext().getPromptAction().showToast({ message: error.message })
       })
     } catch (e) {

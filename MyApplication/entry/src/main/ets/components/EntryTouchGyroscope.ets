@@ -44,6 +44,12 @@ export class EntryTouchGyroscope {
   private configureCurrent(enabled: boolean, options: TouchConfiguration, rotation: number, schemaGeneration: number): boolean {
     const originalGeneration: number=this.generation
     if (!this.reconcileCleanup()) return false
+    // off 的敏感度/方向没有活资源；确认旧订阅和原租约已收口后无需反复构造配置签名。
+    if (!enabled && this.callback === undefined && this.lease.length === 0 && this.status === 'idle') {
+      // 关闭完成也结束上次采样异常的签名；下次同设备/配置再次启用应重新订阅。
+      if (this.signature !== '') this.signature = ''
+      return true
+    }
     let context: string = ''
     let contextReadFailed: boolean = false
     if (enabled && schemaGeneration>0 && typeof testNapi.touchGyroLeaseContext === 'function') {

@@ -188,6 +188,13 @@ function harness(options = {}) {
 }
 
 /** 更新/修复成功：无关旧 JAR 原样保留，下载身份和 pin 不变，两种目录隔离模式均执行真实事务。 */
+{
+  const h=harness();
+  h.request.oldIdentity='previous-file';
+  await assert.rejects(h.run(),/待更新文件已改变/);
+  assert.deepEqual(h.files.get(h.request.oldPath),h.original);
+  assert.equal(h.downloads.length,0);
+}
 for(const isolation of [true,false]){
   const h=harness({isolation});
   const environment=h.api.installedModEnvironment('/virtual/mc','旧实例');

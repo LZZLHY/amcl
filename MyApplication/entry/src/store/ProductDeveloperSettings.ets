@@ -1,1 +1,1 @@
-export { ProductDeveloperSettings } from '../sideload/ProductDeveloperSettings'
+export { ProductDeveloperSettings, developerToolRoute } from '../sideload/ProductDeveloperSettings'

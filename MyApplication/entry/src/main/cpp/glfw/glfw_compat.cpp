@@ -702,8 +702,7 @@ static int bridgeLookPrefixCallback(void* window,uint64_t prefix) {
 // 实际GLFW查询才计poll，不能用ringTaken、核心query或反馈getter冒充游戏读取。
 void glfwOHOS_RecordControlPoll(GLFWwindow* window,uint32_t kind,int32_t code,int32_t held) {
     if (!window || window != g_currentWindow || !window->windowId) return;
-    g_sourcePlaneAggregate.BindTarget(window->windowId);
-    g_sourcePlaneAggregate.ObservePoll(kind,code,held);
+    g_sourcePlaneAggregate.ObserveTargetPoll(window->windowId,kind,code,held);
 }
 
 
@@ -1890,6 +1889,25 @@ static int pumpTypedThrough(void* context, uint64_t maxOrder) {
     return g_currentWindow == context && retainTypedPresentedInputTarget() ? 1 : 0;
 }
 
+/** 共用兼容与typed的有序消费。回调内再次设位只能排队，不能从同一队首重放按键。 */
+static void pumpGlfwInputThrough(GLFWwindow* window, uint64_t order) {
+    static thread_local bool pumping = false;
+    if (pumping) return;
+    pumping = true;
+    struct EndPump {
+        bool& active;
+        ~EndPump() { inputBridgeStopPumping(); active = false; }
+    } guard{pumping};
+    inputBridgeStartPumping();
+    inputBridge_pumpOrdered(window, pumpTypedThrough, window, order);
+}
+
+void glfwOHOS_WarpCarriedMenuCursor(GLFWwindow* window, double x, double y) {
+    const uint64_t order = inputBridge_requestGlfwMenuWarpV1(window, x, y);
+    // 在面板首次绘制前尽量送到本次设位，较早的点击呈现屏障和窗口退休仍由同一消费端裁定。
+    if (order != 0 && window == g_currentWindow) pumpGlfwInputThrough(window, order);
+}
+
 static long long scheduleSurfaceRecovery(GLFWwindow* window) {
     ++window->surfaceRecoveryFailures;
     const unsigned int shift = window->surfaceRecoveryFailures > 4
@@ -2911,6 +2929,7 @@ void glfwSwapBuffers(GLFWwindow* window) {
 void glfwPollEvents(void) {
     const auto* eventHost = amclDesktopHostResolve();
     if (eventHost) g_desktopPolledEpoch = eventHost->eventEpoch();
+    glfwOHOS_PollGamepads();
     glfwOHOS_PollDesktopDisplays();
     if (g_currentWindow) {
         const auto* host = amclDesktopHostResolve();
@@ -2958,10 +2977,7 @@ void glfwPollEvents(void) {
     if (!retainTypedPresentedInputTarget()) return;
     const uint64_t inputFence = amclInputHasInteractionOrder(g_typedInputHost)
         ? g_typedInputHost->interactionFence() : UINT64_MAX;
-    inputBridgeStartPumping();
-    inputBridge_pumpOrdered((void*)g_currentWindow, pumpTypedThrough,
-                            (void*)g_currentWindow, inputFence);
-    inputBridgeStopPumping();
+    pumpGlfwInputThrough(g_currentWindow, inputFence);
 
     // 诊断信息：只在首次 poll 打一次（确认 poll 循环已起来）。
     // v7.3：原来每 60 万次 poll 打一行 [GLFW-DIAG]，会持续刷进 mc_output.log，

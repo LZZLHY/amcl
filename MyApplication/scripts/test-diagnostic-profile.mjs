@@ -49,7 +49,7 @@ function fixtureZip(entries) {
   end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, directory, end]);
 }
-function fixtureHap(product, requested, { glfwTrace, entryTrace = false, duplicateGlfw = false, vmaTrace = false } = {}) {
+function fixtureHap(product, requested, { glfwTrace, entryTrace = false, duplicateGlfw = false, vmaTrace = false, abc = 'unit bytes', auxiliaryAbc = null } = {}) {
   const build = diagnosticProfile(product, 'release', requested), developer = product === 'default';
   const marker = `AMCL_DIAGNOSTICS_V1:product=${product};mask=${build.mask};`;
   const trace = 'AMCL_LOOK_GLFW obs=';
@@ -65,8 +65,9 @@ function fixtureHap(product, requested, { glfwTrace, entryTrace = false, duplica
     ['libs/arm64-v8a/libglfw.so', glfw], ['libs/arm64-v8a/libamcl_vulkan_wsi.so', marker],
     ['libs/arm64-v8a/liblwjgl_vma.so', vmaTrace ? '[AMCL_VULKAN_VMA] create_buffer' : 'quiet VMA fixture'],
     ['resources/rawfile/amcl-launcher.jar', jar],
-    ['resources/base/profile/main_pages.json', '[]'], ['ets/modules.abc', 'unit bytes'],
+    ['resources/base/profile/main_pages.json', '[]'], ['ets/modules.abc', abc],
   ];
+  if (auxiliaryAbc !== null) entries.push(['ets/auxiliary.abc', auxiliaryAbc]);
   if (duplicateGlfw) entries.push(['libs/arm64-v8a/libglfw.so', glfw]);
   return fixtureZip(entries);
 }
@@ -75,6 +76,14 @@ const retained = ['GLFW producer AMCL_INPUT_TRACE inclusion mismatch: expected p
 assert.deepEqual(evaluateDiagnosticHap(fixtureHap('default', 'input-trace'), 'default', 'release', 'input-trace'), []);
 assert.deepEqual(evaluateDiagnosticHap(fixtureHap('default', 'none'), 'default', 'release'), []);
 assert.deepEqual(evaluateDiagnosticHap(fixtureHap('store', 'none'), 'store', 'release'), []);
+// 各发布渠道都必须由实际包内容拒绝私有调试接收器。
+for (const product of ['sideload', 'store', 'desktop']) {
+  const leak = fixtureHap(product, 'none', { auxiliaryAbc: Buffer.from('modpacks.confirm','utf16le') });
+  assert.ok(evaluateDiagnosticHap(leak,product,'release').some(issue => issue.includes('modpacks.confirm in ets/auxiliary.abc')));
+  for (const marker of ['amclQaSession', 'amcl-qa-v1']) {
+    assert.match(evaluateDiagnosticHap(fixtureHap(product, 'none', { abc: marker }), product, 'release').join('\n'), /production QA transport remains/);
+  }
+}
 // 其它宿主mask正确也不能掩盖旧VMA；所有产品消费同一静默native契约。
 for (const product of ['default', 'sideload', 'desktop', 'store']) {
   assert.match(evaluateDiagnosticHap(fixtureHap(product, 'none', { vmaTrace: true }), product, 'release').join('\n'),

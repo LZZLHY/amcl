@@ -25,6 +25,8 @@
  * 接鼠标后：① 不按键移动；② 按住左键拖 2~3 秒；③ 滚滚轮；④ 读顶部裁决与事件流。
  */
 
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingFailure, settingKeys } from '../launcherskill/SettingsSkillValues';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { ThemeColors, ThemeMode, resolveTheme } from 'commons';
@@ -105,7 +107,15 @@ struct InputProbePage {
     applyNativeTheme(this.theme);
   }
 
-  onPageShow(): void { this.applyTheme_(); }
+  /** 保留设备探针的人机交互面，仅为当前前台页提供有界摘要，绝不回报完整控制台。 */
+  onPageShow(): void {
+    this.applyTheme_();
+    LauncherSkillBus.bind('diagnosticObservation',this,async (method: string,args: SettingsSkillData): Promise<SettingsSkillData> => {
+      if (method !== 'readDiagnosticObservation' || !settingKeys(args,['tool']) || args['tool'] !== 'input') return settingFailure('toolChanged');
+      return {'state':'ready','page':'input','paused':this.frozen,'events':this.logLines.length,'verdict':this.verdictText.slice(0,180)};
+    },(): boolean => AppStorage.get<boolean>('appInForeground') === true);
+  }
+  onPageHide(): void { LauncherSkillBus.unbind('diagnosticObservation',this); }
 
   // ==================== 事件采集 ====================
 

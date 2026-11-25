@@ -2127,6 +2127,9 @@ void RunCommittedClearEventRollbackCase(uint32_t eventType) {
     } else if (eventType == AMCL_INPUT_EVENT_RESET) {
         event.payload.reset.reason = AMCL_INPUT_RESET_QUEUE_OVERFLOW;
         event.payload.reset.closingEpoch = host.sessionEpoch;
+    } else if (eventType == AMCL_INPUT_EVENT_POINTER_RELATIVE) {
+        // 位移使用单条栈载荷，仍须在真正分发前允许 Close 退休原票及之前的持键。
+        event.payload.pointerRelative.rawDx = 1.25;
     } else {
         CHECK(eventType == AMCL_INPUT_EVENT_DEVICE_CHANGED);
         event.payload.device.change = AMCL_INPUT_DEVICE_REMOVED;
@@ -2175,6 +2178,7 @@ void TestCommittedClearsRollBackWhenCloseWinsDispatchFence() {
     RunCommittedClearEventRollbackCase(AMCL_INPUT_EVENT_FOCUS_CHANGED);
     RunCommittedClearEventRollbackCase(AMCL_INPUT_EVENT_RESET);
     RunCommittedClearEventRollbackCase(AMCL_INPUT_EVENT_DEVICE_CHANGED);
+    RunCommittedClearEventRollbackCase(AMCL_INPUT_EVENT_POINTER_RELATIVE);
 }
 
 // 握手期间写入的记录（sequence 在基线之后）：先一条普通键，再一条启动类 DEVICE。

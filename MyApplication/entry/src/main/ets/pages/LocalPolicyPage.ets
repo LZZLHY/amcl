@@ -3,6 +3,7 @@
  * 加载代际、重试与首启同意的原有边界不变。
  */
 import { applyNativeTheme } from '../components/AppTheme';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 /**
  * 随包政策与许可阅读页：只展示已核对的 UTF-8 本地文本，不创建 Web、外链或远程更新请求。
  * 首启隐私弹窗和日志分享说明复用此路由；返回后仍由原页面决定是否取得同意。
@@ -28,13 +29,33 @@ struct LocalPolicyPage {
   @State private loading: boolean = true;
   @State private errorText: string = '';
   private generation: number = 0;
+  private displayedPolicy_: string = '';
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!;
   private preferences: PreferenceManager = new PreferenceManager(this.context);
 
   /** 使用项目原有主题与系统安全区；不建立另一套窗口监听或修改首启同意状态。 */
+  /** 仅允许阅读随包三份白名单说明；切换主题前重新绑定路由的文档身份。 */
+  private async skillAction_(method: string, args: SkillFields): Promise<SkillFields> {
+    const key = String(args['policy']);
+    if (method !== 'readLocalPolicy' || !['privacy','license','logshare'].includes(key)) return { 'state': 'failed', 'reason': 'invalidPolicy' };
+    if (this.displayedPolicy_ !== key || this.errorText) await this.load_(key);
+    if (this.loading || this.displayedPolicy_ !== key) return { 'state': 'initializing' };
+    if (this.errorText) return { 'state': 'failed', 'reason': 'unreadable' };
+    const offset = Number(args['offset'] ?? 0);
+    if (!Number.isSafeInteger(offset) || offset < 0) return { 'state': 'failed', 'reason': 'invalidOffset' };
+    return { 'state': 'ready', 'title': this.title, 'length': this.body.length, 'text': this.body.slice(offset,offset+3000) };
+  }
+
+  private bindSkill_(): void {
+    LauncherSkillBus.bind('policy', this, (method: string, args: SkillFields): Promise<SkillFields> => this.skillAction_(method,args), (): boolean => {
+      const page = this.getUIContext().getRouter().getState().name;
+      return page === 'LocalPolicyPage' || page === 'pages/LocalPolicyPage';
+    });
+  }
+
   aboutToAppear(): void { this.applyTheme_(); }
-  onPageShow(): void { this.applyTheme_();  this.load_(); }
-  aboutToDisappear(): void { this.generation++; }
+  onPageShow(): void { this.bindSkill_(); this.applyTheme_();  this.load_(); }
+  aboutToDisappear(): void { LauncherSkillBus.unbind('policy',this); this.generation++; }
   private applyTheme_(): void {
     const dark = this.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
     this.theme = resolveTheme(this.preferences.themeMode, resolveIsDark(this.preferences.themeMode, dark), this.preferences.themeAccent);
@@ -42,12 +63,14 @@ struct LocalPolicyPage {
   }
 
   /** 异步读取固定随包文本；晚到结果不更新已销毁页面，失败只允许本地重试，不提供网页兜底。 */
-  private async load_(): Promise<void> {
+  private async load_(choice?: string): Promise<void> {
     const current = ++this.generation;
     // 路由键使用字面字符串访问，避免 store release 混淆接口属性后与序列化参数名不一致。
     const params = this.getUIContext().getRouter().getParams() as Record<string, Object> | undefined;
     let policy = 'privacy';
     if (params !== undefined && params !== null && typeof params['policy'] === 'string') policy = params['policy'] as string;
+    if (choice !== undefined) policy = choice;
+    this.displayedPolicy_ = policy;
     let filename = 'privacy.txt';
     if (policy === 'logshare') { filename = 'logshare-privacy.txt'; this.title = '日志分享隐私说明'; }
     else if (policy === 'license') { filename = 'licenses.txt'; this.title = '许可与致谢'; }

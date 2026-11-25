@@ -216,6 +216,20 @@ for (const invalid of [bootstrapTable, absoluteBootstrap.replace('nativeDir +', 
   assert.equal(hasBootstrapLibraryName(invalid, 'org.lwjgl.sdl.libname', 'libSDL3.so', 'hap-absolute'), false);
 }
 assert.equal(hasBootstrapLibraryName(absoluteBootstrap, 'org.lwjgl.sdl.libname', '../libSDL3.so', 'hap-absolute'), false);
+// 专用库必须由现代槽的条件属性装载，旧槽与相对路径不能取得这份提供方。
+const jemallocRoute = `std::vector<BootstrapProperty> RuntimeBootstrapProperties() {
+  if (lwjglSlot == "LWJGL3") {
+    result.emplace_back("org.lwjgl.system.jemalloc.libname", nativeDir + "/libamcl_lwjgl_jemalloc.so");
+  }
+  return result;
+}`;
+const readsModernProvider = source => hasBootstrapLibraryName(source, 'org.lwjgl.system.jemalloc.libname',
+  'libamcl_lwjgl_jemalloc.so', 'modern-hap-absolute');
+assert.equal(readsModernProvider(jemallocRoute), true);
+for (const changed of [jemallocRoute.replace('LWJGL3', 'LWJGL3_2_3'), jemallocRoute.replace('nativeDir', 'otherDir'),
+  jemallocRoute.replace('result.emplace_back', '// result.emplace_back'), jemallocRoute.replace('jemalloc.libname', 'allocator')]) {
+  assert.equal(readsModernProvider(changed), false);
+}
 
 // 客户端附加校验的可失败测试：完整 JAR hash 与 bootstrap class hash 各自独立，
 // 同名条目或只把 descriptor 改成“看起来匹配”的值不能替代实际字节。
@@ -323,6 +337,14 @@ expectFailure(
   /prebuilt lwjgl-spng\.jar size mismatch/,
 );
 
+// 即便抄入当前实物哈希，也不能用第二份内联身份代替维护者锁定的 SDL 配方。
+const staleSdlIdentity = clone(base.policy);
+const sdlSource = staleSdlIdentity.modules.find(entry => entry.name === 'lwjgl-sdl').native;
+delete sdlSource.lockSection;
+sdlSource.size = 2257888;
+sdlSource.sha256 = '853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064';
+assert.match(analyze({ policy: staleSdlIdentity }).problems.join('\n'), /must use deps.lock \[sdl3-native\]/);
+
 const unlockedBundle = clone(base.policy);
 delete unlockedBundle.modules.find((entry) => entry.name === 'lwjgl-freetype').native.size;
 expectFailure(
@@ -372,22 +394,22 @@ expectFailure(
   /cmake-output provider has no build contracts/,
 );
 
-const fallbackJarPresent = clone(base.modernManifest);
-fallbackJarPresent.jars.push({ name: 'lwjgl-jemalloc.jar', size: 1, sha256: '0'.repeat(64) });
-expectFailure(
-  'intentional fallback is invalidated by adding the allocator JAR',
-  analyze({ modernManifest: fallbackJarPresent }),
-  /lwjgl-jemalloc\.jar must stay absent/,
-);
-
-const missingEvidence = clone(base.policy);
-missingEvidence.modules.find((entry) => entry.name === 'lwjgl-jemalloc').evidence =
-  'scripts/fixtures/lwjgl-target-manifests/does-not-exist.json';
-expectFailure(
-  'intentional fallback has no frozen evidence',
-  analyze({ policy: missingEvidence }),
-  /fallback evidence fixture is missing/,
-);
+// 将历史回退作为负向夹具：当前现代槽已提供完整 allocator，不能重新声明模块缺失。
+const badAllocatorProperty = clone(base.policy);
+badAllocatorProperty.modules.find((entry) => entry.name === 'lwjgl-jemalloc').native.libraryName.key = 'org.lwjgl.system.allocator';
+expectFailure('allocator name cannot replace its native-library property', analyze({ policy: badAllocatorProperty }),
+  /expected modern-slot JEmalloc library-name property/);
+const fallbackPolicy = clone(base.policy);
+const oldAllocator = fallbackPolicy.modules.find((entry) => entry.name === 'lwjgl-jemalloc');
+oldAllocator.state = 'intentional-fallback';
+oldAllocator.reason = 'synthetic historical fallback';
+oldAllocator.evidence = 'scripts/fixtures/lwjgl-target-manifests/lwjgl-jemalloc-intentional-fallback.json';
+delete oldAllocator.native;
+expectFailure('intentional fallback is invalidated by the supplied allocator JAR',
+  analyze({ policy: fallbackPolicy }), /lwjgl-jemalloc\.jar must stay absent/);
+oldAllocator.evidence = 'scripts/fixtures/lwjgl-target-manifests/does-not-exist.json';
+expectFailure('intentional fallback has no frozen evidence',
+  analyze({ policy: fallbackPolicy }), /fallback evidence fixture is missing/);
 
 const fallbackEvidence = JSON.parse(readFileSync(FALLBACK_PATH, 'utf8'));
 const validFallbackProblems = [];

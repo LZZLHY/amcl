@@ -1,0 +1,203 @@
+diff --git a/src/joystick/SDL_amclgamepad_c.h b/src/joystick/SDL_amclgamepad_c.h
+--- a/src/joystick/SDL_amclgamepad_c.h
++++ b/src/joystick/SDL_amclgamepad_c.h
+@@ -3,6 +3,7 @@
+ #ifndef SDL_amclgamepad_c_h_
+ #define SDL_amclgamepad_c_h_
+ #include "../video/openharmony/desktop_host_api.h"
++#include "../video/openharmony/gamepad_change_query.h"
+ 
+ #ifdef AMCL_SDL_GAMEPAD_HOST_TEST
+ /* 宿主测试只替代已验证的进程 reader 和角色资格，SDL 的设备与事件仍走生产逻辑。 */
+@@ -23,19 +24,35 @@
+     Sint16 axes[6];
+     bool buttons[18];
+     Uint8 hat;
+-    bool pendingFocusReplay;
+ } AMCL_GamepadSlot;
+ 
+ static AMCL_GamepadSlot amcl_gamepads[16];
+ static AmclGamepadReadFn amcl_gamepad_reader;
+ static bool amcl_gamepad_syncing;
+ static Uint64 amcl_gamepad_resolve_at;
++static Uint64 amcl_gamepad_revision;
++static unsigned amcl_live_slots, amcl_invalid_slots, amcl_retry_slots, amcl_focus_slots;
++static bool amcl_legacy_reader;
++
++/* SDL 自己也可移除设备或结束句柄。只在真实生命周期边沿标记，空闲轮询不遍历 SDL 设备链。 */
++static void AMCL_InvalidateGamepad(SDL_JoystickID id)
++{
++    if (!amcl_live_slots) return;
++    for (int i = 0; i < (int)SDL_arraysize(amcl_gamepads); ++i) {
++        if (amcl_gamepads[i].instance == id) {
++            amcl_invalid_slots |= 1u << i;
++            break;
++        }
++    }
++}
+ 
+ /* 先撤本地槽再关闭句柄。Remove 事件过滤器可重入，旧代次不能清除后来的连接。 */
+ static void AMCL_DropGamepad(int index)
+ {
+     const AMCL_GamepadSlot old = amcl_gamepads[index];
+     SDL_zero(amcl_gamepads[index]);
++    amcl_live_slots &= ~(1u << index);
++    amcl_focus_slots &= ~(1u << index);
+     if (old.instance) {
+         if (old.handle && SDL_GetJoystickFromID(old.instance) == old.handle) {
+             SDL_CloseJoystick(old.handle);
+@@ -75,28 +92,29 @@
+ 
+ /* 首次连接提交完整初态，后续按 SDL 实际可见的定点轴、键和方向帽提交差异。
+  * 系统可在同一帧上报多个轴；同值或量化后相同的报告不重写 virtual driver。 */
+-static void AMCL_WriteGamepad(AMCL_GamepadSlot *slot, const AmclDesktopGamepad *pad, bool fullRefresh)
++static bool AMCL_WriteGamepad(AMCL_GamepadSlot *slot, const AmclDesktopGamepad *pad, bool fullRefresh)
+ {
+     static const Uint8 buttons[] = {0, 1, 2, 3, 6, 8, 7, 9, 10, 4, 5, 11, 13, 14, 12, 15, 16, 17};
+     for (int axis = 0; axis < (int)SDL_arraysize(slot->axes); ++axis) {
+         const float v = SDL_clamp(pad->axes[axis], -1.0f, 1.0f);
+         const Sint16 value = (Sint16)(v * (v < 0 ? 32768.0f : 32767.0f));
+         if (fullRefresh || value != slot->axes[axis]) {
+-            SDL_SetJoystickVirtualAxis(slot->handle, axis, value);
++            if (!SDL_SetJoystickVirtualAxis(slot->handle, axis, value)) return false;
+             slot->axes[axis] = value;
+         }
+     }
+     for (int button = 0; button < (int)SDL_arraysize(buttons); ++button) {
+         const bool down = pad->buttons[buttons[button]] != 0;
+         if (fullRefresh || down != slot->buttons[button]) {
+-            SDL_SetJoystickVirtualButton(slot->handle, button, down);
++            if (!SDL_SetJoystickVirtualButton(slot->handle, button, down)) return false;
+             slot->buttons[button] = down;
+         }
+     }
+     if (fullRefresh || pad->hats[0] != slot->hat) {
+-        SDL_SetJoystickVirtualHat(slot->handle, 0, pad->hats[0]);
++        if (!SDL_SetJoystickVirtualHat(slot->handle, 0, pad->hats[0])) return false;
+         slot->hat = pad->hats[0];
+     }
++    return true;
+ }
+ 
+ /* Init 时先完成初始枚举，随后由标准 joystick 更新入口同步。SDL_PollEvent 和
+@@ -113,21 +131,46 @@
+         amcl_gamepad_reader = amclResolveGamepadReader();
+         amcl_gamepad_resolve_at = SDL_GetTicks() + 1000;
+     }
+-    const int mask = active && amcl_gamepad_reader ? amcl_gamepad_reader(-1, NULL) : -1;
+-    for (int i = 0; i < (int)SDL_arraysize(amcl_gamepads); ++i) {
++    unsigned online = 0, dirty = 0;
++    if (active && amcl_gamepad_reader) {
++        AmclDesktopGamepad query;
++        query.generation = amcl_gamepad_revision;
++        if (!amcl_legacy_reader && amcl_gamepad_reader(AMCL_GAMEPAD_QUERY_CHANGES, &query) == AMCL_GAMEPAD_CHANGES_SUPPORTED) {
++            amcl_gamepad_revision = query.generation;
++            if (query.connected >= 0) {
++                online = 0xffffu; /* 变化位包含移除；只读对应槽一次，得到当前连接事实。 */
++                dirty = (unsigned)query.connected & online;
++            }
++        } else {
++            amcl_legacy_reader = true;
++            const int mask = amcl_gamepad_reader(-1, NULL);
++            online = mask > 0 ? (unsigned)mask & 0xffffu : 0;
++            dirty = online | amcl_live_slots;
++        }
++    } else {
++        amcl_gamepad_revision = 0;
++    }
++    if (!online) dirty |= amcl_live_slots;
++    const unsigned invalid = amcl_invalid_slots, retry = amcl_retry_slots;
++    amcl_invalid_slots = amcl_retry_slots = 0;
++    dirty |= invalid | retry;
++    if (amcl_focus_slots && !SDL_PrivateJoystickShouldIgnoreEvent()) dirty |= amcl_focus_slots;
++    for (int i = 0; dirty; ++i) {
++        const unsigned bit = 1u << i;
++        if (!(dirty & bit)) continue;
++        dirty &= ~bit;
+         AMCL_GamepadSlot *slot = &amcl_gamepads[i];
+         AmclDesktopGamepad pad;
+-        const int state = mask > 0 && (mask & (1 << i)) ? amcl_gamepad_reader(i, &pad) : 0;
+-        if (slot->instance && (state <= 0 || slot->generation != pad.generation ||
+-                               SDL_GetJoystickFromID(slot->instance) != slot->handle)) {
++        const int state = (online & bit) ? amcl_gamepad_reader(i, &pad) : 0;
++        if (slot->instance && (state <= 0 || slot->generation != pad.generation || (invalid & bit))) {
+             AMCL_DropGamepad(i);
+         }
+         if (state <= 0) {
+             continue;
+         }
+         const bool opening = !slot->instance;
+-        const bool changed = opening || slot->events != pad.events;
+-        if (!changed && !slot->pendingFocusReplay) {
++        const bool changed = opening || slot->events != pad.events || (retry & bit);
++        if (!changed && !(amcl_focus_slots & bit)) {
+             continue;
+         }
+         /* 主 SDL 窗口的焦点恢复可能晚于 Native。后台仍交付归中与松开；
+@@ -137,13 +180,19 @@
+             continue;
+         }
+         if (opening && !AMCL_OpenGamepad(slot, &pad)) {
++            amcl_retry_slots |= bit;
+             continue;
+         }
+         /* 失焦推进 events 高 32 位。两次轮询间已复焦也须收回外部 virtual API 写入。 */
+-        const bool fullRefresh = opening || (!ignoresInput && slot->pendingFocusReplay) ||
++        amcl_live_slots |= bit;
++        const bool fullRefresh = opening || (retry & bit) || (!ignoresInput && (amcl_focus_slots & bit)) ||
+                                  (slot->events >> 32) != (pad.events >> 32);
+-        AMCL_WriteGamepad(slot, &pad, fullRefresh);
+-        slot->pendingFocusReplay = ignoresInput;
++        if (ignoresInput) amcl_focus_slots |= bit;
++        else amcl_focus_slots &= ~bit;
++        if (!AMCL_WriteGamepad(slot, &pad, fullRefresh)) {
++            amcl_retry_slots |= bit; /* 未接受的写入不随宿主游标丢失。 */
++            continue;
++        }
+         slot->events = pad.events;
+         if (opening) {
+             /* 第一次 GetGamepads 后立即读轴，也应见到已连接设备的实际位置。 */
+@@ -160,5 +209,8 @@
+     SDL_zeroa(amcl_gamepads);
+     amcl_gamepad_reader = NULL;
+     amcl_gamepad_resolve_at = 0;
++    amcl_gamepad_revision = 0;
++    amcl_legacy_reader = false;
++    amcl_live_slots = amcl_invalid_slots = amcl_retry_slots = amcl_focus_slots = 0;
+ }
+ #endif
+diff --git a/src/joystick/SDL_joystick.c b/src/joystick/SDL_joystick.c
+--- a/src/joystick/SDL_joystick.c
++++ b/src/joystick/SDL_joystick.c
+@@ -2267,6 +2267,9 @@
+         }
+         SDL_free(joystick->touchpads);
+         SDL_free(joystick->sensors);
++#if (defined(SDL_AMCL_DESKTOP_HOST) && defined(SDL_PLATFORM_OPENHARMONY)) || defined(AMCL_SDL_GAMEPAD_HOST_TEST)
++        AMCL_InvalidateGamepad(joystick->instance_id);
++#endif
+         SDL_free(joystick);
+     }
+     SDL_UnlockJoysticks();
+@@ -2556,6 +2559,10 @@
+     if (player_index >= 0) {
+         SDL_joystick_players[player_index] = 0;
+     }
++#if (defined(SDL_AMCL_DESKTOP_HOST) && defined(SDL_PLATFORM_OPENHARMONY)) || defined(AMCL_SDL_GAMEPAD_HOST_TEST)
++    /* 移除事件的同步观察者可重入，原设备完成移除才授权下一次重新投影。 */
++    AMCL_InvalidateGamepad(instance_id);
++#endif
+ }
+ 
+ void SDL_SendJoystickAxis(Uint64 timestamp, SDL_Joystick *joystick, Uint8 axis, Sint16 value)
+diff --git a/src/video/openharmony/gamepad_change_query.h b/src/video/openharmony/gamepad_change_query.h
+new file mode 100644
+--- /dev/null
++++ b/src/video/openharmony/gamepad_change_query.h
+@@ -0,0 +1,6 @@
++#pragma once
++
++/* 私有 reader 的增量查询。generation 输入本消费者上次的游标（首次为零）；
++ * 返回新游标与 connected 的变化槽位图，置位的槽须重新读取；路线撤销时位图为 -1。
++ * 返回码专用，旧 reader 返回 0 或 -1，可走原位图协议。 */
++enum { AMCL_GAMEPAD_QUERY_CHANGES = -3, AMCL_GAMEPAD_CHANGES_SUPPORTED = 3 };

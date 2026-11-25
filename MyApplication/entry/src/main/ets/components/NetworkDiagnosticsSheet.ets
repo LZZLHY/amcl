@@ -12,6 +12,8 @@
  * 复用 Index 的 bindSheet 锚点渲染；主题由 @Prop theme 注入。
  */
 
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { settingFailure, settingKeys, settingText, SettingsSkillData } from '../launcherskill/SettingsSkillValues';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { AppIcon } from './AppIcon';
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
@@ -33,6 +35,9 @@ export struct NetworkDiagnosticsSheet {
   @State private errorText: string = ''
 
   aboutToAppear(): void {
+    LauncherSkillBus.bind('settingsNetwork',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.skillAction_(method,args), (): boolean => AppStorage.get<boolean>('appInForeground') === true);
+
     this.runDiag_()
   }
 
@@ -59,6 +64,28 @@ export struct NetworkDiagnosticsSheet {
     })
   }
 
+  /** 公开诊断只返回探测项及判断，原报告与剪贴板操作留在真实前台面板。 */
+  private async skillAction_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (method === 'observeNetworkPanel' && settingKeys(args,[])) return {'state':'ready','surface':'network'};
+    if (method !== 'inspectNetwork' || !settingKeys(args,['operation'])) return settingFailure('invalidArguments');
+    const operation = settingText(args,'operation');
+    if (operation === 'retry') {
+      if (this.running) return {'state':'busy'};
+      this.runDiag_(); return {'state':'accepted'};
+    }
+    if (operation !== 'read' && operation !== 'copy') return settingFailure('invalidArguments');
+    if (this.running || this.copyPending_) return {'state':'busy'};
+    if (!this.report) return settingFailure('noReport');
+    if (operation === 'copy') {
+      const copied = await this.copyReport_();
+      return {'state':copied ? 'ready' : 'failed', 'copied':copied};
+    }
+    return {'state':'ready','verdict':this.report.verdict,'probes':this.report.probes.map((p: NetworkProbe): SettingsSkillData =>
+      ({'name':p.name,'status':p.status}))};
+  }
+
+  aboutToDisappear(): void { LauncherSkillBus.unbind('settingsNetwork',this); }
+
   private verdictColor_(): ResourceColor {
     if (!this.report) return this.theme.textHint
     let v = this.report.verdict
@@ -75,8 +102,10 @@ export struct NetworkDiagnosticsSheet {
     return this.theme.errorBg
   }
 
-  private copyReport_(): void {
-    if (!this.report) return
+  private copyPending_: boolean = false;
+  /** 共享系统剪贴板写入的实际完成结果；正在探测时没有可复制的新报告。 */
+  private async copyReport_(): Promise<boolean> {
+    if (!this.report || this.running || this.copyPending_) return false
     let lines: string[] = []
     lines.push('AMCL 网络检测报告')
     lines.push('结论：' + this.report.title)
@@ -87,11 +116,16 @@ export struct NetworkDiagnosticsSheet {
       lines.push(mark + ' ' + p.name + ' — ' + p.detail)
     }
     try {
+      this.copyPending_ = true
+      this.errorText = ''
       let data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, lines.join('\n'))
-      pasteboard.getSystemPasteboard().setData(data).then(() => {
-        this.toast_('检测报告已复制')
-      }).catch((e: Error) => { this.errorText = '报告复制失败：' + (e.message || '系统剪贴板不可用') })
-    } catch (e) { this.errorText = '报告复制失败：' + (e as Error).message }
+      await pasteboard.getSystemPasteboard().setData(data)
+      this.toast_('检测报告已复制')
+      return true
+    } catch (e) {
+      this.errorText = '报告复制失败：' + (e as Error).message
+      return false
+    } finally { this.copyPending_ = false }
   }
 
   private toast_(msg: string): void {

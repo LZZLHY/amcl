@@ -148,6 +148,9 @@ export class EntryTextInputRuntime {
   private nextRequest: number = 1
   private controller: inputMethod.InputMethodController | undefined = undefined
   private operation: EntryImeOperation | undefined = undefined
+  /** 非SDL桌面和移动端沿用原请求。桌面SDL由宿主额外合取当前文本需求。 */
+  private physicalDemandIdentity: string = 'legacy'
+  private readPhysicalDemand: (() => string) | undefined = undefined
   private started: boolean = false
   private stopped: boolean = false
   private stopOutcome: string = 'NotStopped'
@@ -201,6 +204,28 @@ export class EntryTextInputRuntime {
     this.noteImePhase('request', binding, source.activation, wanted ? 'Wanted' : 'Hidden')
     this.clearRetry(source)
     this.updateSoftRequests()
+    this.reconcile()
+  }
+
+  /** 仅桌面SDL接线。系统回调在心跳之前到达时也必须核实SDL最新需求。 */
+  bindPhysicalDemandReader(reader: () => string): void {
+    if (this.readPhysicalDemand === undefined) this.readPhysicalDemand = reader
+  }
+
+  /** 关闸同步退休原物理回调；重新获准给本次文本需求独立的有限重试预算。 */
+  setPhysicalDemandIdentity(identity: string): void {
+    if (this.stopped || this.physicalDemandIdentity === identity) return
+    this.physicalDemandIdentity = identity
+    this.sources.forEach((source: EntryTextSource): void => {
+      if (source.binding.role !== 'physical' || !source.wanted) return
+      this.clearRetry(source)
+      // native合并的Stop→Start可能没有观察到空值，仍必须退休原操作并绑定新需求。
+      source.activation++
+      source.intent = identity.length > 0 ? new EntryTextInputIntent(source.binding, source.activation) : undefined
+      if (identity.length > 0) {
+        source.failedActivation = false; source.retryExhausted = false; source.retryAttempt = 0; source.failure = ''
+      }
+    })
     this.reconcile()
   }
 
@@ -342,7 +367,7 @@ export class EntryTextInputRuntime {
     this.sources.forEach((source: EntryTextSource): void => {
       if (source.retired || !source.wanted) return
       if (source.binding.role === 'physical') {
-        if (hard === undefined || source.requestOrder < hard.requestOrder) hard = source
+        if (this.physicalDemandIdentity.length > 0 && (hard === undefined || source.requestOrder < hard.requestOrder)) hard = source
       } else if (soft === undefined || source.requestOrder < soft.requestOrder) soft = source
     })
     return soft ?? (isEntrySoftTextInputRequested() ? undefined : hard)
@@ -371,7 +396,10 @@ export class EntryTextInputRuntime {
   private attach(source: EntryTextSource): void {
     // tryBegin可能通知现有订阅者；观察先冻结本次原请求代次，不能用返回后的current补身份。
     const requestedActivation: number = source.activation
-    const begin = getEntryTextInputSession().tryBegin(source.binding.role === 'physical' ? 'desktop-physical-ime' : 'mobile-ime-' + source.binding.role)
+    const physicalDemand: string = source.binding.role === 'physical' && this.readPhysicalDemand !== undefined
+      ? this.physicalDemandIdentity : ''
+    const begin = getEntryTextInputSession().tryBegin(source.binding.role === 'physical' ? 'desktop-physical-ime' :
+      'mobile-ime-' + source.binding.role, physicalDemand)
     this.noteImePhase('lease', source.binding, requestedActivation, begin.status.toString())
     if (begin.lease === undefined) {
       if (begin.status === TextInputBeginStatus.HostRejected) this.retry(source)
@@ -406,7 +434,7 @@ export class EntryTextInputRuntime {
         return
       }
       operation.phase = 'Attached'
-      if (!this.currentRequest(operation)) {
+      if (operation.retired || !this.currentRequest(operation)) {
         this.noteImePhase('attach-resolved', operation.source.binding, operation.activation, 'OriginalRequestRetired')
         this.retire(operation); this.detach(operation); return
       }
@@ -458,7 +486,9 @@ export class EntryTextInputRuntime {
   private currentRequest(operation: EntryImeOperation): boolean {
     return !this.stopped && !operation.source.retired && operation.source.wanted &&
       this.source(operation.source.binding) === operation.source && operation.activation === operation.source.activation &&
-      this.candidate() === operation.source
+      this.candidate() === operation.source &&
+      (operation.source.binding.role !== 'physical' || this.readPhysicalDemand === undefined ||
+        this.readPhysicalDemand() === operation.lease.demandIdentity)
   }
 
   /** SDK要求attach后普通on，preview不能在此off再on；失败保持真实cleanup结果。 */

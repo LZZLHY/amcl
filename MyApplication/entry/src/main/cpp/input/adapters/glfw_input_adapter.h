@@ -142,6 +142,7 @@ struct GlfwKeySinkEvent {
     // `scanCode` 落在三个编码空间里的哪一个。⚠️ 合成的 fail-safe 释放没有走 mapper，
     // 所以它们是 `kNone` —— 那不是"未知"，是"这条边沿没有平台身份"。
     GlfwScanCodeSource scanCodeSource;
+    uint64_t textDemandIdentity = 0;
 };
 
 struct GlfwButtonSinkEvent {
@@ -269,6 +270,7 @@ struct GlfwTextSessionSinkEvent {
     uint32_t reason;
     uint64_t sequence;
     uint64_t monotonicTimeNs;
+    uint64_t textDemandIdentity = 0;
 };
 
 struct GlfwTextCommitSinkEvent {
@@ -276,6 +278,7 @@ struct GlfwTextCommitSinkEvent {
     std::vector<uint8_t> utf8;
     uint64_t sequence;
     uint64_t monotonicTimeNs;
+    uint64_t textDemandIdentity = 0;
 };
 
 struct GlfwTextEditingSinkEvent {
@@ -285,6 +288,7 @@ struct GlfwTextEditingSinkEvent {
     uint32_t selectionLength;
     uint64_t sequence;
     uint64_t monotonicTimeNs;
+    uint64_t textDemandIdentity = 0;
 };
 
 struct GlfwTextCandidatesSinkEvent {

@@ -38,7 +38,7 @@ function passed(name) { groups++; console.log('PASS ' + name); }
   passed('single geometry: px/vp/clamp agreement, stored layout intact, density identity and authoritative absence');
 }
 
-function fixture(mutate=false,borrowSchema=false,onPresent=()=>{}) {
+function fixture(mutate=false,borrowSchema=false,onPresent=()=>{},onGroups=()=>{}) {
   let contacts=0, failBegin=false, loseCommit=false, reject=false, serial=0,previousToken='';
   let state={version:1,status:'idle',surface:'1',session:'10',policy:'20',schemaGeneration:'30',token:'',
     operationId:'',candidateId:'',fenced:false,nativeTouches:0,modalCount:0,density:2,transform:0,grabEpoch:'40',grabbed:false};
@@ -79,14 +79,15 @@ function fixture(mutate=false,borrowSchema=false,onPresent=()=>{}) {
   const {TouchSurfaceController,TouchSurfaceCandidate}=env.load('entry/src/main/ets/components/TouchSurfaceController.ets');
   const controller=new TouchSurfaceController((candidate,token)=>{
     presentations.push({candidate,token});onPresent(candidate,token);
-  },()=>contacts,m=>warnings.push(m));
-  const candidate=(name,projected)=>{
+  },()=>contacts,m=>warnings.push(m),onGroups);
+  const candidate=(name,projected,profileRevision=1)=>{
     const runtime=projected??new geometry.RuntimeTouchLayout();
     Object.assign(runtime.context,{key:'window',valid:true,density:2,transform:0,widthPx:640,heightPx:360});
     const profile=layouts.getDefaultLayout();profile.controls=profile.controls.slice(0,1);profile.controls[0].id=name;
+    profile.profileId=name;profile.profileRevision=profileRevision;
     return new TouchSurfaceCandidate(profile,runtime,{grabbed:false,controls:[{id:name}]});
   };
-  return {env,controller,candidate,calls,presentations,warnings,state:()=>state,
+  return {env,napi,controller,candidate,calls,presentations,warnings,state:()=>state,
     createCandidate:(profile,runtime,schema)=>new TouchSurfaceCandidate(profile,runtime,schema),
     contacts:n=>{contacts=n;},nativeContacts:n=>{state.nativeTouches=n;},lose:()=>{loseCommit=true;},
     reject:v=>{reject=v;},fail:v=>{failBegin=v;},stale:()=>{state={...state,status:'stale',surface:'2',fenced:true};}};
@@ -106,6 +107,29 @@ function frozenCandidate(borrowSchema=false) {
   assert.equal(presented.candidate.layout.entries[0].rectPx.x,10);
   assert.notEqual(presented.candidate.profile.controls[0].label,'changed');
   assert.equal(f.controller.confirm(presented.candidate.id,presented.token),true);
+}
+{
+  const groups=[],f=fixture(false,false,()=>{},rev=>groups.push(rev));
+  let reads=0,full=0;
+  f.napi.touchPublicationStateIfChanged=buffer=>{
+    reads++;
+    const words=new BigUint64Array(buffer),s=f.state(),revision=BigInt(s.groupRevision),token=BigInt(s.token);
+    if(!s.fenced&&words[0]===token&&words[1]===revision)return null;
+    words.set([s.fenced?0n:token,revision]);full++;return {...s};
+  };
+  f.state().groupRevision='9007199254740993';
+  const candidate=f.candidate('steady',undefined,12);f.controller.request(candidate);
+  const shown=f.presentations.at(-1);assert.ok(f.controller.confirm(shown.candidate.id,shown.token));
+  const kinds=groups.length;
+  Object.defineProperty(shown.candidate,'profile',{get(){throw Error('状态查询不应复制控件树');}});
+  assert.equal(f.controller.status().targetProfileId,'steady');
+  assert.equal(f.controller.status().targetProfileRevision,12);
+  for(let i=0;i<600;i++)f.controller.reconcile();
+  assert.equal(full,1);assert.equal(reads,601);assert.equal(groups.length,kinds+600);
+  assert.equal(groups.at(-1),'9007199254740993');
+  f.state().groupRevision='9007199254740994';f.controller.reconcile();
+  assert.equal(full,2);assert.equal(groups.at(-1),'9007199254740994');
+  passed('600 stable reconciliations produce no new publication receipt; exact 64-bit group changes and retry callbacks retained');
 }
 frozenCandidate();assert.throws(()=>frozenCandidate(true),/waiting候选/);
 passed('waiting candidate freezes profile/context/nested message and defensive reads; borrowed-schema negative control fails');
@@ -316,6 +340,16 @@ function controlDomainLayers(removePolicy=false,childTrigger=0) {
   assert.equal(JSON.stringify(profile),saved,'运行时分层不能修改存档顺序/几何/绑定');
   view.touchVisual={joystickIndex:submitted.schema.controls.findIndex(control=>control.id==='joystick')};
   assert.equal(view.usesNativeJoystick(view.currentTouchItem_('joystick')),true,'Schema/顶层显示共同Native前缀下标');
+  // 直接从已发布 schema 索引找实际认领者；求值次数与布局条目数无关。
+  const installed=view.runtimeLayout,claimedStick=installed.find('joystick').item;
+  let ids=0;
+  const large=Array.from({length:256},(_,i)=>({item:{get id(){ids++;return i===173?claimedStick.id:'other-'+i}}}));
+  view.runtimeLayout={entries:large};view.touchVisual.joystickIndex=173;
+  for(let i=0;i<6;i++)assert.equal(view.usesNativeJoystick(claimedStick),true);
+  assert.equal(ids,6);
+  view.touchVisual.joystickIndex=172;assert.equal(view.usesNativeJoystick(claimedStick),false);
+  view.touchVisual.joystickIndex=-1;assert.equal(view.usesNativeJoystick(claimedStick),false);
+  view.runtimeLayout=installed;view.touchVisual.joystickIndex=submitted.schema.controls.findIndex(control=>control.id===claimedStick.id);
   // 真实Drawer click捕获原Builder参数；新publication不能让旧回调改为当前意图。
   const first=f.presentations.at(-1),completedPublication=f.controller.status();
   let toggles=0;Object.assign(view,{isPointerDeviceSourced:()=>false,toggleDrawer:()=>toggles++});

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include "jna_runtime_contract.h"
@@ -50,6 +51,23 @@ inline std::string RuntimeEglLibrary(const std::string& nativeDir, const std::st
 }
 
 /**
+ * 结构化计划已核验槽位。兼容旧调用方时，只识别 AMCL 现代槽中明确交付的新绑定；
+ * 旧槽同名 JAR、其它 Maven 目录及文件名的前缀均不改变原有分配器。
+ */
+inline std::string AllocatorRuntimeSlot(bool hasPlan, const std::string& slot, std::string_view classpath) {
+    if (hasPlan) return slot;
+    constexpr std::string_view binding = "/lwjgl-ohos/lwjgl-jemalloc.jar";
+    while (!classpath.empty()) {
+        const auto separator = classpath.find(':');
+        const auto entry = classpath.substr(0, separator);
+        if (entry.size() >= binding.size() && entry.substr(entry.size() - binding.size()) == binding) return "LWJGL3";
+        if (separator == std::string_view::npos) break;
+        classpath.remove_prefix(separator + 1);
+    }
+    return {};
+}
+
+/**
  * 按已准入的 GraphicsPlan 生成早读属性。调用方负责验证绝对路径与 provider 制品；
  * 本函数不重新选择后端，也不触碰加载器。所有值必须在 Java agent/Configuration 初始化前生效。
  * JNA 临时目录沿用实例的隔离目录，避免后置 setProperty 改写已缓存的路径。
@@ -57,7 +75,7 @@ inline std::string RuntimeEglLibrary(const std::string& nativeDir, const std::st
 inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
     const std::string& nativeDir, const std::string& gameDir,
     const std::string& profile, const std::string& glLibrary, bool sdl,
-    const JnaBootstrap& jna = JnaBootstrap{}) {
+    const JnaBootstrap& jna = JnaBootstrap{}, const std::string& lwjglSlot = {}) {
     std::vector<BootstrapProperty> result{
         {"java.system.class.loader", "com.amcl.launcher.AmclClassLoader"},
         {"os.name", "Linux"}, {"os.version", "5.10"},
@@ -102,6 +120,11 @@ inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
     };
     // 必须在 agent 与 LWJGL Configuration 初始化前冻结；Linux 默认 libEGL.so.1
     // 既不匹配 OHOS 系统库名，也不能代表 MG/MobileGL 的 wrapper 对象域。
+    // 现代槽的 Java 绑定及交给 STB、SPNG、NanoVG 的原生回调共用这一个 HAP 内的库。
+    // 旧槽带有自己的 Java ABI；省略该属性可避免它们拾取现代分配器。
+    if (lwjglSlot == "LWJGL3") {
+        result.emplace_back("org.lwjgl.system.jemalloc.libname", nativeDir + "/libamcl_lwjgl_jemalloc.so");
+    }
     const auto eglLibrary = RuntimeEglLibrary(nativeDir, profile);
     if (!eglLibrary.empty()) result.emplace_back("org.lwjgl.egl.libname", eglLibrary);
     if (profile == "nativegl") result.emplace_back("org.lwjgl.opengl.contextAPI", "native");

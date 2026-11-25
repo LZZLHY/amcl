@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // 产品身份 banner 的源码契约门禁（批次 D8）。
 //
-// 文档：docs/refactor/测试自动化方案.md §三.8
-//       docs/guides/test-automation-contract.md §10.2（产品身份不进日志）
+// 校验启动日志对当前产品配置及生效诊断能力的记录。
 //
 // 为什么需要它：这条 banner 的三种失效方式**全都是静默的** ——
 //   1. 位置漂到 `setNativeLogSink` 之前 ⇒ 只进 hilog、不落盘（施工记录 §S03.3 的窗口），

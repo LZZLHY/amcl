@@ -29,6 +29,7 @@ const VERIFIED_BINDINGS = new Map([
   ['lwjgl-egl.jar', { module: 'egl', kind: 'bridge', artifact: 'libamcl_lwjgl_egl.so', stage: 'cmake', requiredSymbols: ['eglGetProcAddress'] }],
   ['lwjgl-freetype.jar', { module: 'freetype', kind: 'c-api', artifact: 'libfreetype.so', requiredSource: 'all-generated' }],
   ['lwjgl-glfw.jar', { module: 'glfw', kind: 'bridge', artifact: 'libglfw.so', stage: 'cmake', requiredSource: ['GLFW.java', 'GLFWNativeEGL.java', 'GLFWVulkan.java'] }],
+  ['lwjgl-jemalloc.jar', { module: 'jemalloc', kind: 'c-api', artifact: 'libamcl_lwjgl_jemalloc.so', requiredSource: 'all-generated' }],
   ['lwjgl-nanovg.jar', { module: 'nanovg', kind: 'jni', artifact: 'liblwjgl_nanovg.so' }],
   ['lwjgl-openal.jar', { module: 'openal', kind: 'system-dispatch', artifact: 'libopenal.so', stage: 'cmake', requiredSymbols: ['alGetProcAddress', 'alcGetProcAddress', 'alcOpenDevice'] }],
   ['lwjgl-opengl.jar', { module: 'opengl', kind: 'jni', artifact: 'liblwjgl_opengl.so' }],
@@ -84,6 +85,19 @@ export function validateModuleElf(artifact, text) {
     problems.push(`${artifact}: expected ELF64 AArch64 shared object`);
   }
   const exported = definedFunctionExports(text);
+  if (artifact === 'libamcl_lwjgl_jemalloc.so') {
+    // LWJGL 将此全局函数指针变量与函数一样通过 dlsym 查找，ARM64 下须是八字节数据。
+    // 同名函数、未定义或局部变量都不满足绑定；其他模块仍只认可真正的动态函数。
+    // 专用分配器只对外提供 je_ API，不能因符号抢占把 JVM 的 libc 分配拉入该域。
+    for (const name of ['malloc', 'calloc', 'realloc', 'free', 'aligned_alloc', 'posix_memalign']) {
+      if (exported.has(name)) problems.push(artifact + ': must not export process allocator ' + name);
+    }
+    if (/\b8\s+OBJECT\s+(?:GLOBAL|WEAK)\s+(?:DEFAULT|PROTECTED)\s+(?!UND\b)\S+\s+je_malloc_message(?:@\S+)?\s*$/m.test(text)) {
+      exported.add('je_malloc_message');
+    } else {
+      problems.push(artifact + ': je_malloc_message must be a defined exported eight-byte pointer object');
+    }
+  }
   if (artifact === 'libamcl_game_dialog.so') {
     // C++实现只依赖系统运行库；真实HAP还必须含全部公开控制及消息接口。
     const needed = [...text.matchAll(/Shared library: \[([^\]]+)\]/g)].map((match) => match[1]);

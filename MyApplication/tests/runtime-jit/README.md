@@ -116,11 +116,9 @@ python tests/runtime-jit/cf_evidence.py --evidence <回收目录> `
 
 ## 已核实的真实游戏 A/B 接口和缺口
 
-现有 `scripts/device-automation/scenarios.mjs` 仍将 `smoke.game-launch` 标为缺少非 UI 入口。
-`run-p0.mjs` 不能启动指定游戏、加载指定存档或执行固定飞行路线；`capture-runtime-process.mjs`
-只做 5–300 秒只读 PID/hilog 采集，明确不终止应用，也不提供帧率判决。不能把它们称为完整
-matched A/B 或独立 watchdog。当前可行入口是已有版本详情中的“单版本自定义 JVM 参数”
-加正常 UI 启动，不虚构 Want 游戏启动参数。
+从版本详情设置“单版本自定义 JVM 参数”，沿正常 UI 启动游戏并执行约定路线。
+本目录的 `capture-runtime-process.mjs` 可采集 5–300 秒的 PID 与 hilog 作为运行时旁证。
+帧率和各臂工作量分别按下面的游戏内计量步骤记录。
 
 具体链路已读源码：`PreferenceManager.getVersionOverride/setVersionOverride` 保存在
 `verLaunch.<versionId>`；`resolveLaunch` 将全局参数置前、单版本参数置后；

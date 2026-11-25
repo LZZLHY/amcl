@@ -30,13 +30,13 @@ const text='class Harness {\njdkVersions=[]; startupFinished_=true; recoveringSe
   method('initRuntimeUpdateCheck_'),method('async checkRuntimeUpdates_'),method('drainUpdateDialogs_'),
   method('showRuntimeHostRequirement_'),method('async resumeRuntimeDependency_'),
   method('showRuntimeUpdateDialog_'),method('showUpdateDialog('),
-  method('async importLocalJdk_'),
-  callback('onJdkChannelChange: (channel: string): void => {','onChannelChange','channel: string'),
-  callback('onJdkWebChange: (enabled: boolean): void => {','onWebChange','enabled: boolean'),
-  callback('onJdkSourceChange: (value: string) => {','onSourceChange','value: string'),
-  callback('onJdkDelete: (version: string) => {','onDelete','version: string')].join('\n')+'\n}';
+  method('configureConfirmedJdkSource_'),method('async importLocalJdk_'),method('async chooseAndImportLocalJdk_'),
+  callback('onJdkChannelChange: (channel: string): Promise<boolean> => {','onChannelChange','channel: string'),
+  callback('onJdkWebChange: (enabled: boolean): Promise<boolean> => {','onWebChange','enabled: boolean'),
+  callback('onJdkSourceChange: (value: string): Promise<boolean> => {','onSourceChange','value: string'),
+  callback('onJdkDelete: (version: string, identity: string) => {','onDelete','version: string, identity: string')].join('\n')+'\n}';
 const js=compiler.transpileModule(text,{compilerOptions:{target:compiler.ScriptTarget.ES2020}}).outputText;
-/** 来源/排队判据装载真实类，仅关闭诊断产品门；正式候选不能依赖一份简化的测试替身。 */
+/** 实际提示队列保留快照及手动检查意图，宿主替身只提供窗口。 */
 function loadPromptModule(file,deps={}){
   const code=compiler.transpileModule(fs.readFileSync(new URL(file,import.meta.url),'utf8'),{
     compilerOptions:{module:compiler.ModuleKind.CommonJS,target:compiler.ScriptTarget.ES2020}}).outputText;
@@ -44,10 +44,15 @@ function loadPromptModule(file,deps={}){
     if(!(name in deps))throw new Error('Unmocked prompt dependency: '+name);return deps[name];
   },Object,Number,JSON,Array,RegExp,Map});return exports;
 }
-const prompt=loadPromptModule('../entry/src/main/ets/sideload/SideloadUpdateTestSession.ets',{
-  commons:{DiagnosticPolicy:{hasTestHooks:()=>false},UPDATE_MANIFEST_URLS:['https://production.example/update.json']},
-  'entry/ProductBuildProfile':{ProductBuildProfile:{product:'default'}},update:{}});
+const prompt=loadPromptModule('../entry/src/main/ets/sideload/SideloadUpdatePromptPolicy.ets');
 const presenter=loadPromptModule('../entry/src/main/ets/components/UpdatePromptPresenter.ets').UpdatePromptPresenter;
+// 此套件隔离持久化边缘，事务失败和原值恢复由 frozen-settings-save 验证。
+function saveLauncherChange_(values,publish) {
+  if(values.jdkWebEnabled===false && this.jdkSource==='web') this.prefManager_.jdkSource='auto';
+  if(!Object.hasOwn(this.prefManager_,'jdkWebEnabled')) this.prefManager_.jdkWebEnabled=this.jdkWebEnabled;
+  if(!Object.hasOwn(this.prefManager_,'jdkSource')) this.prefManager_.jdkSource=this.jdkSource;
+  Object.assign(this.prefManager_,values);publish();return Promise.resolve(true);
+}
 let resolveFirst;let requests=0;const configured=[],configurations=[],timers=[];
 const repository={hostUpgradeReason:()=>'',configure:async(channel,source,web)=>{configured.push(channel);configurations.push({channel,source,web});},refresh:()=>{
   requests++;return requests===1?new Promise(resolve=>{resolveFirst=resolve;}):Promise.resolve({ok:true,error:''});
@@ -55,18 +60,19 @@ const repository={hostUpgradeReason:()=>'',configure:async(channel,source,web)=>
 const scheduling=loadPromptModule('../launch/src/main/ets/RuntimeUpdatePolicy.ets');
 let dialogFailure=false,hostVisible=true;
 const importSlots=[];
-const Harness=new Function('RuntimeAppDependency','RuntimeCatalogRepository','AppStorage','setTimeout','SideloadUpdateTestSession',
+const Harness=new Function('RuntimeAppDependency','RuntimeCatalogRepository','AppStorage','setTimeout',
   'SideloadUpdatePromptPolicy','UpdatePromptPresenter','runtimePromptDue','formatBytes',
   'CustomDialogController','UpdateDialog','DialogAlignment','UpdateReminderLevel','setJdkDownloadSource','setJdkWebEnabled',
   'AppLogger','TAG','LOG_DOMAIN_LAUNCH','SUPPORTED_JDK_VERSIONS','GameArchiveIO','JdkImporter','fs',
   'getTaskActivityOwner','ActivityCategory','ActivityStatus','DistributionPolicy','GameRunAdmission','runtimeCheckDue',js+'\nreturn Harness;')(
   {legacyIntent:()=>null,unconfirmedIntent:()=>null,hasVerifiedIntent:()=>false,requirements:()=>[]},{instance:()=>repository},{get:()=>hostVisible},fn=>{timers.push(fn);return timers.length;},
-  prompt.SideloadUpdateTestSession,prompt.SideloadUpdatePromptPolicy,presenter,
+  prompt.SideloadUpdatePromptPolicy,presenter,
   scheduling.runtimePromptDue,String,
   class { constructor(options){this.options=options;} open(){if(dialogFailure)throw Error('controlled dialog open failure');} },
   options=>options,{Center:'center'},loadPromptModule('../entry/src/main/ets/components/UpdateReminderPolicy.ets').UpdateReminderLevel,()=>{},()=>{},{info(){},warn(){}},'test',0,
   importSlots,{importResourceFile:async()=>({cancelled:true})},{},{unlinkSync(){}},
   () => ({ async recordSummary() {} }), { JDK: 'jdk' }, { SUCCESS: 'success', FAILED: 'failed' },{isStore:()=>false},{isAllowed:()=>true},scheduling.runtimeCheckDue);
+Harness.prototype.saveLauncherChange_ = saveLauncherChange_;
 const page=new Harness();
 Object.assign(page,{context:{},jdkChannel:'stable',jdkSource:'github',jdkWebEnabled:false,jdkChecking:false,
   jdkHasUpdate:false,pendingRuntimeCheck_:false,pendingRuntimePrompt_:false,pendingRuntimePromptManual_:false,
@@ -220,7 +226,7 @@ for(const size of [0,3,5,9])await auditCase('local import menu consumes '+size+'
 for(const deleted of [false,true])await auditCase('delete callback reports actual '+deleted+' result',()=>{
   const deleting=new Harness(),messages=[];Object.assign(deleting,{jdkManager_:{deleteVersion:()=>deleted},
     updateJdkReadyState(){},showToast_:message=>messages.push(message)});
-  deleting.onDelete('17');
+  deleting.onDelete('17','confirmed-slot');
   assert.equal(deleting.jdkExtractProgress.includes('已删除'),deleted,'租约/IO拒绝时不能显示删除成功');
   if(!deleted)assert(messages.length>0,'删除失败必须有可见反馈');
 });

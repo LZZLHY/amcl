@@ -21,9 +21,10 @@ class WindowHostCore final {
 public:
     explicit WindowHostCore(NativeReferenceDriver driver, uint64_t initialGeneration = 0);
     bool setReferenceDriver(NativeReferenceDriver driver);
-    uint64_t publish(void*, int, int, AmclWindowHostCommitFn beforeCommit = nullptr, void* context = nullptr);
-    uint64_t updateSize(void*, uint64_t, int, int);
-    uint64_t clear(void*, uint64_t);
+    uint64_t publish(void*, int, int, AmclWindowHostCommitFn beforeCommit = nullptr,
+                     void* context = nullptr, bool* textDemandWithdrawn = nullptr);
+    uint64_t updateSize(void*, uint64_t, int, int, bool* textDemandWithdrawn = nullptr);
+    uint64_t clear(void*, uint64_t, bool* textDemandWithdrawn = nullptr);
     int acquire(void*, uint64_t, void**, int*, int*, uint64_t*);
     int acquireIdentity(void*, uint64_t, AmclNativeWindowIdentityV1*);
     int movePresentationGeometry(uint64_t, void*, uint64_t, uint64_t, uint64_t);
@@ -37,6 +38,9 @@ public:
     // 同一被引用NativeWindow从零面积恢复时，owner可能尚持旧发布代次；仅授权其
     // 安全点处理当前窗口，返回当前代次供entry再次CAS，不移动呈现token或证明GPU连续。
     uint64_t geometryCheckpointGeneration(void*, uint64_t, uint64_t) const;
+    int setTextInputDemand(void*, uint64_t, uint32_t, uint32_t, bool* changed = nullptr);
+    uint64_t textInputDemandIdentity() const { return activeTextInputDemand_.load(std::memory_order_acquire); }
+    int runTextInputCommand(uint64_t demand, AmclWindowTextInputCommandFn command, void* context);
     int beginInputPublication(int*, int*, uint64_t*);
     void endInputPublication();
     AmclWindowHostSnapshot snapshot() const;
@@ -49,6 +53,7 @@ private:
     int acquireLocked(void*, uint64_t, void**, int*, int*, uint64_t*);
     void commit(void* retiredPublication = nullptr, AmclWindowHostCommitFn beforeCommit = nullptr, void* context = nullptr);
     void retire(void*);
+    void withdrawTextInputDemand(bool* wasActive);
     void retryRetiredReferencesLocked();
     NativeReferenceDriver driver_;
     mutable std::mutex mutex_;
@@ -61,6 +66,12 @@ private:
     // 原owner配置同一被引用对象；clear/publish即使同地址也必须拒绝原owner的配置。
     uint64_t objectEpoch_ = 0;
     uint64_t presentationObjectEpoch_ = 0;
+    // 每个请求属于精确发布代与SDL窗口；序号还区分一次唤醒中合并的关闭、再打开。
+    uint64_t textInputPublicationGeneration_ = 0;
+    uint64_t textInputDemandSerial_ = 0;
+    // SDL事件队列持有自己的锁。终消费只需原子读，禁止进入WindowHost锁或平台回调。
+    std::atomic<uint64_t> activeTextInputDemand_{0};
+    uint32_t textInputSdlWindowId_ = 0;
     bool publicationReference_ = false;
     AmclNativeWindowLeaseLedger leases_;
     AmclPresentationOwner presenter_;

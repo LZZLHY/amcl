@@ -1332,34 +1332,6 @@ add('gate-f-readiness', () => {
 });
 
 // ─────────────────────────────────────────────
-// 28. device-automation — P0 宿主编排器的判定工具自测
-//
-// 跑的**不是**编排器本体（那需要真机），而是它用来下判决的那批纯函数的正反向自测。
-// 为什么必须进 preflight：这批判据的失败形态全是**静默永绿** —— 正则少一个分支就
-// 永远匹配不到、判决聚合写反就永远不报错，而真机跑一轮要 6 秒且没人会每次都看。
-// 实测过两个具体形状：`ps -A` 的 CMD 列截断到 15 字符（按完整包名匹配永远匹配不到，
-// 失败表现是"进程不存在"）、hilog 默认格式无年份时区（两种形状都要能解析）。
-add('device-automation', () => {
-  const self = spawnSync('node', ['scripts/test-device-automation.mjs'], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  });
-  const out = ((self.stdout || '') + (self.stderr || '')).trim();
-  const passed = /(\d+)\/(\d+) checks passed/.exec(out);
-  // 样本组在 CI 上会 SKIP（原始日志在 .gitignore 的 /.logs/ 下）⇒ 这里把它显式报出来，
-  // 免得"少跑了一组"看起来和"全跑过了"一样。
-  const sampleSkipped = out.includes('SKIP  真实样本组');
-  return {
-    ok: self.status === 0,
-    summary: self.status === 0
-      ? `${passed ? passed[1] : '?'} judge self-tests pass` +
-        (sampleSkipped ? '（真实样本组 SKIP：raw 不入库）' : '（含真实样本正负对照）')
-      : 'device-automation judge self-test failed（判定工具本身不可信）',
-    detail: self.status === 0 ? null : out,
-  };
-});
-
-// ─────────────────────────────────────────────
 // 29. product-identity — 产品身份 banner 的源码契约（批次 D8）
 //
 // 守三件事，每一件不做都**没有任何信号**：banner 漂到 `setNativeLogSink` 之前就只进

@@ -14,7 +14,7 @@
 //      不读工作区文件 —— Windows autocrlf 会把工作区转成 CRLF）
 //   ⑤ glslang External 的 SPIRV-Tools/Headers 若已克隆，HEAD 必须等于 lock 的 pin
 //      （未克隆只 warn：build-mobilegl.ps1 会在构建前 fail-fast）
-// 以及（非 --offline 时）origin/amcl/ohos 的远端头 == lock.commit ——
+// 以及（非 --offline 时）lock.branch 的远端头 == lock.commit ——
 // gitlink 指向没推送的 commit 正是 `1000498` 付过学费的形状。
 //
 // ============================ 它不能证明什么 ============================

@@ -16,6 +16,8 @@ import { DiagnosticPolicy } from 'commons';
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { ThemeColors, DistributionPolicy } from 'commons';
 import { Account, AccountCape, AccountType, AccountError } from 'account';
 import { getAccountManager } from 'account';
@@ -99,11 +101,57 @@ export struct SkinCapeDetailSheet {
     return this.alive && this.pageEpoch === epoch && this.account?.id === id;
   }
 
-  aboutToDisappear(): void { this.alive = false; this.pageEpoch++; }
+  private appearanceRef_: string = '';
+  private appearanceOwner_: Account | undefined = undefined;
+  private capeConfirmation_: boolean = false;
+  /** 只公开已持有披风的可选引用；账号、请求和对象在确认返回时再次核对。 */
+  private async onlineAppearanceSkill_(method: string,args: SkillFields): Promise<SkillFields> {
+    const acc = this.account;
+    if (!this.alive || !acc || !this.appearanceOwner_ || getAccountManager().findById(acc.id) !== this.appearanceOwner_ || getAccountManager().getSelected() !== this.appearanceOwner_ ||
+      acc.type === AccountType.OFFLINE) return { 'state':'unavailable' };
+    if (method === 'readPlayerAppearance') {
+      return { 'state':'ready', 'appearanceRef':this.appearanceRef_, 'type':acc.type,'hasSkin':!!acc.getSkinUrl(),
+        'model':acc.getSkinVariant() ?? '', 'hasCape':!!acc.getCapeUrl(), 'capes':this.ownedCapes.map((c: AccountCape): SkillFields =>
+          ({ 'capeId':c.id,'name':c.alias,'active':c.isActive })) };
+    }
+    if (args['appearanceRef'] !== this.appearanceRef_ || acc.type !== AccountType.MICROSOFT) return { 'state':'unavailable' };
+    if (this.capeConfirmation_ || this.isBusy() || this.syncing) return { 'state':'busy' };
+    if (method === 'syncPlayerAppearance') { await this.syncProfileNow(); return { 'state': this.alive && this.capeSuccessMsg ? 'ready':'unknown' }; }
+    if (method === 'openMinecraftProfileSite') {
+      if (DistributionPolicy.isStore()) return { 'state':'unavailable' };
+      return { 'state': await this.openMinecraftProfile() ? 'needsUser' : 'failed' };
+    }
+    const capeId = String(args['capeId']);
+    const cape = this.ownedCapes.find((c: AccountCape): boolean => c.id === capeId);
+    if (capeId && !cape) return { 'state':'failed','reason':'notOwned' };
+    if (method === 'previewPlayerCape') {
+      if (cape) this.openPreview(cape); else this.openPreviewNoCape();
+      return { 'state':'needsUser','surface':'capePreview' };
+    }
+    if (method !== 'changePlayerCape') return { 'state':'failed','reason':'unknownOperation' };
+    const epoch = this.pageEpoch;
+    this.capeConfirmation_ = true;
+    try {
+      LauncherSkillBus.awaitingUser(method);
+      const result = await this.getUIContext().getPromptAction().showDialog({title:'更改正版披风？',
+        message:cape ? '为当前正版账号穿戴「'+cape.alias+'」' : '脱下当前正版账号的披风',
+        buttons:[{text:'取消',color:this.theme.actionText as string},{text:'确认',color:this.theme.actionText as string}]});
+      if (result.index !== 1) return { 'state':'cancelled' };
+      if (!this.currentPage_(epoch, acc.id) || getAccountManager().findById(acc.id) !== this.appearanceOwner_ || getAccountManager().getSelected() !== this.appearanceOwner_ ||
+        (capeId && !acc.getOwnedCapes().some((c: AccountCape): boolean => c.id === capeId))) return { 'state':'unavailable' };
+      await this.applyCape(acc,capeId || null);
+      return { 'state':this.currentPage_(epoch,acc.id) && this.capeSuccessMsg && this.activeCapeId===capeId ? 'ready':'unknown' };
+    } finally { this.capeConfirmation_ = false; }
+  }
+
+  aboutToDisappear(): void { LauncherSkillBus.unbind('onlineAppearance',this); this.alive = false; this.pageEpoch++; }
 
   aboutToAppear(): void {
     this.alive = true;
     this.pageEpoch++;
+    this.appearanceRef_ = util.generateRandomUUID();
+    this.appearanceOwner_ = this.account ? getAccountManager().findById(this.account.id) : undefined;
+    LauncherSkillBus.bind('onlineAppearance',this,(m: string,a: SkillFields): Promise<SkillFields> => this.onlineAppearanceSkill_(m,a),(): boolean => this.alive);
     // 显式重置 transient 状态，防止 sheet 复用时残留上次的 preview / toast
     this.previewCape = null;
     this.previewIsNoCape = false;
@@ -934,19 +982,20 @@ export struct SkinCapeDetailSheet {
    * 2026-05-23 API NEXT 迁移：UIAbilityContext 从 EntryAbility 缓存的
    * AppStorage['uiAbilityContext'] 取（getContext(this) 在 API 18+ 已弃用）。
    */
-  private openMinecraftProfile(): void {
+  private async openMinecraftProfile(): Promise<boolean> {
     // 此处是登录后的皮肤网站管理，不是 Microsoft 认证步骤；商店只保留应用内账户 API。
-    if (DistributionPolicy.isStore()) return;
+    if (DistributionPolicy.isStore()) return false;
     let ctx = AppStorage.get<common.UIAbilityContext>('uiAbilityContext');
     if (!ctx) {
       AppLogger.warn(TAG, 'openMinecraftProfile: uiAbilityContext missing', null, LOG_DOMAIN_ACCOUNT);
-      return;
+      return false;
     }
-    ctx.startAbility({
+    return ctx.startAbility({
       action: 'ohos.want.action.viewData',
       uri: MINECRAFT_PROFILE_URL,
-    }).catch((e: Error) => {
+    }).then((): boolean => true).catch((e: Error): boolean => {
       AppLogger.warn(TAG, 'open profile failed', e, LOG_DOMAIN_ACCOUNT);
+      return false;
     });
   }
 

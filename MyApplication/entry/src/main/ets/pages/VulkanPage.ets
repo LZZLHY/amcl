@@ -1,3 +1,5 @@
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingFailure, settingKeys } from '../launcherskill/SettingsSkillValues';
 import { applyNativeTheme } from '../components/AppTheme';
 import testNapi from 'libentry.so';
 /**
@@ -96,7 +98,15 @@ struct VulkanPage {
   }
 
   /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
-  onPageShow(): void { this.applyTheme(); }
+  /** 保留设备探针的人机交互面，仅为当前前台页提供有界摘要，绝不回报完整控制台。 */
+  onPageShow(): void {
+    this.applyTheme();
+    LauncherSkillBus.bind('diagnosticObservation',this,async (method: string,args: SettingsSkillData): Promise<SettingsSkillData> => {
+      if (method !== 'readDiagnosticObservation' || !settingKeys(args,['tool']) || args['tool'] !== 'vulkan') return settingFailure('toolChanged');
+      return {'state':'ready','page':'vulkan','running':this.isRefreshing,'status':this.renderStatus.slice(0,140),'vulkanAvailable':this.vulkanAvailable,'hasOutput':this.vkInfo.length>0};
+    },(): boolean => AppStorage.get<boolean>('appInForeground') === true);
+  }
+  onPageHide(): void { LauncherSkillBus.unbind('diagnosticObservation',this); }
 
   build() {
     Column() {

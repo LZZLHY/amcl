@@ -38,7 +38,9 @@ import { SecondaryGroupEditResult, SecondaryControlRemoval, createSecondaryContr
   SECONDARY_GROUP_PROFILE_VERSION, TOUCH_SECONDARY_GROUP_CAPABILITY, controlColorParts,controlColorWithAlpha,
   controlColorWithRgb,controlRgbHex } from 'gamecontrol';
 import { ThemeScrollStyle } from './ThemeScrollStyle';
-import { getLayoutStore } from 'gamecontrol';
+import { getLayoutStore, getKeyOptionGroups } from 'gamecontrol';
+import { DraftLeaveDecision, LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
+import { LayoutDraftAccess, layoutList } from '../launcherskill/LayoutDraftAccess';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
 import { TouchConfiguration, normalizeTouchPreferences } from 'gamecontrol';
@@ -59,6 +61,9 @@ import { ControlEditCapabilities, ControlEditTarget, controlEditTargets, findCon
 const SNAP_OUT_RATIO: number = 2.4
 
 /** 添加目录只有原有普通按钮与物品栏；常用键只是普通按钮的初始绑定，不扩展控件类型。 */
+/** 一次组删除确认冻结源组、编辑器世代和完整草稿；确认按钮捕获这一次对象。 */
+interface GroupDeleteReview { groupId: string; secondary: boolean; generation: number; signature: string; }
+
 interface EditorAddControlOption {
   id: string
   title: string
@@ -149,12 +154,13 @@ struct CompactEditorRow {
   build() {
     Button() {
       Row({space:5}) {
-        Text(this.title).fontSize(12).fontColor(this.palette.muted)
-        Text(this.value).fontSize(12).fontColor(this.palette.text).layoutWeight(1).textAlign(TextAlign.End)
+        Text(this.title).fontSize(14).fontColor(this.palette.text)
+        Text(this.value).fontSize(12).fontColor(this.palette.muted).layoutWeight(1).textAlign(TextAlign.End)
           .maxLines(1).textOverflow({overflow:TextOverflow.Ellipsis})
         AppIcon({name:AppIconName.ChevronRight,iconSize:14,color:this.palette.muted})
       }.width('100%')
-    }.type(ButtonType.Normal).borderRadius(6).height(36).width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(3)
+    }.type(ButtonType.Normal).borderRadius(9).constraintSize({minHeight:44}).width('100%').padding({left:10,right:10})
+      .backgroundColor(this.palette.surface)
       .onClick(()=>this.onTap())
   }
 }
@@ -197,11 +203,288 @@ export struct LayoutEditor {
   /** 宿主提供的实例显示palette，不写入用户布局或输入配置。 */
   @Prop palette: EditorPalette = new EditorPalette();
   @Prop targetProfileName: string = ''
+  @Prop launcherWorkbench: boolean = false;
+  private playerDraft_: LayoutDraftAccess = new LayoutDraftAccess();
+  private completedPlayerLayout_: LayoutProfile | null = null;
+
+  /** 机器只能编辑启动器独立页面已持有的草稿；游戏内复用同一组件时不注册能力。 */
+  private readWorkbench_(query: string, offset: number): SkillFields {
+    const stamp = this.playerDraft_.snapshot(this.contentSignature());
+    const targets = controlEditTargets(this.controls).filter((entry: ControlEditTarget): boolean =>
+      !query || entry.item.label.toLowerCase().includes(query.toLowerCase()) || entry.item.id === query);
+    return { 'state':'draft', 'draftRef':stamp['draftRef'], 'draftRevision':stamp['draftRevision'],
+      'name':this.profileName, 'width':this.screenWidth,'height':this.screenHeight,'total':targets.length,
+      'activeControl':this.selectedItem()?.id ?? '', 'activeGroup':this.currentControlGroup,
+      'defaultGroup':this.defaultControlGroupId ?? '',
+      'groups':(this.controlGroups ?? []).map((g: ControlGroup): SkillFields => ({'id':g.id,'name':g.name,'visible':g.initialVisible,
+        'secondary':g.secondary===true,'hidePrimary':g.hidePrimary===true})),
+      'scalePercent':Math.round(this.globalScale*100), 'opacityPercent':Math.round(this.globalOpacity*100),'snap':this.snapEnabled,
+      'snapGap':this.snapGap,'snapStrength':this.snapStrength,
+      'items':targets.slice(offset,offset+32).map((entry: ControlEditTarget): SkillFields => {
+        const item = entry.item;
+        return { 'id':item.id,'type':item.type,'name':item.label,'parent':entry.parent?.id ?? '',
+          'group':item.controlGroupId ?? '', 'hidden':item.hidden === true,'locked':item.locked === true,
+          'x':this.itemPxX(item),'y':this.itemPxY(item),'width':this.itemW(item),'height':this.itemH(item),
+          'scene':controlScene(item),'visibility':item.visibilityOverride ?? 'auto','trigger':item.trigger ?? 'press',
+          'keys':effectiveKeys(item),'style':JSON.stringify(item.style ?? {}), 'phases':JSON.stringify(item.phaseBindings ?? []),
+          'groupActions':JSON.stringify(item.groupActions ?? []),'secondaryAction':JSON.stringify(item.secondaryAction ?? {}),
+          'swipeGroup':item.swipeGroup ?? '', 'dragLook':item.dragLook===true };
+      }) };
+  }
+
+  /** 业务操作若因保护项、排列边界或当前值相同而未改草稿，如实回读，不能冒报修改成功。 */
+  private changedWorkbench_(args:SkillFields):SkillFields {
+    const snapshot=this.readWorkbench_('',0);
+    snapshot['changed']=snapshot['draftRevision']!==args['draftRevision'];
+    return snapshot;
+  }
+
+  private async skillWorkbench_(method: string,args: SkillFields): Promise<SkillFields> {
+    if (!this.launcherWorkbench || !this.editorMounted || !this.editorReady || this.editorClosed || this.persistenceBusy ||
+      this.groupDragging || this.dragIdx >= 0) return { 'state':'busy' };
+    if (method === 'readControlWorkbench') {
+      const offset=Number(args['offset'] ?? 0);
+      if (!Number.isSafeInteger(offset) || offset<0) return { 'state':'failed','reason':'offset' };
+      return this.readWorkbench_(String(args['search'] ?? ''),offset);
+    }
+    if (!this.playerDraft_.permits(this.contentSignature(),args)) return { 'state':'unavailable','reason':'draftChanged' };
+    if (this.skillLeave_?.pending()) return { 'state':'busy', 'reason':'originalLeavePending' };
+    const selected=this.selectedItem();
+    if (this.positionDraftDirty || (selected && new ControlEditCapabilities(selected).label && this.labelDraft!==selected.label) ||
+      this.showKeyPicker || this.showLeaveConfirm || this.deletingGroup || this.activeSheet==='confirm-delete' || this.activeSheet==='secondary-delete') return { 'state':'needsUser' };
+    if (method === 'finishControlWorkbench') {
+      const choice = args['decision'];
+      if (choice==='undo') { if (!this.canUndo()) return { 'state':'unavailable' }; this.undo(); return this.changedWorkbench_(args); }
+      if (choice!=='discard' && choice!=='save' && choice!=='input') return { 'state':'failed','reason':'decision' };
+      // 保存同样可能在 flush 中途退场。写入之前建立一次结束意图，退场时才能把同代回滚交给原会话。
+      const generation=this.editorGeneration;
+      const leave=LauncherSkillBus.draftLeave(method,():boolean=>this.editorMounted && generation===this.editorGeneration);
+      this.skillLeave_=leave;
+      let waiting=false;
+      try {
+        if (choice==='discard') this.requestCancel_();
+        else if (choice==='save') this.saveEditor_();
+        else waiting=this.requestSettings_('home',leave);
+        waiting=waiting || this.showLeaveConfirm;
+        if (waiting) return { 'state':'needsUser','surface':'unsavedDraft' };
+        if (choice==='input' && !this.nextSettingsSection) return { 'state':'unavailable','reason':'inputSettingsUnavailable' };
+        const pending=this.persistenceTask; if (pending) await pending;
+      } finally {
+        if (!waiting) leave.dismiss();
+      }
+      if (!this.editorClosed) return { 'state':this.nextSettingsSection ? 'needsUser':'unknown' };
+      if (choice==='input') return { 'state':'needsUser','reason':'inputSettingsRequested' };
+      const saved=this.completedPlayerLayout_;
+      return { 'state':saved ? 'ready' : 'cancelled','name':saved?.name ?? '', 'layoutId':saved?.profileId ?? '',
+        'revision':saved?.profileRevision ?? 0 };
+    }
+    if (method==='addWorkbenchControl') {
+      const kind=String(args['kind']);
+      if (kind==='button') {
+        const codes=this.skillKeys_(args['keys']);
+        if (!codes || !codes.length) return { 'state':'failed','reason':'keys' };
+        this.addButton(codes[0],codes);
+      } else {
+        if (!this.addControlOptions_().some((item:EditorAddControlOption):boolean=>item.id===kind)) return { 'state':'failed','reason':'kind' };
+        this.addControlFromPanel_(kind);
+      }
+      return this.changedWorkbench_(args);
+    }
+    if (method==='editWorkbenchGroup') return this.skillGroup_(args);
+    if (method==='arrangeWorkbenchSelection') return this.skillBatch_(args);
+    const id=String(args['controlId']);
+    const target=findControlEditTarget(this.controls,id);
+    if (!target) return { 'state':'failed','reason':'missingControl' };
+    this.setMultiSelect(false); this.selectControlIdentity_(id,false);
+    if (this.selectedItem()?.id!==id) return { 'state':'unavailable','reason':'controlChanged' };
+    if (method==='setWorkbenchGeometry') {
+      if (target.item.locked) return { 'state':'unavailable','reason':'locked' };
+      this.positionXDraft=String(args['x']); this.positionYDraft=String(args['y']);
+      this.positionWidthDraft=String(args['width']); this.positionHeightDraft=String(args['height']);
+      this.positionDraftDirty=true; this.applyPositionDraft_();
+      if (this.positionDraftDirty) { this.syncPositionDraft_(); return { 'state':'failed','reason':'geometry' }; }
+    } else if (method==='setWorkbenchAppearance') {
+      if (!this.skillStyle_(target.item,args)) return { 'state':'failed','reason':'style' };
+    } else if (method==='setWorkbenchBinding') {
+      const state=this.skillBinding_(target.item,args); if(state!=='draft') return { 'state':state };
+    } else if (method==='editWorkbenchControl') {
+      const action=String(args['change']);
+      if (action==='select') return this.changedWorkbench_(args);
+      if (action==='duplicate') this.duplicateSelected();
+      else if (action==='lock' || action==='unlock') { if (!!target.item.locked !== (action==='lock')) this.toggleLocked(); }
+      else if (action==='show' || action==='hide') { if (!!target.item.hidden !== (action==='hide')) this.toggleHidden(); }
+      else if (action==='remove') {
+        if (!new ControlEditCapabilities(target.item).removable) return { 'state':'unavailable','reason':'protected' };
+        this.pendingControlDelete=[id]; this.pendingDeleteSignature=JSON.stringify(this.buildProfile()); this.pendingDeleteGeneration=this.editorGeneration;
+        this.openTab('confirm-delete'); return { 'state':'needsUser','surface':'confirmDelete' };
+      } else return { 'state':'failed','reason':'change' };
+    } else return { 'state':'failed','reason':'unknownOperation' };
+    return this.changedWorkbench_(args);
+  }
+
+  /** 具名样式字段按产品控件能力和原调节范围校验。 */
+  private skillStyle_(item: ControlItem,args: SkillFields): boolean {
+    const field=String(args['field']); const value=String(args['value']); const number=Number(value);
+    const mode=SliderChangeMode.Click; const caps=new ControlEditCapabilities(item);
+    if (field==='name' && caps.label && value.length<=64) { this.labelDraft=value; this.applyLabel(); return true; }
+    if (['bg','fg','borderColor'].includes(field) && caps.opacity && /^#[0-9a-fA-F]{6}$/.test(value)) {
+      this.colorField=field; this.applyAppearanceRgb_(value,mode); return true;
+    }
+    if (!value.trim() || !Number.isFinite(number)) return false;
+    if (field==='scale' && !item.locked && number>=50 && number<=200) this.applySize(number,mode);
+    else if (field==='opacity' && caps.opacity && number>=10 && number<=100) this.applyOpacity(number,mode);
+    else if (field==='corner' && caps.corner && number>=0 && number<=100) this.applyCorner(number,mode);
+    else if (field==='backgroundAlpha' && caps.opacity && number>=0 && number<=100) this.applyBackgroundOpacity_(number,mode);
+    else if (field==='borderWidth' && caps.opacity && number>=0 && number<=8) this.applyBorderWidth_(number,mode);
+    else if ((field==='globalScale' && number>=50 && number<=200) || (field==='globalOpacity' && number>=10 && number<=100)) this.setOverallStyle_(field,number,mode);
+    else if (field==='snap' && (value==='1'||value==='0')) { this.enableWorkbenchSnap_(value==='1'); }
+    else if (this.snapEnabled && ((field==='snapGap' && number>=0 && number<=Math.max(100,this.snapGap)) ||
+      (field==='snapStrength' && number>=Math.min(2,this.snapStrength) && number<=Math.max(20,this.snapStrength)))) this.setWorkbenchSnap_(field,number,mode);
+    else return false;
+    return true;
+  }
+
+  private enableWorkbenchSnap_(enabled:boolean): void {
+    if (this.snapEnabled!==enabled) { this.pushUndo(); this.snapEnabled=enabled; }
+  }
+  private setWorkbenchSnap_(field:string,value:number,mode:SliderChangeMode): void {
+    const v=Math.round(value);const gap=field==='snapGap';
+    if(!this.prepareSliderChange(field,mode,(gap?this.snapGap:this.snapStrength)!==v)) return;
+    if(gap) this.snapGap=v; else this.snapStrength=v;
+  }
+
+  private setOverallStyle_(field:string,value:number,mode:SliderChangeMode): void {
+    const scale=field==='globalScale'; const before=scale ? this.globalScale : this.globalOpacity;
+    if (!this.prepareSliderChange(field,mode,before!==value/100)) return;
+    if (scale) { this.globalScale=value/100; this.globalScaleVal=Math.round(value); }
+    else { this.globalOpacity=value/100; this.globalOpacityVal=Math.round(value); }
+    this.refreshControls();
+  }
+
+  private skillBinding_(item:ControlItem,args:SkillFields): string {
+    const field=String(args['field']); const value=String(args['value']); const phase=String(args['phase'] ?? 'press');
+    const caps=new ControlEditCapabilities(item,this.selectedChildId.length>0);
+    if (field==='scene' && caps.scene && ['game','menu','always'].includes(value)) this.chooseScene_(value as ControlScene);
+    else if (field==='visibility' && caps.scene && ['auto','force_show','force_hide'].includes(value)) this.chooseVisibility_(value as VisibilityOverride);
+    else if (field==='swipeGroup' && caps.ordinary && ['','1','2','3'].includes(value)) this.chooseSwipeGroup_(value);
+    else if (field==='dragLook' && caps.ordinary && (value==='true'||value==='false')) {
+      if (!!item.dragLook!==(value==='true')) this.toggleDragLook();
+    } else if (field==='trigger' && caps.ordinary && !controlUsesPhases(item) && ['press','toggle','doubleTap','longPress'].includes(value)) this.chooseTrigger_(value as TriggerMode);
+    else if (field==='keys' && caps.binding && !controlUsesPhases(item)) {
+      const keys=this.skillKeys_(value); if (!keys) return 'failed'; this.applyKeys(keys);
+    } else if ((field==='phaseKeys'||field==='groupTargets') && caps.ordinary) {
+      if (!['press','longPress','click','doubleClick'].includes(phase)) return 'failed';
+      const keys=field==='phaseKeys' ? this.skillKeys_(value) : [];
+      const groups=field==='groupTargets' ? layoutList(value,32) : [];
+      const operation=String(args['operation'] ?? 'toggle');
+      if (!keys || !groups || !['toggle','show','hide'].includes(operation) ||
+        !groups.every((id:string):boolean=>!!this.controlGroups?.some((g:ControlGroup):boolean=>g.id===id))) return 'failed';
+      if (!controlUsesPhases(item)) { this.requestPhaseConversion_(); return 'needsUser'; }
+      this.selectGroupPhase_(phase as ControlActionPhase);
+      if (field==='phaseKeys') this.applyPhaseKeys_(keys);
+      else {
+        const index=Number(args['actionIndex'] ?? -1);
+        const actions=item.groupActions ?? [];
+        if (!Number.isInteger(index)||index < -1 || index>=actions.length || (index>=0 && actions[index].phase!==phase)) return 'failed';
+        this.selectedGroupActionIndex=index;this.groupActionOperation=operation as ControlGroupOperation;this.setPhaseTargets_(groups);
+      }
+    } else return 'unavailable';
+    return 'draft';
+  }
+
+  private skillBatch_(args:SkillFields): SkillFields {
+    const ids=layoutList(args['controlIds'],128);
+    if (!ids || !ids.length || !ids.every((id:string):boolean=>this.controls.some((item:ControlItem):boolean=>item.id===id))) return { 'state':'failed','reason':'invalidControlList' };
+    const op=String(args['arrangement']);
+    this.setMultiSelect(true); this.selectedIds=ids;
+    if (op==='horizontal'||op==='vertical'||op==='auto') this.batchAlign(op==='horizontal'?'h':op==='vertical'?'v':'auto');
+    else if (op === 'move') {
+      const dx=Number(args['dx']);const dy=Number(args['dy']);
+      if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx)>this.screenWidth || Math.abs(dy)>this.screenHeight) return { 'state':'failed','reason':'delta' };
+      this.groupDragDx=dx;this.groupDragDy=dy;this.groupDragging=true;this.commitGroupDrag();
+    } else if (op === 'style') {
+      const target=this.styleTargets()[0];
+      if (!target || !['bg','fg','borderColor','scale','opacity','corner','backgroundAlpha','borderWidth'].includes(String(args['field'])) || !this.skillStyle_(target,args)) return { 'state':'failed','reason':'style' };
+    }
+    else if(op==='space') this.batchEqualSpacing();
+    else if(op==='duplicate') this.batchDuplicate();
+    else if(op==='lock'||op==='unlock') this.batchSetLocked(op==='lock');
+    else if(op==='anchor') {
+      const anchor=String(args['anchor']);
+      if(ids.length!==1 || !/^[0-2][0-2]$/.test(anchor)) return { 'state':'failed','reason':'anchor' };
+      this.setMultiSelect(false);this.selectControlIdentity_(ids[0],false);this.alignSelectedToScreen_(anchor);
+    } else if(op==='remove') {
+      if (!ids.every((id:string):boolean=>new ControlEditCapabilities(this.controls.find((item:ControlItem):boolean=>item.id===id)!).removable)) return { 'state':'unavailable' };
+      this.pendingControlDelete=ids;this.pendingDeleteSignature=JSON.stringify(this.buildProfile());this.pendingDeleteGeneration=this.editorGeneration;
+      this.openTab('confirm-delete');return { 'state':'needsUser','surface':'confirmDelete' };
+    } else return { 'state':'failed','reason':'arrangement' };
+    return this.changedWorkbench_(args);
+  }
+
+  private skillGroup_(args:SkillFields): SkillFields {
+    const op=String(args['change']); const id=String(args['groupId'] ?? ''); const value=String(args['value'] ?? '');
+    if (op==='create' || op==='createSecondary') {
+      if (!value.trim() || value.length>64) return { 'state':'failed','reason':'name' };
+      if (op==='create') { this.groupNameDraft=value; this.createControlGroup_(); }
+      else { this.secondaryNameDraft=value; this.secondaryOpenerDraft=''; this.createSecondary_(); }
+    } else {
+      const group=this.controlGroups?.find((entry:ControlGroup):boolean=>entry.id===id);
+      if (!group) return { 'state':'unavailable','reason':'groupChanged' };
+      if (op==='remove') {
+        const draft=this.buildProfile();
+        if (id===this.defaultControlGroupId || !draft?.controlGroups?.some((g:ControlGroup):boolean=>g.id===id)) return { 'state':'unavailable','reason':'groupChangedOrProtected' };
+        return this.beginGroupDeletion_(id) ? { 'state':'needsUser','surface':'groupRemoval','groupId':id } : { 'state':'unavailable','reason':'groupChanged' };
+      }
+      // 原生显隐组没有展开键、返回键等二级对象。分域前不修改选择，不能落到上一组。
+      if (group.secondary!==true && ['addReturn','createOpener','bindOpener','unbindOpener','openerRatio','hideDuringUse','showDuringUse'].includes(op)) {
+        return { 'state':'unavailable','reason':'secondaryGroupRequired' };
+      }
+      this.chooseControlGroup_(id);
+      if (op==='rename' && value.trim() && value.length<=64) { this.groupNameDraft=value; this.renameControlGroup_(); }
+      else if (op==='showInitially'||op==='hideInitially') this.setGroupInitialVisible_(op==='showInitially');
+      else if (op==='raise'||op==='lower') this.moveGroupOrder_(op==='raise'?1:-1);
+      else if (op==='duplicate') this.duplicateControlGroup_();
+      else {
+        if (id===this.defaultControlGroupId) return { 'state':'unavailable','reason':'defaultGroup' };
+        if (op==='members') {
+          const ids=layoutList(value,128);
+          if (!ids || !this.replaceGroupMembers_(id,ids)) return { 'state':'failed','reason':'members' };
+          return this.changedWorkbench_(args);
+        }
+        if (group.secondary!==true) return { 'state':'unavailable','reason':'secondaryGroupRequired' };
+        this.openSecondaryEditor_(id);
+        if (this.secondaryEditingGroup!==id) return { 'state':'unavailable','reason':'groupChanged' };
+        if (op==='addReturn') this.addSecondaryReturn_();
+        else if (op==='createOpener') this.createCurrentOpener_();
+        else if (op==='bindOpener') {
+          if(!this.primarySecondaryCandidates_().some((item:ControlItem):boolean=>item.id===value)) return { 'state':'failed','reason':'invalidOpener' };
+          this.bindCurrentSecondary_(value);
+        } else if(op==='unbindOpener') this.bindCurrentSecondary_();
+        else if(op==='openerRatio' && ['1:1','1:2','2:1'].includes(value)) {
+          const opener=this.currentSecondaryOpener_(); if (!opener) return { 'state':'unavailable','reason':'noOpener' };
+          this.applySecondaryOpenerRatio_(opener.id,value);
+        } else if(op==='hideDuringUse' || op==='showDuringUse') this.toggleSecondaryHide_(op==='hideDuringUse');
+        else return { 'state':'failed','reason':'groupAction' };
+      }
+    }
+    return this.changedWorkbench_(args);
+  }
+
+  private skillKeys_(value: Object | undefined): number[] | undefined {
+    const list=layoutList(value,MAX_LAYOUT_CONTROL_KEYS);
+    if (!list) return undefined;
+    const keys=list.map((key:string):number=>Number(key));
+    const groups=getKeyOptionGroups();
+    if(!keys.every((key:number):boolean=>Number.isSafeInteger(key)&&groups.some((group):boolean=>group.options.some((item):boolean=>item.code===key)))) return undefined;
+    return keys;
+  }
+
   private editSession: LayoutEditSession = new LayoutEditSession()
   /** 只有游戏宿主能恢复本局组显隐；独立方案编辑不操作运行态。 */
   @Prop canRestoreGroups: boolean = false
   /** 真正编辑流程中的就地提示；保存/取消仍完全走既有事务，不由教学代为修改。 */
   @State private showLeaveConfirm: boolean = false
+  private skillLeave_: DraftLeaveDecision | undefined = undefined;
   @State private positionXDraft: string = ''
   @State private positionYDraft: string = ''
   @State private positionWidthDraft: string = ''
@@ -232,6 +515,10 @@ export struct LayoutEditor {
   @State private groupNameDraft: string = ''
   @State private groupSearch: string = ''
   @State private deletingGroup: string = ''
+  private groupDeleteReview_: GroupDeleteReview | undefined = undefined
+  private keepGroupMembers_: () => void = (): void => {}
+  private removeGroupMembers_: () => void = (): void => {}
+  private cancelGroupRemoval_: () => void = (): void => {}
   @State private groupActionPhase: ControlActionPhase = 'press'
   @State private groupActionOperation: ControlGroupOperation = 'toggle'
   /** 原数组下标只用于本次选择；未选择时新增一行动作，不合并现有行。 */
@@ -344,12 +631,12 @@ export struct LayoutEditor {
   private lockY: AxisLock | null = null
 
   // ---- 面板拖动（主工具面板）----
-  @State panelX: number = -1   // -1 表示未初始化，aboutToAppear 中设置
+  @State panelX: number = -1   // 尚未手动拖动时，根据当前画布尺寸选择起点。
   @State panelY: number = -1
   @State panelDragDx: number = 0
   @State panelDragDy: number = 0
-  private panelDragStartX: number = 0
-  private panelDragStartY: number = 0
+  /** 只有明确换边才固定到侧边；自由拖动位置在窗口收缩时夹取，不改写原坐标。 */
+  @State private panelDockSide: string = ''
 
   // ---- 撤销栈 ----
   // 每次 commit（拖拽 / 缩放 / 改键 / 切显隐 等）前快照 controls 及随控件增删变化的注入标志。
@@ -393,10 +680,16 @@ export struct LayoutEditor {
       const target: LayoutProfile | null=this.targetProfileName.length>0 ? store.getProfile(this.targetProfileName) : store.getActiveProfile()
       if (target===null) throw new Error('方案已删除，请重新选择')
       this.loadConfirmedProfile_(target)
-      // 宽屏停靠侧边保留画布，窄屏居中；从顶部利用可用高度，不再把长表单从屏幕中央向下堆。
-      this.panelX = this.screenWidth>=900 ? this.screenWidth-this.panelWidth()-16 : (this.screenWidth-this.panelWidth())/2
-      this.panelY = 12
+      // 新会话从摇杆和上排功能键之间进入；定位由实时窗口推导，首次测量为零时也能恢复。
+      this.panelX = -1
+      this.panelY = -1
+      this.panelDockSide = ''
       this.editorReady = true
+      if (this.launcherWorkbench) {
+        this.playerDraft_.open();
+        LauncherSkillBus.bind('layoutWorkbench',this,(m:string,a:SkillFields):Promise<SkillFields>=>this.skillWorkbench_(m,a),
+          ():boolean=>this.editorMounted && !this.editorClosed && this.launcherWorkbench);
+      }
     } catch (error) {
       this.reportPersistenceError_('进入编辑器', error as Error)
       await this.restoreUnfinishedEditor_()
@@ -414,9 +707,12 @@ export struct LayoutEditor {
    * 这段续体不更新已销毁的 @State、不发 onDone；租约保留到回滚结束，防止父导入抢写。
    */
   aboutToDisappear(): void {
+    if (this.launcherWorkbench) LauncherSkillBus.unbind('layoutWorkbench',this);
     this.editorMounted = false
     this.editorGeneration++
     if (this.editorCleanupTask === undefined) this.editorCleanupTask = this.cleanupDestroyedEditor_()
+    this.skillLeave_?.hold(this.editorCleanupTask);
+    this.skillLeave_?.dismiss();
   }
 
   private async cleanupDestroyedEditor_(): Promise<void> {
@@ -474,6 +770,7 @@ export struct LayoutEditor {
     }
     this.persistenceBusy = true
     this.persistenceTask = this.performPersistence_(action, operation, this.editorGeneration)
+    this.skillLeave_?.hold(this.persistenceTask);
   }
 
   private async performPersistence_(action: string, operation: (generation: number) => Promise<void>,
@@ -501,6 +798,10 @@ export struct LayoutEditor {
   private completeEditor_(profile: LayoutProfile | null): void {
     if (!this.editorMounted || this.editorClosed) return
     this.editorClosed = true
+    this.skillLeave_?.dismiss();
+    this.completedPlayerLayout_ = profile;
+    if (this.launcherWorkbench) this.playerDraft_.complete({ 'state':profile ? 'ready' : 'cancelled',
+      'name':profile?.name ?? '', 'layoutId':profile?.profileId ?? '', 'revision':profile?.profileRevision ?? 0 });
     this.editorTransactionOwned = false
     this.releaseEditorLease_()
     try {
@@ -550,20 +851,47 @@ export struct LayoutEditor {
     }, false)
   }
 
-  /** 手机横屏对应HTML的256vp浮窗；大窗口略放宽，始终不超出宿主可用宽度。 */
-  private panelWidth(): number { return Math.max(176,Math.min(this.screenWidth-16,this.screenWidth>=900?300:256)) }
+  /** 宽横窗用紧凑检查器，将更多画布留给双手布局；短横屏继续按现有手机规格排布。 */
+  private wideToolPanel_(): boolean { return this.screenWidth >= 900 && this.screenHeight >= 400 }
 
+  private panelWidth(): number {
+    const ideal: number = this.wideToolPanel_() ? 292 :
+      Math.min(268, Math.max(252, Math.round(184 + this.screenWidth * 0.1)))
+    return Math.max(1, Math.min(this.screenWidth - 12, ideal))
+  }
 
-  /** 低高度横屏把导航并入滚动区，保留拖动条和底栏，不能让增大的字号把保存按钮挤出屏幕。 */
-  private compactPanel(): boolean { return this.screenHeight<400 }
+  /** 手机横屏与平板都保留游戏上下文；临时窄窗和键盘挤压时，仅将分类导航放入正文滚动区。 */
+  private compactPanel(): boolean { return this.screenHeight < 260 }
 
-  /** 拖动头38、两个主入口40、操作栏44及边距；其它内容都在同一个滚动区。 */
-  private panelChromeH(): number { return 124 }
+  /** 头部52、操作栏52、常驻分段导航52；极矮视口的导航纳入滚动区域。 */
+  private panelChromeH(): number { return this.compactPanel() ? 104 : 156 }
+
+  private panelLeftBase_(): number {
+    const right: number = Math.max(6, this.screenWidth - this.panelWidth() - 6)
+    if (this.panelDockSide === 'right') return Math.max(6, right - 8)
+    if (this.panelDockSide === 'left') return Math.min(14, right)
+    if (this.panelX >= 0) return Math.max(6, Math.min(this.panelX, right))
+    let initial: number = Math.round(this.screenWidth * (this.screenWidth >= 900 ? 0.205 : 0.18))
+    // 游戏按键的百分比表示左上角。按真实缩放后的摇杆右边缘留空间，保留自定义布局的原坐标。
+    const stick: ControlItem | undefined = this.controls.find((c: ControlItem): boolean =>
+      c.type === ControlType.JOYSTICK && !c.hidden && c.xPct < 0.3)
+    if (stick !== undefined) initial = Math.max(initial, this.itemPxX(stick) + this.itemW(stick) + 10)
+    return Math.max(6, Math.min(initial, right))
+  }
+
+  /** 切换一侧只移动工具窗；按键位置、当前选择、未保存草稿和操作历史均归原编辑会话。 */
+  private swapPanelSide_(): void {
+    this.panelDockSide = this.panelLeftBase_() + this.panelWidth() / 2 < this.screenWidth / 2 ? 'right' : 'left'
+    this.panelDragDx = 0
+    this.panelDragDy = 0
+  }
 
   private panelMinContentH(): number { return Math.min(64,Math.max(0,this.screenHeight-this.panelChromeH()-16)) }
 
   /** 面板顶部允许的最大 y：再往下拖会导致底栏越出屏幕，故到此为止。 */
   private panelMaxTop(): number {
+    // 收起时只保留52vp标题；展开后重新按正文与底栏高度裁定显示位置。
+    if (this.showPanel === false) return Math.max(0, this.screenHeight - 60)
     const maxTop = this.screenHeight - (this.panelChromeH() + this.panelMinContentH() + 8)
     return maxTop < 0 ? 0 : maxTop
   }
@@ -571,7 +899,7 @@ export struct LayoutEditor {
   private panelTopBase(): number {
     // 初次默认位置和窗口变矮后的已存位置也必须遵守底栏边界，不能只在拖动结束时约束。
     // 保留用户存储的 panelY，只裁定本帧可显示位置；可用高度恢复后仍沿用原定位。
-    const requested: number = this.panelY >= 0 ? this.panelY : 12
+    const requested: number = this.panelY >= 0 ? this.panelY : Math.min(106, Math.round(this.screenHeight * 0.14))
     return Math.max(0, Math.min(requested, this.panelMaxTop()))
   }
 
@@ -580,9 +908,10 @@ export struct LayoutEditor {
    * 收缩、靠滚动阅读，从而**整块面板（含常驻底栏）始终不越出屏幕、底栏永不被截断**。
    */
   private panelContentMaxH(): number {
-    const liveTop = this.panelTopBase() + this.panelDragDy
-    const h = this.screenHeight - liveTop - this.panelChromeH() - 8
-    return h < this.panelMinContentH() ? this.panelMinContentH() : h
+    const liveTop: number = Math.max(0, Math.min(this.panelMaxTop(), this.panelTopBase() + this.panelDragDy))
+    const cap: number = this.wideToolPanel_() ? 428 : this.screenHeight >= 500 ? 500 : 320
+    const height: number = Math.min(cap, this.screenHeight - liveTop - 8)
+    return Math.max(0, height - this.panelChromeH())
   }
 
   // ============= 数据加载 / 保存 =============
@@ -1365,16 +1694,44 @@ export struct LayoutEditor {
     return '将处理 '+members+' 个顶层成员及 '+references+' 处动作引用。确认后可一次撤销。'
   }
 
-  /** 两种组删除都真正移除主按键和返回键；保留成员只保留普通二级成员。 */
-  private deleteControlGroup_(moveMembers: boolean): void {
-    const profile: LayoutProfile | null=this.buildProfile();if(profile===null)return
-    if(this.activeSheet==='secondary-delete'&&(!this.editorMounted||this.pendingDeleteGeneration!==this.editorGeneration||JSON.stringify(profile)!==this.pendingDeleteSignature)){
-      this.statusMsg='草稿已变化，请返回重新选择删除';return
+  /** 普通组和二级组沿各自界面展示确认，动作闭包只属于本次申请。 */
+  private beginGroupDeletion_(id: string): boolean {
+    const profile=this.buildProfile();
+    const group=profile?.controlGroups?.find((entry:ControlGroup):boolean=>entry.id===id);
+    if (!this.editorMounted || !profile || !group || id===profile.defaultControlGroupId) return false;
+    if (this.deletingGroup && this.groupDeleteReview_) return this.deletingGroup===id &&
+      this.groupDeleteReview_.signature===JSON.stringify(profile) && this.groupDeleteReview_.generation===this.editorGeneration;
+    const secondary=group.secondary===true;
+    this.currentControlGroup=id;
+    this.secondaryEditingGroup=secondary?id:'';
+    this.openTab(secondary?'secondary-delete':'native-groups');
+    const review:GroupDeleteReview={groupId:id,secondary:secondary,generation:this.editorGeneration,signature:JSON.stringify(profile)};
+    this.groupDeleteReview_=review;
+    this.keepGroupMembers_=():void=>this.deleteControlGroup_(true,review);
+    this.removeGroupMembers_=():void=>this.deleteControlGroup_(false,review);
+    this.cancelGroupRemoval_=():void=>{if(this.groupDeleteReview_===review)this.clearGroupDeletion_();};
+    this.deletingGroup=id;
+    return true;
+  }
+
+  private clearGroupDeletion_(): void {
+    this.groupDeleteReview_=undefined;this.deletingGroup='';
+  }
+
+  /** 迟到的旧确认即使正好又选择了同名或同 ID 的组，也不能消费后一次确认。 */
+  private deleteControlGroup_(moveMembers:boolean,review:GroupDeleteReview): void {
+    const profile=this.buildProfile();
+    if (!profile || this.groupDeleteReview_!==review || !this.editorMounted || this.editorGeneration!==review.generation ||
+      this.deletingGroup!==review.groupId || this.currentControlGroup!==review.groupId || profile.defaultControlGroupId===review.groupId ||
+      this.activeSheet!==(review.secondary?'secondary-delete':'native-groups') ||
+      (review.secondary && this.secondaryEditingGroup!==review.groupId) || JSON.stringify(profile)!==review.signature) {
+      this.statusMsg='草稿或确认已变化，请重新选择要删除的组';return;
     }
-    if(this.applyGroupDraft_(removeLayoutControlGroup(profile,this.deletingGroup,moveMembers?this.defaultControlGroupId:undefined),
-      moveMembers?'主按键和组已删除，成员回到一级':'主按键、组和成员已删除')){
-      this.secondaryEditingGroup='';this.currentControlGroup=this.defaultControlGroupId??'';this.selectedIdx=-1;this.selectedChildId=''
-      this.editorRoutes=[];this.activeSheet='groups'
+    this.clearGroupDeletion_();
+    const updated=removeLayoutControlGroup(profile,review.groupId,moveMembers?profile.defaultControlGroupId:undefined);
+    if (this.applyGroupDraft_(updated,moveMembers?'已删除组，普通成员移到默认组':'已删除组及其适用成员')) {
+      this.secondaryEditingGroup='';this.currentControlGroup=this.defaultControlGroupId??'';this.selectedIdx=-1;this.selectedChildId='';
+      this.editorRoutes=[];this.activeSheet=review.secondary?'groups':'native-groups';
     }
   }
 
@@ -1590,14 +1947,14 @@ export struct LayoutEditor {
           })
         }
         Button('删除当前组').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').enabled(this.currentControlGroup !== this.defaultControlGroupId)
-          .onClick((): void => { this.deletingGroup=this.currentControlGroup })
+          .onClick((): void => { this.beginGroupDeletion_(this.currentControlGroup) })
         if (this.currentControlGroup === this.defaultControlGroupId) { Text('默认组负责承接控件，不能删除').fontSize(12).fontColor(this.palette.muted) }
       }
       if (this.deletingGroup.length > 0) {
         Text(this.groupDeletionDescription_()).fontSize(14).fontColor(this.palette.warning).width('100%')
-        Button('成员移到默认组后删除').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.deleteControlGroup_(true) })
-        Button('连同成员删除').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.deleteControlGroup_(false) })
-        Button('取消删除').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.deletingGroup='' })
+        Button('成员移到默认组后删除').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick(this.keepGroupMembers_)
+        Button('连同成员删除').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick(this.removeGroupMembers_)
+        Button('取消删除').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick(this.cancelGroupRemoval_)
       }
       Button('返回布局').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.openTab('edit') })
     }.width('100%')
@@ -1682,7 +2039,7 @@ export struct LayoutEditor {
         Line()
           .width(this.screenWidth).height(1)
           .startPoint([0, 0]).endPoint([this.screenWidth, 0])
-          .stroke('#FF448AFF').strokeWidth(1).strokeDashArray([6, 4])
+          .stroke(this.palette.accent).strokeWidth(1).strokeDashArray([6, 4])
           .position({ x: 0, y: this.guideY })
           .hitTestBehavior(HitTestMode.None)
       }
@@ -1690,7 +2047,7 @@ export struct LayoutEditor {
         Line()
           .width(1).height(this.screenHeight)
           .startPoint([0, 0]).endPoint([0, this.screenHeight])
-          .stroke('#FF448AFF').strokeWidth(1).strokeDashArray([6, 4])
+          .stroke(this.palette.accent).strokeWidth(1).strokeDashArray([6, 4])
           .position({ x: this.guideX, y: 0 })
           .hitTestBehavior(HitTestMode.None)
       }
@@ -1716,7 +2073,13 @@ export struct LayoutEditor {
         .borderRadius(this.editBtnBorderRadius(item)).border({width:item.type===ControlType.BUTTON?item.style?.borderWidth??0:0,color:item.style?.borderColor??'#DDFFFFFF'})
         .opacity(this.editBtnOpacity(item)).hitTestBehavior(HitTestMode.None)
       Column().width(this.itemW(item)).height(this.itemH(item)).borderRadius(this.editBtnBorderRadius(item))
-        .border({width:this.isSel(item,index)?2:item.locked?1:0,color:this.isSel(item,index)?'#448AFF':'#FF5252',style:BorderStyle.Dashed}).hitTestBehavior(HitTestMode.None)
+        .border({width:this.isSel(item,index)?3:item.locked?1:0,color:this.isSel(item,index)?this.palette.accent:this.palette.danger,
+          style:this.isSel(item,index)?BorderStyle.Solid:BorderStyle.Dashed}).hitTestBehavior(HitTestMode.None)
+      if (this.isSel(item,index)) {
+        // 角标与主题外框均为编辑态装饰，不改按键外观草稿或扩大其游戏命中区域。
+        Column().width(8).height(8).borderRadius(2).backgroundColor(this.palette.accent)
+          .position({x:Math.max(0,this.itemW(item)-8),y:Math.max(0,this.itemH(item)-8)}).hitTestBehavior(HitTestMode.None)
+      }
     }.width(this.itemW(item)).height(this.itemH(item))
       .position({
         x: this.itemPxX(item) + this.btnDragOffsetX(item, index),
@@ -1784,14 +2147,17 @@ export struct LayoutEditor {
     this.inlinePickerGeneration++;this.showKeyPicker=false;this.phaseKeyPicker=false;this.addingButton=false;this.colorField=''
     this.selectedChildId='';this.selectedIdx=index;this.positionExpanded=false;this.displayAdvanced=false
     this.activeSheet='edit';this.syncSecondarySelection_();this.selectGroupPhase_(this.groupActionPhase);this.syncSelectedAppearanceVals()
+    this.showPanel=true
     const item: ControlItem | null=this.selectedItem()
     if(item!==null&&this.screenWidth>this.panelWidth()+this.itemW(item)+32){
-      const px: number=this.panelX>=0?this.panelX:(this.screenWidth-this.panelWidth())/2
-      if(this.itemPxX(item)<px+this.panelWidth()&&this.itemPxX(item)+this.itemW(item)>px){
-        this.panelX=this.itemCenterX(item)>=this.screenWidth/2?8:this.screenWidth-this.panelWidth()-8
+      const px: number=this.panelLeftBase_()
+      const py: number=this.panelTopBase()
+      // 点选会同步换到属性页，此时尚未测出新正文高度。只在该页可达的最大矩形内保守避让。
+      if(this.itemPxX(item)<px+this.panelWidth()&&this.itemPxX(item)+this.itemW(item)>px &&
+        this.itemPxY(item)<py+this.panelChromeH()+this.panelContentMaxH()&&this.itemPxY(item)+this.itemH(item)>py){
+        this.panelDockSide=this.itemCenterX(item)>=this.screenWidth/2?'left':'right'
       }
     }
-    this.showPanel=true
   }
 
 
@@ -2012,10 +2378,11 @@ export struct LayoutEditor {
   // 面板拖动结束：提交位置。y 夹到 [0, panelMaxTop] —— 保证底栏永不越出屏幕（再往下只能滚动内容）。
   private commitPanelDrag(): void {
     const w = this.panelWidth()
-    let nx = (this.panelX>=0?this.panelX:(this.screenWidth-w)/2) + this.panelDragDx
+    let nx = this.panelLeftBase_() + this.panelDragDx
     let ny = this.panelTopBase() + this.panelDragDy
     nx = Math.max(6, Math.min(this.screenWidth-w-6, nx))
     ny = Math.max(0, Math.min(this.panelMaxTop(), ny))
+    this.panelDockSide = ''
     this.panelX = nx
     this.panelY = ny
     this.panelDragDx = 0
@@ -2024,6 +2391,7 @@ export struct LayoutEditor {
 
   /** 页面切换只改会话导航，不触发保存；同页刷新不压入重复返回项。 */
   private openTab(tab: string): void {
+    if (tab!==this.activeSheet && this.groupDeleteReview_) this.clearGroupDeletion_()
     if(tab!==this.activeSheet)this.editorRoutes=this.editorRoutes.concat([this.captureEditorRoute_()])
     this.sliderUndoKey='';this.sliderGestureKey='';this.colorField='';this.activeSheet=tab;this.showPanel=true
     if(tab==='group-actions')this.selectGroupPhase_(this.groupActionPhase)
@@ -2157,19 +2525,23 @@ export struct LayoutEditor {
   }
 
   /** 跨任务前先结束当前草稿；有修改时明确保存，不让设置页加载旧持久内容覆盖草稿。 */
-  private requestSettings_(section: string): void {
-    if (this.persistenceBusy || this.positionDraftDirty) { this.statusMsg='请先应用位置尺寸输入'; return }
+  private requestSettings_(section: string, decision?: DraftLeaveDecision): boolean {
+    if (this.persistenceBusy || this.positionDraftDirty) { this.statusMsg='请先应用位置尺寸输入'; return false }
+    if (this.skillLeave_?.pending() && decision !== this.skillLeave_) return false;
     const item: ControlItem | null=this.selectedItem()
-    if (item!==null && this.labelDraft!==item.label) { this.statusMsg='请先应用名称输入'; return }
+    if (item!==null && this.labelDraft!==item.label) { this.statusMsg='请先应用名称输入'; return false }
     const generation: number=this.editorGeneration, signature: string=this.contentSignature()
     if (signature===this.baselineSig && !this.sessionCatalogChanged) {
-      this.nextSettingsSection=section; this.cancelEditor_(); return
+      this.nextSettingsSection=section; this.cancelEditor_(); return false
     }
+    const cancel=():void=>{ decision?.dismiss(); };
     this.getUIContext().showAlertDialog({title:'保存布局后前往设置？',message:'将先保存并使用当前操控方案，再编辑同一方案的输入设置。',
-      primaryButton:{value:'继续编辑',action:(): void=>{}},secondaryButton:{value:'保存并前往',action:(): void=>{
-        if (!this.editorMounted || generation!==this.editorGeneration || signature!==this.contentSignature()) return
-        this.nextSettingsSection=section; this.saveEditor_()
+      cancel:cancel,primaryButton:{value:'继续编辑',action:cancel},secondaryButton:{value:'保存并前往',action:(): void=>{
+        if (!this.editorMounted || generation!==this.editorGeneration || signature!==this.contentSignature() ||
+          (decision && (!decision.waiting() || this.skillLeave_!==decision))) { cancel(); return; }
+        this.nextSettingsSection=section; this.saveEditor_(); cancel();
       }}})
+    return true;
   }
 
   /** 保存文案与真实Store策略一致，不读取运行期Native状态。 */
@@ -2276,6 +2648,15 @@ export struct LayoutEditor {
       if (this.selectedItem() === null) { Text('请先选择控件').fontColor(this.palette.muted) }
       else if (this.selectedIsOrdinaryButton_()) {
         Text(this.selectedBindingLabel_()).fontSize(14).fontColor(this.palette.text).width('100%')
+        Row() {
+          Text('按住时拖动视角').fontSize(14).fontColor(this.palette.text).layoutWeight(1)
+          Toggle({type:ToggleType.Switch,isOn:this.selectedItem()?.dragLook === true}).onChange((v: boolean): void => {
+            if (v !== (this.selectedItem()?.dragLook === true)) this.toggleDragLook()
+          })
+        }.height(48).width('100%')
+        if ((this.selectedItem()?.swipeGroup ?? '').length > 0) {
+          Text('开启会关闭此键的滑动接力').fontSize(12).fontColor(this.palette.muted).width('100%')
+        }
         if (this.selectedUsesPhases_()) { this.ControlGroupActionsPanel() }
         else {
           Button('修改输出绑定').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.showKeyPicker = true })
@@ -2289,12 +2670,6 @@ export struct LayoutEditor {
           Text('旧双击在第二次按下触发；旧长按保持原移动规则。').fontSize(12).fontColor(this.palette.muted)
           Button('增加触发方式 / 控件组动作').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.requestPhaseConversion_() })
         }
-        Row() {
-          Text('按住时拖动视角').fontSize(14).fontColor(this.palette.text).layoutWeight(1)
-          Toggle({type:ToggleType.Switch,isOn:this.selectedItem()?.dragLook === true}).onChange((v: boolean): void => {
-            if (v !== (this.selectedItem()?.dragLook === true)) this.toggleDragLook()
-          })
-        }.height(48).width('100%')
         Text('滑动接力（与拖动视角互斥）').fontSize(13).fontColor(this.palette.muted)
         Row({space:4}) {
           ForEach(['','1','2','3'],(group: string) => {
@@ -2317,12 +2692,12 @@ export struct LayoutEditor {
   ControlListPanel_() {
     Column({space:5}) {
       Row(){Text('所有控件').fontSize(14).fontColor(this.palette.text).layoutWeight(1)
-        Button('多选').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).onClick(()=>{this.setMultiSelect(true);this.openTab('multi')})}.width('100%')
-      TextInput({text:this.controlSearch,placeholder:'搜索名称、键位或ID'}).height(32).fontSize(12).fontColor(this.palette.text).backgroundColor(this.palette.surface)
+        Button('多选').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).onClick(()=>{this.setMultiSelect(true);this.openTab('multi')})}.width('100%')
+      TextInput({text:this.controlSearch,placeholder:'搜索名称、键位或ID'}).height(44).fontSize(12).fontColor(this.palette.text).backgroundColor(this.palette.surface)
         .onChange((value: string): void=>{this.controlSearch=value})
       ForEach(this.controlListTargets_(),(target: ControlEditTarget)=>{
         Button(){Column({space:2}){Text((target.parent===undefined?'':'↳ ')+this.controlTitle_(target.item)).fontSize(12).fontColor(this.palette.text).width('100%')
-          Text(this.controlListDetail_(target)).fontSize(10).fontColor(this.palette.muted).width('100%')}}.type(ButtonType.Normal).borderRadius(6).width('100%').constraintSize({minHeight:38})
+          Text(this.controlListDetail_(target)).fontSize(11).fontColor(this.palette.muted).width('100%')}}.type(ButtonType.Normal).borderRadius(6).width('100%').constraintSize({minHeight:44})
           .padding({top:4,bottom:4,left:1,right:1}).backgroundColor(Color.Transparent).onClick(()=>{
             if(this.multiSelectMode)this.toggleSelectId(target.item.id);else this.selectControlIdentity_(target.item.id)
           })
@@ -2334,13 +2709,13 @@ export struct LayoutEditor {
   @Builder
   PanelNavigation() {
     Row({space:4}) {
-      Button('按键编辑').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).borderRadius(5)
+      Button('按键编辑').type(ButtonType.Normal).borderRadius(8).height(44).fontSize(14).layoutWeight(1)
         .fontColor(this.isGroupPanel_()?this.palette.muted:this.palette.accent)
         .backgroundColor(this.isGroupPanel_()?Color.Transparent:this.palette.surfaceActive).onClick(()=>this.switchMainPanel_(false))
-      Button('控件组').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).borderRadius(5)
+      Button('控件组').type(ButtonType.Normal).borderRadius(8).height(44).fontSize(14).layoutWeight(1)
         .fontColor(this.isGroupPanel_()?this.palette.accent:this.palette.muted)
         .backgroundColor(this.isGroupPanel_()?this.palette.surfaceActive:Color.Transparent).onClick(()=>this.switchMainPanel_(true))
-    }.width('100%').height(40).padding({left:8,right:8,bottom:4})
+    }.width('100%').height(52).padding({left:8,right:8,top:4,bottom:4})
   }
 
   /** 唯一浮窗承载导航、选键和确认，不再把键位选择器叠成占屏浮层。 */
@@ -2348,40 +2723,55 @@ export struct LayoutEditor {
   ToolPanel() {
     Column({space:0}) {
       Row({space:4}) {
-        if(this.showPanel&&this.canBackEditor_()){
-          // 紧凑导航的宽度已由面板分配，移除系统按钮内边距，保证“返回”文字完整可读。
-          Button('‹ 返回').type(ButtonType.Normal).borderRadius(6).width(54).height(32).padding(0).fontSize(12).fontColor(this.palette.accent).backgroundColor(Color.Transparent).onClick(()=>this.backEditor_())
-        } else { Text('⋮').width(12).fontSize(15).fontColor(this.palette.muted) }
-        Text(this.secondaryEditingDefinition_()!==undefined?'二级 · '+this.secondaryEditingDefinition_()!.name:'布局编辑')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text).maxLines(1).textOverflow({overflow:TextOverflow.Ellipsis}).layoutWeight(1)
-        if(this.showPanel){
-          Button(){AppIcon({name:AppIconName.Minus,iconSize:18,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(30).height(32).backgroundColor(Color.Transparent)
-            .accessibilityText('收起面板').onClick(()=>{this.showPanel=false})
-        } else {
-          Button('展开').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(12).fontColor(this.palette.accent).backgroundColor(Color.Transparent).onClick(()=>{this.showPanel=true})
-          Button('保存').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(12).fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill).onClick(()=>this.saveEditor_())
+        if (this.showPanel && this.canBackEditor_()) {
+          Button(){AppIcon({name:AppIconName.Back,iconSize:18,color:this.palette.accent})}
+            .type(ButtonType.Normal).width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+            .accessibilityText('返回').onClick(()=>this.backEditor_())
+        } else { AppIcon({name:AppIconName.DragHandle,iconSize:14,color:this.palette.muted}) }
+        Column({space:1}) {
+          Text(this.secondaryEditingDefinition_()!==undefined?'二级 · '+this.secondaryEditingDefinition_()!.name:'布局编辑')
+            .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette.text).maxLines(1).textOverflow({overflow:TextOverflow.Ellipsis})
+          Text(this.profileName).fontSize(11).fontColor(this.palette.muted).maxLines(1).textOverflow({overflow:TextOverflow.Ellipsis})
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Button(){AppIcon({name:this.panelLeftBase_()+this.panelWidth()/2<this.screenWidth/2?AppIconName.ChevronRight:AppIconName.ChevronLeft,
+          iconSize:19,color:this.palette.muted})}.type(ButtonType.Normal).width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+          .accessibilityText('将工具窗移至另一侧').id('layout-editor-switch-side').onClick(()=>this.swapPanelSide_())
+        Button(){AppIcon({name:this.showPanel?AppIconName.Minus:AppIconName.Plus,iconSize:19,color:this.palette.muted})}
+          .type(ButtonType.Normal).width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+          .accessibilityText(this.showPanel?'收起面板':'展开面板').id('layout-editor-toggle-panel').onClick(()=>{this.showPanel=!this.showPanel})
+        if (!this.showPanel) {
+          Button(){AppIcon({name:AppIconName.Save,iconSize:18,color:this.palette.accent})}
+            .type(ButtonType.Normal).width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+            .accessibilityText(this.saveLabel_()).onClick(()=>this.saveEditor_())
         }
-      }.height(38).width('100%').padding({left:8,right:8})
+      }.height(52).width('100%').padding({left:6,right:6})
         .gesture(PanGesture({fingers:1,distance:4}).onActionStart(()=>{this.panelDragDx=0;this.panelDragDy=0})
           .onActionUpdate((event: GestureEvent): void=>{
-            const x: number=this.panelX>=0?this.panelX:(this.screenWidth-this.panelWidth())/2
+            const x: number=this.panelLeftBase_()
             this.panelDragDx=Math.max(6-x,Math.min(this.screenWidth-this.panelWidth()-6-x,event.offsetX))
             this.panelDragDy=Math.max(-this.panelTopBase(),Math.min(this.panelMaxTop()-this.panelTopBase(),event.offsetY))
           }).onActionEnd(()=>this.commitPanelDrag()).onActionCancel(()=>this.commitPanelDrag()))
       if(this.showPanel){
-        this.PanelNavigation()
+        if (!this.compactPanel()) { this.PanelNavigation() }
         if(this.showKeyPicker||this.phaseKeyPicker){
-          KeyPickerSheet({palette:this.palette,embedded:true,
-            requiredDefaultKey:!this.addingButton&&!this.phaseKeyPicker&&this.selectedItem()?.systemAction==='input'?GLFW_KEY_T:0,
-            embeddedHeight:Math.max(100,this.screenHeight-this.panelTopBase()-this.panelDragDy-84),
-            phaseOnly:this.phaseKeyPicker,currentKeys:this.pickerCurrentKeys_(),onPick:this.inlinePickerCallback_()})
+          // 选键器自带局部确认栏。极矮视口滚动整个选键页，让搜索、键位和完成操作都能抵达。
+          Scroll() {
+            Column() {
+              if (this.compactPanel()) { this.PanelNavigation() }
+              KeyPickerSheet({palette:this.palette,embedded:true,
+                requiredDefaultKey:!this.addingButton&&!this.phaseKeyPicker&&this.selectedItem()?.systemAction==='input'?GLFW_KEY_T:0,
+                embeddedHeight:Math.max(240,this.panelContentMaxH()+(this.compactPanel()?0:52)),
+                phaseOnly:this.phaseKeyPicker,currentKeys:this.pickerCurrentKeys_(),onPick:this.inlinePickerCallback_()})
+            }.width('100%')
+          }.width('100%').height(this.panelContentMaxH()+52).align(Alignment.TopStart).scrollBar(BarState.Auto)
         } else {
           Scroll() {
-            Column({space:5}) {
+            Column({space:8}) {
+              if (this.compactPanel()) { this.PanelNavigation() }
               if(this.statusMsg.length>0){Text(this.statusMsg).fontSize(11).fontColor(this.palette.warning).width('100%').maxLines(2).textOverflow({overflow:TextOverflow.Ellipsis}).id('layout-editor-status')}
               if(this.secondaryEditingDefinition_()!==undefined&&this.activeSheet!=='secondary-group'){
                 Row(){Text('当前组内编辑').fontSize(10).fontColor(this.palette.muted).layoutWeight(1)
-                  Button('编辑一级').type(ButtonType.Normal).borderRadius(6).height(28).fontSize(11).fontColor(this.palette.accent).backgroundColor(Color.Transparent).onClick(()=>this.switchMainPanel_(false))}.width('100%')
+                  Button('编辑一级').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).fontColor(this.palette.accent).backgroundColor(Color.Transparent).onClick(()=>this.switchMainPanel_(false))}.width('100%')
               }
               if(this.showLeaveConfirm){this.CompactLeavePanel_()}
               else if(this.activeSheet==='add'){this.AddControlPanel()}
@@ -2406,12 +2796,16 @@ export struct LayoutEditor {
               else if(this.activeSheet==='global'){this.GlobalLayoutPanel_()}
               else {this.EditTabContent()}
             }.width('100%').padding({left:12,right:12,top:4,bottom:8})
-          }.width('100%').scrollBar(BarState.Auto).constraintSize({maxHeight:this.panelContentMaxH()})
+          // 平板短页随内容自然收拢，超出上限才滚动；手机维持原固定高度。保存栏始终在正文外。
+          }.width('100%').constraintSize({minHeight:this.wideToolPanel_()?0:this.panelContentMaxH(),maxHeight:this.panelContentMaxH()})
+            .align(Alignment.TopStart).scrollBar(BarState.Auto).id('layout-editor-tool-content')
           this.ActionFooter()
         }
       }
-    }.width(this.panelWidth()).backgroundColor(this.palette.panel).borderRadius(14).border({width:1,color:this.palette.stroke})
-      .position({x:(this.panelX>=0?this.panelX:(this.screenWidth-this.panelWidth())/2)+this.panelDragDx,y:this.panelTopBase()+this.panelDragDy})
+    }.width(this.panelWidth()).backgroundColor(this.palette.panel).borderRadius(18).border({width:1,color:this.palette.stroke}).clip(true)
+      .id('layout-editor-toolbox')
+      .position({x:Math.max(6,Math.min(this.screenWidth-this.panelWidth()-6,this.panelLeftBase_()+this.panelDragDx)),
+        y:Math.max(0,Math.min(this.panelMaxTop(),this.panelTopBase()+this.panelDragDy))})
   }
 
   @Builder
@@ -2423,8 +2817,8 @@ export struct LayoutEditor {
         Text('点选画面上的按键').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette.text).width('100%')
         Text('直接拖动调整位置。拖动标题栏可移开面板。').fontSize(12).fontColor(this.palette.muted).width('100%')
         Row({space:6}) {
-          Button('＋ 添加').type(ButtonType.Normal).borderRadius(6).height(36).fontSize(12).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text).onClick(()=>this.openAddPanel_())
-          Button('控件列表').type(ButtonType.Normal).borderRadius(6).height(36).fontSize(12).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text).onClick(()=>this.openTab('list'))
+          Button('＋ 添加').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text).onClick(()=>this.openAddPanel_())
+          Button('控件列表').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text).onClick(()=>this.openTab('list'))
         }.width('100%')
         CompactEditorRow({palette:this.palette,title:'整体布局',value:this.profileName,onTap:()=>this.openTab('global')})
       }
@@ -2445,7 +2839,7 @@ export struct LayoutEditor {
       Text('常用绑定').fontSize(10).fontColor(this.palette.muted).width('100%')
       Flex({wrap:FlexWrap.Wrap}) {
         ForEach(this.addControlOptions_().filter((option: EditorAddControlOption): boolean=>option.common),(option: EditorAddControlOption)=>{
-          Button(option.title).type(ButtonType.Normal).borderRadius(6).width('23%').height(32).margin({right:'2%',bottom:4}).fontSize(11).padding(1)
+          Button(option.title).type(ButtonType.Normal).borderRadius(6).width('23%').height(44).margin({right:'2%',bottom:4}).fontSize(11).padding(1)
             .backgroundColor(this.palette.surface).fontColor(this.palette.text).borderRadius(5).onClick(()=>this.addControlFromPanel_(option.id))
         },(option: EditorAddControlOption): string=>option.id)
       }.width('100%')
@@ -2486,34 +2880,33 @@ export struct LayoutEditor {
     }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 })
   }
 
-  /** 保持固定44vp底栏；当前页面有局部确认时替换保存，避免与整个方案保存混淆。 */
+  /** 常驻底栏为每个动作保留44vp触点；可用宽度优先给真实保存文案，局部确认沿用各自事务。 */
   @Builder
   ActionFooter() {
-    Row({space:4}) {
+    Row({space:2}) {
       if(this.activeSheet==='confirm-delete'){
-        Button('取消').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.backEditor_())
-        Button('全部删除').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).fontColor(this.palette.danger).backgroundColor(this.palette.surface).onClick(()=>this.confirmControlRemoval_())
+        Button('取消').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.backEditor_())
+        Button('全部删除').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).fontColor(this.palette.danger).backgroundColor(this.palette.surface).onClick(()=>this.confirmControlRemoval_())
       } else if(this.activeSheet==='secondary-new'){
-        Button('取消').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).onClick(()=>this.backEditor_())
-        Button('创建并添加').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(2).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent)
+        Button('取消').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.backEditor_())
+        Button('创建并添加').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(2).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent)
           .enabled(this.secondaryNameDraft.trim().length>0).onClick(()=>this.createSecondary_())
       } else if(this.activeSheet==='secondary-members'){
-        Button('取消').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).onClick(()=>this.backEditor_())
-        Button('完成').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.confirmSecondaryMembers_())
+        Button('取消').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.backEditor_())
+        Button('完成').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.confirmSecondaryMembers_())
       } else if(this.activeSheet==='position'){
-        Button('取消').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).onClick(()=>this.backEditor_())
-        Button('应用数值').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).layoutWeight(1).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.applyPositionDraft_())
+        Button('取消').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.backEditor_())
+        Button('应用数值').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.applyPositionDraft_())
       } else if(this.activeSheet==='secondary-delete'||this.showLeaveConfirm){
-        Button('继续编辑').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').onClick(()=>this.backEditor_())
+        Button('继续编辑').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.backEditor_())
       } else {
-        Button(){AppIcon({name:AppIconName.Undo,iconSize:18,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(30).height(34).backgroundColor(Color.Transparent).enabled(this.canUndo()).onClick(()=>this.undo())
-        Button(){AppIcon({name:AppIconName.Plus,iconSize:19,color:this.palette.accent})}.type(ButtonType.Normal).borderRadius(6).width(30).height(34).backgroundColor(Color.Transparent).accessibilityText('添加按键').onClick(()=>this.openAddPanel_())
-        Blank()
-        Button('取消').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width(48).padding(0).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.requestCancel_())
-        Button(this.persistenceBusy?'处理中':this.savedPreset?'保存副本':'保存').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width(72).padding(3)
+        Button(){AppIcon({name:AppIconName.Undo,iconSize:18,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('撤销').enabled(this.canUndo()).onClick(()=>this.undo())
+        Button(){AppIcon({name:AppIconName.Plus,iconSize:19,color:this.palette.accent})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('添加按键').onClick(()=>this.openAddPanel_())
+        Button('取消').type(ButtonType.Normal).borderRadius(8).height(44).fontSize(13).width(44).padding(0).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.requestCancel_())
+        Button(this.persistenceBusy?'处理中':this.saveLabel_()).type(ButtonType.Normal).borderRadius(8).height(44).fontSize(12).layoutWeight(1).padding({left:2,right:2})
           .backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).borderRadius(7).accessibilityText(this.saveLabel_()).onClick(()=>this.saveEditor_())
       }
-    }.width('100%').height(44).padding({left:10,right:10,top:5,bottom:5})
+    }.width('100%').height(52).padding({left:6,right:6,top:4,bottom:4})
   }
 
 
@@ -2522,30 +2915,32 @@ export struct LayoutEditor {
     Column({space:4}) {
       Row({space:4}) {
         Text(this.selectedTitle()).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette.text).layoutWeight(1).maxLines(1).textOverflow({overflow:TextOverflow.Ellipsis})
-        Button(){AppIcon({name:AppIconName.Document,iconSize:16,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(28).height(30).backgroundColor(Color.Transparent).onClick(()=>this.openTab('list'))
-        Button(){AppIcon({name:AppIconName.More,iconSize:18,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(28).height(30).backgroundColor(Color.Transparent).onClick(()=>this.openTab('more'))
-      }.height(34).width('100%')
+        Button(){AppIcon({name:AppIconName.Document,iconSize:16,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent).onClick(()=>this.openTab('list'))
+        Button(){AppIcon({name:AppIconName.More,iconSize:18,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('更多按键设置').onClick(()=>this.openTab('more'))
+      }.height(44).width('100%')
       if(this.selectedItem()?.systemAction===undefined){
         Row({space:4}) {
           if(this.selectedItem()?.secondaryAction?.kind==='toggle'){
-            Button('解除组绑定').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).layoutWeight(1).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.unbindSelectedSecondary_())
+            Button('解除组绑定').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.unbindSelectedSecondary_())
           } else if(this.selectedItem()?.secondaryAction===undefined&&this.secondaryEditingDefinition_()!==undefined){
-            Button('移出本组').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).layoutWeight(1).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.moveSelectedOutOfSecondary_())
+            Button('移出本组').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>this.moveSelectedOutOfSecondary_())
           }
-          Button(this.selectedItem()?.secondaryAction?.kind==='toggle'?'删除展开键…':'删除按键').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).layoutWeight(1)
+          Button(this.selectedItem()?.secondaryAction?.kind==='toggle'?'删除展开键…':'删除按键').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1)
             .fontColor(this.palette.danger).backgroundColor(Color.Transparent).onClick(()=>this.deleteSelected())
         }.width('100%')
       }
       CompactEditorRow({palette:this.palette,title:this.selectedItem()?.secondaryAction!==undefined?'功能':'绑定',value:this.selectedCompactBinding_(),onTap:()=>this.openSelectedBinding_()})
       Row(){Text('大小').fontSize(12).fontColor(this.palette.muted)
         Slider({value:this.curSizePct(),min:Math.min(50,this.curSizePct()),max:Math.max(200,this.curSizePct()),step:5})
-          .height(32).layoutWeight(1).selectedColor(this.palette.accentFill).enabled(!this.selectedIsLocked())
+          .height(44).layoutWeight(1).selectedColor(this.palette.accentFill).enabled(!this.selectedIsLocked())
           .onChange((value: number,mode: SliderChangeMode): void=>this.applySize(value,mode))
         Text(this.percentText_(this.curSizePct())).fontSize(11).fontColor(this.palette.text).width(40).textAlign(TextAlign.End)
       }.width('100%')
       if(this.selectedItem()?.secondaryAction?.kind==='toggle'){
         this.SecondaryOpenerRatioPanel_(this.selectedItem()!.id)
       }
+      CompactEditorRow({palette:this.palette,title:'外观',value:'',onTap:()=>this.openTab('style')})
+      CompactEditorRow({palette:this.palette,title:'位置与尺寸',value:'精确设置',onTap:()=>this.openTab('position')})
       CompactEditorRow({palette:this.palette,title:'所属组',value:this.selectedGroupLabel_(),onTap:()=>this.openSelectedGroup_()})
     }.width('100%')
   }
@@ -2588,9 +2983,9 @@ export struct LayoutEditor {
     Column({space:4}) {
       if(this.styleTargets().length>0){
         if(!this.multiSelectMode&&this.selectedItem()?.systemAction!=='visibility'){
-          Row({space:4}){TextInput({text:this.labelDraft,placeholder:'显示文字'}).height(32).fontSize(12).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text)
+          Row({space:4}){TextInput({text:this.labelDraft,placeholder:'显示文字'}).height(44).fontSize(12).layoutWeight(1).backgroundColor(this.palette.surface).fontColor(this.palette.text)
             .onChange((value: string): void=>{this.labelDraft=value})
-            Button('应用').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(11).onClick(()=>this.applyLabel())}.width('100%')
+            Button('应用').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).onClick(()=>this.applyLabel())}.width('100%')
         }
         if(this.styleSupports_('opacity')){
           Text(this.previewLabel()).width(this.previewWidth_()).height(this.previewHeight_()).fontSize(14).textAlign(TextAlign.Center)
@@ -2598,26 +2993,26 @@ export struct LayoutEditor {
             .backgroundColor(this.previewPressed?this.previewItem_()?.style?.bgPressed??this.previewItem_()?.style?.bg??'#52FFFFFF':this.previewItem_()?.style?.bg??'#30FFFFFF')
             .border({width:this.previewItem_()?.style?.borderWidth??0,color:this.previewItem_()?.style?.borderColor??'#DDFFFFFF'})
             .opacity(this.curOpacityPct()/100*this.globalOpacity).hitTestBehavior(HitTestMode.None)
-          Button(this.previewPressed?'切回常态':'预览按下外观').type(ButtonType.Normal).borderRadius(6).height(28).fontSize(11).backgroundColor(Color.Transparent).fontColor(this.palette.muted).onClick(()=>{this.previewPressed=!this.previewPressed})
+          Button(this.previewPressed?'切回常态':'预览按下外观').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).backgroundColor(Color.Transparent).fontColor(this.palette.muted).onClick(()=>{this.previewPressed=!this.previewPressed})
         }
         Text('大小 · '+this.percentText_(this.curSizePct())).fontSize(12).fontColor(this.palette.text).width('100%')
-        Slider({value:this.curSizePct(),min:Math.min(50,this.curSizePct()),max:Math.max(200,this.curSizePct()),step:5}).height(30).width('100%')
+        Slider({value:this.curSizePct(),min:Math.min(50,this.curSizePct()),max:Math.max(200,this.curSizePct()),step:5}).height(44).width('100%')
           .selectedColor(this.palette.accentFill).enabled(this.styleTargets().some((item: ControlItem): boolean=>!item.locked)).onChange((v: number,m: SliderChangeMode): void=>this.applySize(v,m))
         if(this.styleSupports_('opacity')){
           Text('整体透明度 · '+this.percentText_(this.curOpacityPct())).fontSize(12).fontColor(this.palette.text).width('100%')
-          Slider({value:this.curOpacityPct(),min:Math.min(10,this.curOpacityPct()),max:100,step:1}).height(30).width('100%').selectedColor(this.palette.accentFill)
+          Slider({value:this.curOpacityPct(),min:Math.min(10,this.curOpacityPct()),max:100,step:1}).height(44).width('100%').selectedColor(this.palette.accentFill)
             .onChange((v: number,m: SliderChangeMode): void=>this.applyOpacity(v,m))
           Text('背景透明度 · '+this.backgroundOpacityPct_().toString()+'%').fontSize(12).fontColor(this.palette.text).width('100%')
-          Slider({value:this.backgroundOpacityPct_(),min:0,max:100,step:1}).height(30).width('100%').selectedColor(this.palette.accentFill)
+          Slider({value:this.backgroundOpacityPct_(),min:0,max:100,step:1}).height(44).width('100%').selectedColor(this.palette.accentFill)
             .onChange((v: number,m: SliderChangeMode): void=>this.applyBackgroundOpacity_(v,m))
           Text('边框粗细 · '+(this.previewItem_()?.style?.borderWidth??0).toString()+' vp').fontSize(12).fontColor(this.palette.text).width('100%')
-          Slider({value:this.previewItem_()?.style?.borderWidth??0,min:0,max:Math.max(8,this.previewItem_()?.style?.borderWidth??0),step:0.5}).height(30).width('100%').selectedColor(this.palette.accentFill)
+          Slider({value:this.previewItem_()?.style?.borderWidth??0,min:0,max:Math.max(8,this.previewItem_()?.style?.borderWidth??0),step:0.5}).height(44).width('100%').selectedColor(this.palette.accentFill)
             .onChange((v: number,m: SliderChangeMode): void=>this.applyBorderWidth_(v,m))
           Row({space:4}) {
             ForEach(['bg','fg','borderColor'],(field: string)=>{
               Button(){Row({space:3}){Column().width(12).height(12).borderRadius(3).backgroundColor(controlRgbHex(controlColorParts(this.appearanceFieldColor_(field))))
                 Text(field==='bg'?'背景':field==='fg'?'文字':'边框').fontSize(11).fontColor(this.palette.text)}}.type(ButtonType.Normal).borderRadius(6)
-                .height(32).layoutWeight(1).backgroundColor(this.colorField===field?this.palette.surfaceActive:this.palette.surface).borderRadius(5)
+                .height(44).layoutWeight(1).backgroundColor(this.colorField===field?this.palette.surfaceActive:this.palette.surface).borderRadius(5)
                 .onClick(()=>{this.colorField=this.colorField===field?'':field})
             },(field: string): string=>field)
           }.width('100%')
@@ -2627,13 +3022,13 @@ export struct LayoutEditor {
         }
         if(this.styleSupports_('corner')){
         Text('圆角 · '+this.percentText_(this.curCornerPct())).fontSize(12).fontColor(this.palette.text).width('100%')
-          Slider({value:this.curCornerPct(),min:0,max:100,step:5}).height(30).width('100%').selectedColor(this.palette.accentFill).onChange((v: number,m: SliderChangeMode): void=>this.applyCorner(v,m))
-          Row({space:4}){Button('方形').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).layoutWeight(1).onClick(()=>this.applyCorner(0))
-            Button('圆角').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).layoutWeight(1).onClick(()=>this.applyCorner(30))
-            Button('圆形').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).layoutWeight(1).onClick(()=>this.applyCorner(100))}.width('100%')
+          Slider({value:this.curCornerPct(),min:0,max:100,step:5}).height(44).width('100%').selectedColor(this.palette.accentFill).onChange((v: number,m: SliderChangeMode): void=>this.applyCorner(v,m))
+          Row({space:4}){Button('方形').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.applyCorner(0))
+            Button('圆角').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.applyCorner(30))
+            Button('圆形').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.applyCorner(100))}.width('100%')
         }
         CompactEditorRow({palette:this.palette,title:'位置与尺寸',value:'精确设置',onTap:()=>this.openTab('position')})
-        if(this.multiSelectMode){Button('普通按键设为标准尺寸').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(11).width('100%').onClick(()=>this.unifyAllSizes())}
+        if(this.multiSelectMode){Button('普通按键设为标准尺寸').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.unifyAllSizes())}
       }
     }.width('100%')
   }
@@ -2823,23 +3218,21 @@ export struct LayoutEditor {
         Row() { Column({ space: 3 }) { Text('自动对齐').fontSize(14).fontColor(this.palette.text)
           Text('拖动时吸附并显示参考线').fontSize(12).fontColor(this.palette.muted) }.layoutWeight(1).alignItems(HorizontalAlign.Start)
           Toggle({ type: ToggleType.Switch, isOn: this.snapEnabled }).selectedColor(this.palette.accentFill)
-            .onChange((value: boolean): void => { this.pushUndo(); this.snapEnabled = value })
+            .onChange((value: boolean): void => this.enableWorkbenchSnap_(value))
         }.height(52).width('100%')
         Row() { Text('对齐间距').fontSize(14).fontColor(this.palette.muted).layoutWeight(1)
           Text(this.snapGap.toString() + ' vp' + (this.snapGap > 100 ? ' · 自定义' : '')).fontSize(14).fontColor(this.palette.text) }.width('100%')
         Slider({ value: this.snapGap, min: 0, max: Math.max(100,this.snapGap), step: 1 }).width('100%').height(44).enabled(this.snapEnabled)
           .selectedColor(this.palette.accentFill).blockColor(this.palette.text)
           .onChange((value: number, mode: SliderChangeMode): void => {
-            if (!this.prepareSliderChange('snapGap', mode, this.snapGap !== Math.round(value))) return
-            this.snapGap = Math.round(value)
+            this.setWorkbenchSnap_('snapGap',value,mode)
           })
         Row() { Text('吸附强度').fontSize(14).fontColor(this.palette.muted).layoutWeight(1)
           Text(this.snapStrength.toString() + ' vp' + (this.snapStrength < 2 || this.snapStrength > 20 ? ' · 自定义' : '')).fontSize(14).fontColor(this.palette.text) }.width('100%')
         Slider({ value: this.snapStrength, min: Math.min(2,this.snapStrength), max: Math.max(20,this.snapStrength), step: 1 }).width('100%').height(44).enabled(this.snapEnabled)
           .selectedColor(this.palette.accentFill).blockColor(this.palette.text)
           .onChange((value: number, mode: SliderChangeMode): void => {
-            if (!this.prepareSliderChange('snapStrength', mode, this.snapStrength !== Math.round(value))) return
-            this.snapStrength = Math.round(value)
+            this.setWorkbenchSnap_('snapStrength',value,mode)
           })
         Text('对齐参考屏幕边、同组与其它按钮中心。关闭自动对齐后参数保留并禁用。')
           .fontSize(12).fontColor(this.palette.muted).width('100%')
@@ -3086,11 +3479,11 @@ export struct LayoutEditor {
           Text('放弃后保留进入前的布局，本次草稿不会写入方案。')
             .fontSize(14).fontColor(this.palette.muted).width('100%')
           Button(this.saveLabel_()).type(ButtonType.Normal).borderRadius(6).height(48).width('100%').fontSize(14).backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent)
-            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false; this.saveEditor_() })
+            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false; this.saveEditor_(); this.skillLeave_?.dismiss(); })
           Button('继续编辑').type(ButtonType.Normal).borderRadius(6).height(48).width('100%').fontSize(14).backgroundColor(this.palette.surface).fontColor(this.palette.text)
-            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false })
+            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false; this.skillLeave_?.dismiss(); })
           Button('放弃修改').type(ButtonType.Normal).borderRadius(6).height(48).width('100%').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.palette.danger)
-            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false; this.cancelEditor_() })
+            .borderRadius(12).onClick((): void => { this.showLeaveConfirm = false; this.cancelEditor_(); this.skillLeave_?.dismiss(); })
         }.padding(24).width('100%')
       }.width(Math.min(420, this.screenWidth - 24)).constraintSize({ maxHeight: this.leaveConfirmMaxH_() })
         .align(Alignment.TopStart).scrollBar(BarState.Auto).attributeModifier(new ThemeScrollStyle(this.palette.stroke))
@@ -3142,8 +3535,9 @@ export struct LayoutEditor {
     return this.editorRoutes.length>0||this.activeSheet!=='edit'||this.selectedItem()!==null||this.showKeyPicker||this.phaseKeyPicker||this.showLeaveConfirm
   }
   private backEditor_(): void {
+    if (this.groupDeleteReview_) this.clearGroupDeletion_()
     if(this.showKeyPicker||this.phaseKeyPicker){this.finishInlineKeyPicker_(null);return}
-    if(this.showLeaveConfirm){this.showLeaveConfirm=false;return}
+    if(this.showLeaveConfirm){this.showLeaveConfirm=false;this.skillLeave_?.dismiss();return}
     this.colorField='';this.positionDraftDirty=false;this.pendingControlDelete=[]
     const route: CompactEditorRoute | undefined=this.editorRoutes[this.editorRoutes.length-1]
     if(route===undefined){this.switchMainPanel_(this.activeSheet.startsWith('secondary-')||this.activeSheet==='native-groups');return}
@@ -3155,10 +3549,11 @@ export struct LayoutEditor {
     this.showPanel=true;this.syncPositionDraft_();this.panelY=Math.max(0,Math.min(this.panelTopBase(),this.panelMaxTop()))
   }
   private switchMainPanel_(groups: boolean): void {
+    if (this.groupDeleteReview_) this.clearGroupDeletion_()
     this.inlinePickerGeneration++
     this.editorRoutes=[];this.secondaryEditingGroup='';this.currentControlGroup=this.defaultControlGroupId??''
     this.selectedIdx=-1;this.selectedChildId='';this.multiSelectMode=false;this.selectedIds=[]
-    this.showKeyPicker=false;this.phaseKeyPicker=false;this.addingButton=false;this.colorField='';this.showLeaveConfirm=false
+    this.showKeyPicker=false;this.phaseKeyPicker=false;this.addingButton=false;this.colorField='';this.showLeaveConfirm=false;this.skillLeave_?.dismiss()
     this.positionDraftDirty=false;this.statusMsg='';this.activeSheet=groups?'groups':'edit';this.repairEditorGroups_()
   }
   private isGroupPanel_(): boolean { return this.activeSheet==='groups'||this.activeSheet==='native-groups'||this.activeSheet.startsWith('secondary-') }
@@ -3244,13 +3639,15 @@ export struct LayoutEditor {
   /** 新控件首次落点避让面板和可见控件，坐标仍直接写全屏百分比；不建立任何父子位置绑定。 */
   private placeFreshControl_(item: ControlItem): void {
     const width: number=this.itemW(item),height: number=this.itemH(item)
-    const panelX: number=this.panelX>=0?this.panelX:(this.screenWidth-this.panelWidth())/2
+    const panelX: number=this.panelLeftBase_()
+    // 添加后即切到控件属性页。按即将显示的最大外框留位，浮窗下方仍然可以放新键。
+    const panelY: number=this.panelTopBase(), panelHeight: number=this.panelChromeH()+this.panelContentMaxH()
     let bestX: number=8,bestY: number=8,bestScore: number=Number.MAX_VALUE
     const overlap=(x: number,y: number,w: number,h: number,bx: number,by: number,bw: number,bh: number): number=>
       Math.max(0,Math.min(x+w,bx+bw)-Math.max(x,bx))*Math.max(0,Math.min(y+h,by+bh)-Math.max(y,by))
     for(let y: number=8;y+height<=this.screenHeight-8;y+=Math.max(40,height+8)){
       for(let x: number=8;x+width<=this.screenWidth-8;x+=Math.max(44,width+8)){
-        let score: number=overlap(x,y,width,height,panelX-8,this.panelTopBase()-8,this.panelWidth()+16,this.screenHeight)*100
+        let score: number=overlap(x,y,width,height,panelX-8,panelY-8,this.panelWidth()+16,panelHeight+16)*100
         for(const other of this.controls)if(other.id!==item.id&&!other.hidden&&this.editorGroupVisible_(other))
           score+=overlap(x,y,width,height,this.itemPxX(other),this.itemPxY(other),this.itemW(other),this.itemH(other))
         score+=Math.hypot(x-this.screenWidth*0.65,y-this.screenHeight*0.45)*0.01
@@ -3374,19 +3771,29 @@ export struct LayoutEditor {
   private selectableSecondaryMembers_(): ControlItem[] {
     return this.controls.filter((item: ControlItem): boolean=>item.secondaryAction===undefined&&item.systemAction!=='edit'&&item.systemAction!=='visibility')
   }
-  private confirmSecondaryMembers_(): void {
-    const profile: LayoutProfile | null=this.buildProfile();if(profile===null)return
-    const assign=(item: ControlItem,id: string): void=>{item.controlGroupId=id;for(const child of item.children??[]){if(child.controlGroupId!==undefined)assign(child,id)}}
-    for(const item of profile.controls){
-      if(item.secondaryAction!==undefined||item.systemAction==='edit'||item.systemAction==='visibility')continue
-      if(this.secondaryMemberDraft.indexOf(item.id)>=0)assign(item,this.secondaryEditingGroup)
-      else if(item.controlGroupId===this.secondaryEditingGroup)assign(item,profile.defaultControlGroupId!)
+  /** 目录的成员集合同时供普通显隐组与二级组编辑器使用，所有目标固定到显式 groupId。 */
+  private replaceGroupMembers_(groupId:string,ids:string[]): boolean {
+    const profile=this.buildProfile();
+    if (!profile || !profile.defaultControlGroupId || groupId===profile.defaultControlGroupId ||
+      !profile.controlGroups?.some((g:ControlGroup):boolean=>g.id===groupId) ||
+      !ids.every((key:string):boolean=>this.selectableSecondaryMembers_().some((item:ControlItem):boolean=>item.id===key))) return false;
+    const assign=(item:ControlItem,id:string):void=>{
+      item.controlGroupId=id;
+      for(const child of item.children??[]) if(child.controlGroupId!==undefined) assign(child,id);
+    };
+    for(const item of profile.controls) {
+      if(item.secondaryAction!==undefined || item.systemAction==='edit' || item.systemAction==='visibility') continue;
+      if(ids.includes(item.id)) assign(item,groupId);
+      else if(item.controlGroupId===groupId) assign(item,profile.defaultControlGroupId);
     }
-    if(this.applyGroupDraft_(profile,'组内成员已更新，全部原坐标保持'))this.activeSheet='secondary-group'
+    return this.applyGroupDraft_(profile,'组内成员已更新，全部原坐标保持');
   }
-  private beginSecondaryDeletion_(): void {
-    this.deletingGroup=this.secondaryEditingGroup;this.pendingDeleteSignature=JSON.stringify(this.buildProfile());this.pendingDeleteGeneration=this.editorGeneration
-    this.openTab('secondary-delete')
+
+  private confirmSecondaryMembers_(): void {
+    if (this.replaceGroupMembers_(this.secondaryEditingGroup,this.secondaryMemberDraft)) this.activeSheet='secondary-group';
+  }
+  private beginSecondaryDeletion_(id:string=this.secondaryEditingGroup): void {
+    if (this.controlGroups?.some((group:ControlGroup):boolean=>group.id===id && group.secondary===true)) this.beginGroupDeletion_(id);
   }
   private confirmControlRemoval_(): void {
     const profile: LayoutProfile | null=this.buildProfile()
@@ -3458,7 +3865,7 @@ export struct LayoutEditor {
   SecondaryGroupsPanel_() {
     Column({space:5}) {
       Row(){Text('控件组').fontSize(15).fontColor(this.palette.text).layoutWeight(1)
-        Button('＋ 二级组').type(ButtonType.Normal).borderRadius(6).fontSize(12).height(32).backgroundColor(Color.Transparent).fontColor(this.palette.accent).onClick(()=>{
+        Button('＋ 二级组').type(ButtonType.Normal).borderRadius(6).fontSize(12).height(44).backgroundColor(Color.Transparent).fontColor(this.palette.accent).onClick(()=>{
           this.secondaryNameDraft='';this.secondaryOpenerDraft='';this.openTab('secondary-new')
         })}.width('100%')
       ForEach(this.secondaryGroups_(),(group: ControlGroup)=>{
@@ -3480,8 +3887,8 @@ export struct LayoutEditor {
             AppIcon({name:AppIconName.ChevronRight,iconSize:13,color:this.palette.muted})
           }.width('100%')}.type(ButtonType.Normal).borderRadius(6).layoutWeight(1).constraintSize({minHeight:54}).backgroundColor(Color.Transparent).padding({left:1,right:1,top:4,bottom:4})
             .onClick(()=>this.openSecondaryEditor_(group.id))
-          Button(){AppIcon({name:AppIconName.Trash,iconSize:15,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(30).height(34).backgroundColor(Color.Transparent)
-            .accessibilityText('删除组 '+group.name).onClick(()=>{this.openSecondaryEditor_(group.id);this.beginSecondaryDeletion_()})
+          Button(){AppIcon({name:AppIconName.Trash,iconSize:15,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+            .accessibilityText('删除组 '+group.name).onClick(()=>{this.beginSecondaryDeletion_(group.id)})
         }.width('100%')
       },(group: ControlGroup): string=>group.id+':'+this.ver.toString())
       if(this.secondaryGroups_().length===0){Text('创建一个组，绑定一级展开键后，直接添加二级按键。').fontSize(12).fontColor(this.palette.muted).width('100%')}
@@ -3492,11 +3899,11 @@ export struct LayoutEditor {
   NewSecondaryGroupPanel_() {
     Column({space:7}) {
       Text('新建二级按键组').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text).width('100%')
-      TextInput({text:this.secondaryNameDraft,placeholder:'组名，如 F类键、全键盘'}).height(36).fontSize(12).maxLength(64).backgroundColor(this.palette.surface)
+      TextInput({text:this.secondaryNameDraft,placeholder:'组名，如 F类键、全键盘'}).height(44).fontSize(12).maxLength(64).backgroundColor(this.palette.surface)
         .fontColor(this.palette.text).onChange((value: string): void=>{this.secondaryNameDraft=value})
       Text('一级展开键').fontSize(11).fontColor(this.palette.muted).width('100%')
       Select(this.newSecondaryChoices_()).selected(this.newSecondaryChoiceIndex_()).value(this.secondaryOpenerDraft.length===0?'新建同名一级键':this.controlTitle_(this.controls.find((item: ControlItem): boolean=>item.id===this.secondaryOpenerDraft)!))
-        .width('100%').height(36).font({size:12}).fontColor(this.palette.text).backgroundColor(this.palette.surface)
+        .width('100%').height(44).font({size:12}).fontColor(this.palette.text).backgroundColor(this.palette.surface)
         .onSelect(this.newSecondaryChoiceCallback_())
       Text('创建后直接添加按键。返回一级键按需添加，不会自动生成。').fontSize(11).fontColor(this.palette.muted).width('100%')
     }.width('100%')
@@ -3506,20 +3913,20 @@ export struct LayoutEditor {
     Column({space:4}) {
       Row({space:3}) {
         Text(this.secondaryMembers_().length.toString()+' 个按键').fontSize(13).fontColor(this.palette.text).layoutWeight(1)
-        Button(){AppIcon({name:AppIconName.Settings,iconSize:16,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(28).height(30).backgroundColor(Color.Transparent).onClick(()=>this.openTab('secondary-settings'))
-        Button(){AppIcon({name:AppIconName.Trash,iconSize:15,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(28).height(30).backgroundColor(Color.Transparent).onClick(()=>this.beginSecondaryDeletion_())
-        Button('编辑一级').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).fontColor(this.palette.accent).backgroundColor(Color.Transparent).padding(1).onClick(()=>this.switchMainPanel_(false))
+        Button(){AppIcon({name:AppIconName.Settings,iconSize:16,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent).onClick(()=>this.openTab('secondary-settings'))
+        Button(){AppIcon({name:AppIconName.Trash,iconSize:15,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent).onClick(()=>this.beginSecondaryDeletion_())
+        Button('编辑一级').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).fontColor(this.palette.accent).backgroundColor(Color.Transparent).padding(1).onClick(()=>this.switchMainPanel_(false))
       }.width('100%')
-      if(this.currentSecondaryOpener_()===undefined){Button('未绑定展开键 · 点击绑定').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).width('100%').onClick(()=>this.openTab('secondary-bind'))}
-      Button('＋ 添加按键').type(ButtonType.Normal).borderRadius(6).height(36).fontSize(13).width('100%').backgroundColor(this.palette.surfaceActive).fontColor(this.palette.accent).onClick(()=>this.openAddPanel_())
+      if(this.currentSecondaryOpener_()===undefined){Button('未绑定展开键 · 点击绑定').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.openTab('secondary-bind'))}
+      Button('＋ 添加按键').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(13).width('100%').backgroundColor(this.palette.surfaceActive).fontColor(this.palette.accent).onClick(()=>this.openAddPanel_())
       ForEach(this.secondaryMembers_(),(item: ControlItem)=>{
         Row({space:3}) {
-          Button(this.controlTitle_(item)+'  ›').type(ButtonType.Normal).borderRadius(6).height(36).fontSize(12).layoutWeight(1).fontColor(this.palette.text).backgroundColor(Color.Transparent).padding(1).onClick(()=>this.selectControlIdentity_(item.id))
-          Button(){AppIcon({name:AppIconName.Trash,iconSize:15,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(28).height(32).backgroundColor(Color.Transparent).accessibilityText('删除 '+this.controlTitle_(item)).onClick(()=>this.removeControls_([item.id]))
+          Button(this.controlTitle_(item)+'  ›').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).fontColor(this.palette.text).backgroundColor(Color.Transparent).padding(1).onClick(()=>this.selectControlIdentity_(item.id))
+          Button(){AppIcon({name:AppIconName.Trash,iconSize:15,color:this.palette.muted})}.type(ButtonType.Normal).borderRadius(6).width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('删除 '+this.controlTitle_(item)).onClick(()=>this.removeControls_([item.id]))
         }.width('100%')
       },(item: ControlItem): string=>item.id+':'+this.ver.toString())
-      Row(){Button('从已有布局加入').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).layoutWeight(1).fontColor(this.palette.accent).backgroundColor(Color.Transparent).onClick(()=>this.beginSecondaryMembers_())
-        Button('多选').type(ButtonType.Normal).borderRadius(6).height(30).fontSize(11).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>{
+      Row(){Button('从已有布局加入').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).fontColor(this.palette.accent).backgroundColor(Color.Transparent).onClick(()=>this.beginSecondaryMembers_())
+        Button('多选').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).fontColor(this.palette.muted).backgroundColor(Color.Transparent).onClick(()=>{
           this.multiSelectMode=true;this.selectedIds=this.secondaryMembers_().map((item: ControlItem): string=>item.id);this.openTab('multi')
         })}.width('100%')
     }.width('100%')
@@ -3532,7 +3939,7 @@ export struct LayoutEditor {
       Row({space:4}) {
         ForEach(['1:1','1:2','2:1'],(ratio: string)=>{
           Button(ratio+(ratio==='1:1'?' 方形':ratio==='1:2'?' 竖向':' 横向')).type(ButtonType.Normal).borderRadius(6)
-            .height(30).fontSize(11).padding(2).layoutWeight(1)
+            .height(44).fontSize(12).padding(2).layoutWeight(1)
             .fontColor(this.secondaryOpenerRatio_(controlId)===ratio?this.palette.accent:this.palette.text)
             .backgroundColor(this.secondaryOpenerRatio_(controlId)===ratio?this.palette.surfaceActive:this.palette.surface)
             .enabled(this.secondaryOpenerForSizing_(controlId)!==undefined&&this.secondaryOpenerForSizing_(controlId)?.locked!==true)
@@ -3548,24 +3955,24 @@ export struct LayoutEditor {
   SecondarySettingsPanel_() {
     Column({space:5}) {
       Text('组设置').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text).width('100%')
-      Row({space:4}){TextInput({text:this.groupNameDraft}).height(32).fontSize(12).layoutWeight(1).maxLength(64).fontColor(this.palette.text).backgroundColor(this.palette.surface).onChange((value: string): void=>{this.groupNameDraft=value})
-        Button('应用').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(11).onClick(()=>this.renameControlGroup_())}.width('100%')
+      Row({space:4}){TextInput({text:this.groupNameDraft}).height(44).fontSize(12).layoutWeight(1).maxLength(64).fontColor(this.palette.text).backgroundColor(this.palette.surface).onChange((value: string): void=>{this.groupNameDraft=value})
+        Button('应用').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).onClick(()=>this.renameControlGroup_())}.width('100%')
       CompactEditorRow({palette:this.palette,title:'一级展开键',value:this.currentSecondaryOpener_()===undefined?'未绑定':effectiveLabel(this.currentSecondaryOpener_()!),onTap:()=>this.openTab('secondary-bind')})
       if(this.currentSecondaryOpener_()!==undefined){this.SecondaryOpenerRatioPanel_(this.currentSecondaryOpener_()!.id)}
-      if(this.currentSecondaryOpener_()!==undefined){Button('解除展开键绑定').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(12).width('100%').onClick(()=>this.bindCurrentSecondary_())}
+      if(this.currentSecondaryOpener_()!==undefined){Button('解除展开键绑定').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.bindCurrentSecondary_())}
       Row({space:4}){Column({space:2}){Text('展开时隐藏其他一级').fontSize(12).fontColor(this.palette.text)
         Text('保留当前展开键，再点一次收起').fontSize(10).fontColor(this.palette.muted)}.layoutWeight(1).alignItems(HorizontalAlign.Start)
         Toggle({type:ToggleType.Switch,isOn:this.secondaryEditingDefinition_()?.hidePrimary??false}).onChange((value: boolean): void=>this.toggleSecondaryHide_(value))}.width('100%').height(44)
       CompactEditorRow({palette:this.palette,title:'返回一级键',value:this.currentSecondaryReturn_()===undefined?'未添加 · 可选':'已添加',onTap:()=>this.currentSecondaryReturn_()===undefined?this.openAddPanel_():this.selectControlIdentity_(this.currentSecondaryReturn_()!.id)})
-      Button('删除整个组…').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').fontColor(this.palette.danger).backgroundColor(this.palette.surface).onClick(()=>this.beginSecondaryDeletion_())
+      Button('删除整个组…').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').fontColor(this.palette.danger).backgroundColor(this.palette.surface).onClick(()=>this.beginSecondaryDeletion_())
     }.width('100%')
   }
   @Builder
   SecondaryBindPanel_() {
     Column({space:4}) {
-      Button('＋ 新建同名一级展开键').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').fontColor(this.palette.accent).onClick(()=>this.createCurrentOpener_())
+      Button('＋ 新建同名一级展开键').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').fontColor(this.palette.accent).onClick(()=>this.createCurrentOpener_())
       ForEach(this.primarySecondaryCandidates_(),(item: ControlItem)=>{
-        Button(this.controlTitle_(item)).type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').backgroundColor(this.palette.surface).fontColor(this.palette.text).onClick(()=>this.bindCurrentSecondary_(item.id))
+        Button(this.controlTitle_(item)).type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').backgroundColor(this.palette.surface).fontColor(this.palette.text).onClick(()=>this.bindCurrentSecondary_(item.id))
       },(item: ControlItem): string=>item.id)
     }.width('100%')
   }
@@ -3574,7 +3981,7 @@ export struct LayoutEditor {
     Column({space:3}) {
       Text('加入后保留原屏幕位置').fontSize(11).fontColor(this.palette.muted).width('100%')
       ForEach(this.selectableSecondaryMembers_(),(item: ControlItem)=>{
-        Button((this.secondaryMemberDraft.indexOf(item.id)>=0?'✓  ':'□  ')+this.controlTitle_(item)).type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%')
+        Button((this.secondaryMemberDraft.indexOf(item.id)>=0?'✓  ':'□  ')+this.controlTitle_(item)).type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%')
           .backgroundColor(this.secondaryMemberDraft.indexOf(item.id)>=0?this.palette.surfaceActive:this.palette.surface).fontColor(this.palette.text).onClick(()=>{
             this.secondaryMemberDraft=this.secondaryMemberDraft.indexOf(item.id)>=0?this.secondaryMemberDraft.filter((id: string): boolean=>id!==item.id):this.secondaryMemberDraft.concat([item.id])
           })
@@ -3589,8 +3996,8 @@ export struct LayoutEditor {
       if(this.secondaryMembers_().some((item: ControlItem): boolean=>!new ControlEditCapabilities(item).removable)){
         Text('含系统功能的控件会保留到一级，原配置不变。').fontSize(11).fontColor(this.palette.muted).width('100%')
       }
-      Button('删除主按键和组 · 成员回一级').type(ButtonType.Normal).borderRadius(6).height(38).fontSize(11).width('100%').fontColor(this.palette.accent).backgroundColor(this.palette.surfaceActive).onClick(()=>this.deleteControlGroup_(true))
-      Button('删除主按键、组和全部成员').type(ButtonType.Normal).borderRadius(6).height(38).fontSize(11).width('100%').fontColor(this.palette.danger).backgroundColor(this.palette.surface).onClick(()=>this.deleteControlGroup_(false))
+      Button('删除主按键和组 · 成员回一级').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').fontColor(this.palette.accent).backgroundColor(this.palette.surfaceActive).onClick(this.keepGroupMembers_)
+      Button('删除主按键、组和全部成员').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').fontColor(this.palette.danger).backgroundColor(this.palette.surface).onClick(this.removeGroupMembers_)
     }.width('100%')
   }
   @Builder
@@ -3606,8 +4013,8 @@ export struct LayoutEditor {
   CompactLeavePanel_() {
     Column({space:8}) {
       Text('保存这次调整？').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette.text).width('100%')
-      Button(this.saveLabel_()).type(ButtonType.Normal).borderRadius(6).height(36).fontSize(12).width('100%').backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.saveEditor_())
-      Button('放弃修改').type(ButtonType.Normal).borderRadius(6).height(36).fontSize(12).width('100%').fontColor(this.palette.danger).onClick(()=>this.cancelEditor_())
+      Button(this.saveLabel_()).type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').backgroundColor(this.palette.accentFill).fontColor(this.palette.onAccent).onClick(()=>this.saveEditor_())
+      Button('放弃修改').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').fontColor(this.palette.danger).onClick(()=>this.cancelEditor_())
     }.width('100%')
   }
   @Builder
@@ -3615,16 +4022,22 @@ export struct LayoutEditor {
     Column({space:4}) {
       CompactEditorRow({palette:this.palette,title:'外观与位置',value:'颜色、透明、边框',onTap:()=>this.openTab('style')})
       if(this.selectedItem()?.secondaryAction===undefined&&this.selectedItem()?.type===ControlType.BUTTON){
-        CompactEditorRow({palette:this.palette,title:'触发与显示',value:'更多',onTap:()=>this.openTab('behavior')})
+        // 动作配置从更多进入，普通按键的绑定行继续直接打开选键器。
+        if (this.selectedIsOrdinaryButton_()) {
+          CompactEditorRow({palette:this.palette,title:'触发与拖动',
+            value:this.selectedItem()?.dragLook === true ? '拖动视角已开' : '拖动视角已关',
+            onTap:()=>this.openTab('group-actions')})
+        }
+        CompactEditorRow({palette:this.palette,title:'显示规则',value:'',onTap:()=>this.openTab('behavior')})
       }
-      Button(this.selectedIsLocked()?'解锁位置尺寸':'锁定位置尺寸').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').onClick(()=>this.toggleLocked())
-      if(this.selectedItem()?.secondaryAction===undefined&&this.selectedItem()?.systemAction===undefined){Button('复制按键').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').onClick(()=>this.duplicateSelected())}
-      if(this.selectedChildId.length>0){Row(){Button('向前排列').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(11).layoutWeight(1).onClick(()=>this.moveChildOrder_(-1))
-        Button('向后排列').type(ButtonType.Normal).borderRadius(6).height(32).fontSize(11).layoutWeight(1).onClick(()=>this.moveChildOrder_(1))}.width('100%')}
-      if(this.selectedItem()?.hidden){Button('恢复历史隐藏').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').onClick(()=>this.toggleHidden())}
-      if(this.selectedItem()?.systemAction===undefined){Button(this.selectedItem()?.secondaryAction?.kind==='toggle'?'删除展开键…':'删除按键').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').fontColor(this.palette.danger).onClick(()=>this.deleteSelected())}
+      Button(this.selectedIsLocked()?'解锁位置尺寸':'锁定位置尺寸').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.toggleLocked())
+      if(this.selectedItem()?.secondaryAction===undefined&&this.selectedItem()?.systemAction===undefined){Button('复制按键').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.duplicateSelected())}
+      if(this.selectedChildId.length>0){Row(){Button('向前排列').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.moveChildOrder_(-1))
+        Button('向后排列').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).layoutWeight(1).onClick(()=>this.moveChildOrder_(1))}.width('100%')}
+      if(this.selectedItem()?.hidden){Button('恢复历史隐藏').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.toggleHidden())}
+      if(this.selectedItem()?.systemAction===undefined){Button(this.selectedItem()?.secondaryAction?.kind==='toggle'?'删除展开键…':'删除按键').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').fontColor(this.palette.danger).onClick(()=>this.deleteSelected())}
       if(this.selectedControlDescription_().length>0){Text(this.selectedControlDescription_()).fontSize(11).fontColor(this.palette.muted).width('100%')}
-      if(this.selectedItem()?.type===ControlType.JOYSTICK||this.selectedItem()?.type===ControlType.HOTBAR_SELECTOR){Button('相关输入设置 ›').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').onClick(()=>this.requestSettings_(this.selectedItem()?.type===ControlType.JOYSTICK?'move':'gesture'))}
+      if(this.selectedItem()?.type===ControlType.JOYSTICK||this.selectedItem()?.type===ControlType.HOTBAR_SELECTOR){Button('相关输入设置 ›').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.requestSettings_(this.selectedItem()?.type===ControlType.JOYSTICK?'move':'gesture'))}
     }.width('100%')
   }
   @Builder
@@ -3633,14 +4046,14 @@ export struct LayoutEditor {
       if(this.selectedItem()?.systemAction==='edit'||this.selectedItem()?.systemAction==='visibility'||this.selectedChildId.length>0){Text('系统恢复入口不归组；抽屉子项继承父组。').fontSize(12).fontColor(this.palette.muted)}
       else {
         ForEach(this.controlGroups??[],(group: ControlGroup)=>{
-          Button(group.name).type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').onClick(()=>{
+          Button(group.name).type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>{
             const profile: LayoutProfile | null=this.buildProfile(),id: string=this.selectedItem()?.id??''
             if(profile!==null&&this.applyGroupDraft_(moveSecondaryGroupMember(profile,id,group.id),'已更新所属组，位置保持')){
               this.selectControlIdentity_(id,false);this.syncSecondarySelection_();this.backEditor_()
             }
           })
         },(group: ControlGroup): string=>group.id)
-        if(this.controlGroups===undefined){Button('先创建控件组').type(ButtonType.Normal).borderRadius(6).height(34).fontSize(12).width('100%').onClick(()=>this.openTab('groups'))}
+        if(this.controlGroups===undefined){Button('先创建控件组').type(ButtonType.Normal).borderRadius(6).height(44).fontSize(12).width('100%').onClick(()=>this.openTab('groups'))}
       }
     }.width('100%')
   }
@@ -3648,11 +4061,11 @@ export struct LayoutEditor {
   GlobalLayoutPanel_() {
     Column({space:4}) {
       Text('整体缩放 · '+Math.round(this.globalScale*100).toString()+'%').fontSize(12).fontColor(this.palette.text).width('100%')
-      Slider({value:this.globalScale*100,min:50,max:200,step:5}).width('100%').height(32).selectedColor(this.palette.accentFill)
-        .onChange((value: number,mode: SliderChangeMode): void=>{if(this.prepareSliderChange('globalScale',mode,this.globalScale!==value/100)){this.globalScale=value/100;this.globalScaleVal=Math.round(value);this.refreshControls()}})
+      Slider({value:this.globalScale*100,min:50,max:200,step:5}).width('100%').height(44).selectedColor(this.palette.accentFill)
+        .onChange((value: number,mode: SliderChangeMode): void=>this.setOverallStyle_('globalScale',value,mode))
       Text('整体透明度 · '+Math.round(this.globalOpacity*100).toString()+'%').fontSize(12).fontColor(this.palette.text).width('100%')
-      Slider({value:this.globalOpacity*100,min:10,max:100,step:5}).width('100%').height(32).selectedColor(this.palette.accentFill)
-        .onChange((value: number,mode: SliderChangeMode): void=>{if(this.prepareSliderChange('globalOpacity',mode,this.globalOpacity!==value/100)){this.globalOpacity=value/100;this.globalOpacityVal=Math.round(value);this.refreshControls()}})
+      Slider({value:this.globalOpacity*100,min:10,max:100,step:5}).width('100%').height(44).selectedColor(this.palette.accentFill)
+        .onChange((value: number,mode: SliderChangeMode): void=>this.setOverallStyle_('globalOpacity',value,mode))
       CompactEditorRow({palette:this.palette,title:'吸附与对齐',value:'编辑偏好',onTap:()=>this.openTab('alignment')})
       CompactEditorRow({palette:this.palette,title:'全部控件',value:'列表',onTap:()=>this.openTab('list')})
     }.width('100%')

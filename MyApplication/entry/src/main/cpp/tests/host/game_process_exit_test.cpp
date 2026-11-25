@@ -38,6 +38,7 @@ public:
     std::vector<int> timeouts;
     std::function<void()> onWrite, onPoll;
     int pid() const noexcept override { return current; }
+    int openFilesDirectory(const char*) noexcept override { ++opens; return 10; }
     int openAuthority(const char*, int lock) noexcept override { ++opens; return locked && lock == 7 ? 10 : -1; }
     bool checkAuthority(int files, int lock) noexcept override { return locked && files == 10 && lock == 7; }
     int openRecordDirectory(int files) noexcept override { return files == 10 && !directoryFails ? 20 : -1; }
@@ -95,7 +96,7 @@ public:
     }
     IoResult pollAck(int fd, int timeout) noexcept override
     {
-        Require(fd == 40 && timeout > 0 && timeout <= HandoffTimeoutMs, "poll uses prepared fd and remaining budget");
+        Require(fd == 40 && timeout > 0 && timeout <= PhoneRestartTimeoutMs, "poll uses prepared fd and remaining budget");
         ++polls; timeouts.push_back(timeout);
         if (onPoll) onPoll();
         if (hasAck) return {1, false};
@@ -257,6 +258,53 @@ void TestSerialization()
     Require(out.finish() != 0 && std::string(number) == "-9223372036854775808", "INT64_MIN has no negation overflow");
 }
 
+/** 手机冷启动需要真实 shutdown、成功退出、持久记录与剩余等待预算。 */
+void TestPhoneRestart()
+{
+    { State state; Fake ops; ops.directoryFails = true;
+      Require(!state.preparePhone(ops, Files, 42) && !state.authorized(ops) && ops.closes == 1,
+              "failed phone journal closes its own directory and does not suppress legacy exit"); }
+    { State state; Fake ops; ops.locked = false;
+      Require(state.preparePhone(ops, Files, 42) && state.armed(ops) &&
+              !state.preparePhone(ops, Files, 43), "phone authority comes from its setup, not desktop lock");
+      Require(!state.emit(ops, 0) && ops.writes == 0 && !state.phonePending(ops),
+              "unobserved zero halt cannot restart the launcher");
+      ops.current = 101; state.markJavaShutdown(ops); ops.current = 100;
+      Require(!state.emit(ops, 0), "fork cannot mark launcher's shutdown");
+      state.markJavaShutdown(ops);
+      Require(!state.emit(ops, 1) && ops.writes == 0, "abnormal code cannot restart even with Java shutdown");
+      ops.onWrite = [&] {
+          Require(state.authorized(ops) && !state.armed(ops) && !state.phonePending(ops) &&
+                  !state.claimPhoneRestart(ops), "writing journal cannot be claimed or outrun by UI");
+      };
+      Require(state.emit(ops, 0) && state.phonePending(ops), "normal phone exit publishes a live request");
+      Require(ops.data == "{\"schema\":1,\"activityId\":42,\"pid\":100,\"parentPid\":100,"
+              "\"exitCode\":0,\"source\":\"phone-jvm-exit\",\"timestamp\":1789752395515}\n",
+              "phone journal binds the same PID without impersonating an isolated caller");
+      ops.current = 101;
+      Require(!state.phonePending(ops) && !state.claimPhoneRestart(ops), "fork cannot claim phone request");
+      ops.current = 100;
+      Require(state.claimPhoneRestart(ops) && !state.claimPhoneRestart(ops) && ops.ackWrites == 0,
+              "single UI claim does not allow native exit to race the accepted system restart");
+      ops.monotonic += 4000;
+      Require(std::string(state.waitForHandoff(ops)) == "timeout" &&
+              ops.timeouts == std::vector<int>({2000}) && !state.phonePending(ops),
+              "no further system action lets native leave at the original hard deadline"); }
+    { State state; Fake ops;
+      Require(state.preparePhone(ops, Files, 42), "decline preparation"); state.markJavaShutdown(ops);
+      Require(state.emit(ops, 0) && state.claimPhoneRestart(ops), "decline request");
+      int code = 9;
+      Require(state.acknowledge(ops, code) == Acknowledgement::Owned && code == 0 &&
+              !state.phonePending(ops) &&
+              std::string(state.waitForHandoff(ops)) == "declined",
+              "platform rejection releases wait without changing original exit code"); }
+    { State state; Fake ops;
+      Require(state.preparePhone(ops, Files, 42), "failed commit preparation"); state.markJavaShutdown(ops);
+      ops.publishFailure = 1;
+      Require(!state.emit(ops, 0) && !state.phonePending(ops) && !state.claimPhoneRestart(ops),
+              "failed journal never authorizes UI restart"); }
+}
+
 /**
  * 四步握手的确定性 store-buffering 模型，不依赖 Windows/x86 能否碰巧重现 ARM/C++ 弱序。
  * 两线程分别先发布自己的 atomic 再读取对方的 atomic；另列两个写入可见事件。
@@ -325,5 +373,6 @@ void TestHandshakeMemoryOrder()
 int main()
 {
     TestAuthorization(); TestPreparation(); TestEmission(); TestSerialization(); TestHandoff(); TestHandshakeMemoryOrder();
+    TestPhoneRestart();
     std::cout << "PASS " << checks << " game exit assertions (production core, fake I/O)\n";
 }

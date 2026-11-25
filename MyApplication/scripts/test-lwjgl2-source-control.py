@@ -74,6 +74,14 @@ def main(options):
         suffix=suffix.replace('(void)c;\n    if(reentry_mode)', '(void)c; double origin_x=cursor_x;\n    if(reentry_mode)',1)
         suffix=suffix.replace('    return cursor_x;\n}', '    return origin_x;\n}',1)
         suffix=suffix.replace('s_window=(GLFWwindow*)(uintptr_t)0x2000;', 's_window=(GLFWwindow*)(uintptr_t)0x2000;cursor_x=500.0;cursor_y=400.0;',1)
+        # 本场的OS坐标读取连到同一真实bridge，其他原重入用例继续使用原窗口样本。
+        suffix=suffix.replace('static double cursor_x=', '__declspec(dllimport) int sourceMenuPosition(double*,double*);\nstatic double cursor_x=',1)
+        suffix=suffix.replace('double origin_x=cursor_x;', 'double wx,wy;if(sourceMenuPosition(&wx,&wy))return wx; double origin_x=cursor_x;',1)
+        suffix=suffix.replace('(void)e;(void)c;return cursor_y;', '(void)e;(void)c;double wx,wy;if(sourceMenuPosition(&wx,&wy))return wy;return cursor_y;',1)
+        suffix+='\n__declspec(dllimport) uint64_t inputBridge_requestCarriedMenuWarpV1(uint32_t,uint64_t,double,double);\n'
+        suffix+='__declspec(dllimport) int inputBridge_l2NextThroughV1(int*,int*,int*,int*,int*,uint64_t);\n'
+        suffix+='#define p_ib_menu_warp inputBridge_requestCarriedMenuWarpV1\n#define p_ib_next_through inputBridge_l2NextThroughV1\n'
+        suffix+='static void hostFrameSize(GLFWwindow*w,int*x,int*y){(void)w;*x=800;*y=600;}\n#define p_fbsize hostFrameSize\n'
         suffix=suffix.replace(extract(suffix,'Java_org_lwjgl_opengl_AMCLDisplay_nSetGrab'),'')
         # Source target退休场必须执行原JNI退出正文的typed/legacy activation cutoff。
         # 旧control-only夹具仅把OS指针设NULL，不能证明完整窗口close；这里只替真实OS destroy边缘。
@@ -85,7 +93,8 @@ def main(options):
         nextStart=backend.index('JNIEXPORT jboolean JNICALL Java_org_lwjgl_opengl_AMCLDisplay_nNextEvent')
         nextBody=backend[nextStart:backend.index('\n/* ===================== 末级控制私有JNI',nextStart)]
         bodies='\n'.join(extract(backend,name) for name in ['Java_org_lwjgl_opengl_AMCLDisplay_nInputContract','Java_org_lwjgl_opengl_AMCLDisplay_nLookContract',
-            'Java_org_lwjgl_opengl_AMCLDisplay_nCreateWindow','Java_org_lwjgl_opengl_AMCLContextImplementation_nCreate','Java_org_lwjgl_opengl_AMCLDisplay_nDestroyWindow','Java_org_lwjgl_opengl_AMCLDisplay_nSetGrab'])
+            'Java_org_lwjgl_opengl_AMCLDisplay_nCreateWindow','Java_org_lwjgl_opengl_AMCLContextImplementation_nCreate','Java_org_lwjgl_opengl_AMCLDisplay_nDestroyWindow','Java_org_lwjgl_opengl_AMCLDisplay_nSetGrab',
+            'Java_org_lwjgl_opengl_AMCLDisplay_nRequestMenuWarp','Java_org_lwjgl_opengl_AMCLDisplay_nNextEventThrough'])
         throwers='\n'.join(extract(common,name) for name in ['throwGeneralException','throwException'])
         (build/'consumer.c').write_text('\n'.join([prefix,throwers,contract,suffix,control,bodies,nextBody]),encoding='utf8')
         bridgePath=cpp/'glfw/input_bridge_ohos.c';bridge=bridgePath.read_text(encoding='utf8')
@@ -217,7 +226,7 @@ def main(options):
             # 它们与原Source/Core/full bridge/JNI/JAR同源，分别核无Keyboard冷拒、局部代次围栏、
             # 唯一合法held基线及旧deferred末松退休；反控Jar仍须在原指定失败场命中行为断言。
             if not options.negative_stale_drain:
-                for mode in ['mouse-only','local-recreate','held-recreate','deferred-old-scope','typed-held-recreate','text-char-recreate']:
+                for mode in ['menu-warp','mouse-only','local-recreate','held-recreate','deferred-old-scope','typed-held-recreate','text-char-recreate']:
                     run([jdk/'bin/java.exe','-XX:-UsePerfData','-Dos.name=Linux','-Djava.library.path='+str(binaries),
                         '-Dorg.lwjgl.librarypath='+str(binaries),'-cp',os.pathsep.join([str(classes),str(jar),str(modern)]),'org.lwjgl.opengl.L2SourceProductionTest',
                         binaries/'lwjgl_v2.dll',binaries/'source_owner.dll',binaries/'source_peer.dll',mode],build,out/(mode+'.log'))

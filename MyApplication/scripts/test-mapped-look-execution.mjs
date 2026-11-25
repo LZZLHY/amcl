@@ -34,7 +34,13 @@ function axis(f,device,x,trigger=0) {
   const rate=f.outputs.find(row=>row[0]==='rate');assert.deepEqual(rate,['rate',7,1,1080,0]);
   assert.ok(f.outputs.findIndex(row=>row[0]==='rate')<f.outputs.findIndex(row=>row[0]==='control'),
     '同轴快照的速度边界先于扳机action提交');
+  const cleanup=f.pad.reconcileConnectionCleanup.bind(f.pad);
+  let cleanupCount=0;
+  f.pad.reconcileConnectionCleanup=()=>{cleanupCount++;return cleanup();};
+  const states=f.pad.allStates();
   f.outputs.length=0;f.setClock(1000);f.env.runTimers();
+  assert.equal(cleanupCount,1,'one mapped timer tick needs only one connection reconciliation');
+  assert.equal(f.pad.allStates(),states,'unchanged connection inventory must reuse the original iteration snapshot');
   assert.ok(f.outputs.some(row=>row[0]==='advance-native'));
   assert.equal(f.outputs.some(row=>row[0]==='legacy-delta'),false,'新路线不以JS dt再积分');
   axis(f,7,0);assert.deepEqual(f.outputs.filter(row=>row[0]==='rate').at(-1),['rate',7,1,0,0]);

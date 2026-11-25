@@ -3,6 +3,7 @@
  * 未读圆点仍使用状态填充，清空、重试和消息读取流程保持原有行为。
  */
 import { applyNativeTheme } from '../components/AppTheme';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 /**
  * MessageCenterPage.ets — 消息中心（消息中心与诊断体验 · M4.4）
  *
@@ -31,6 +32,7 @@ import {
   getAppMessageStore, APP_MESSAGE_CAPACITY,
 } from '../components/AppMessageStore';
 import { refreshUnreadCount, cancelNotification } from '../components/AppNotifier';
+import { MessageDestination } from '../runtime/MessageDestination';
 
 const TAG = 'MessageCenter'
 
@@ -49,6 +51,45 @@ struct MessageCenterPage {
 
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
   private prefManager: PreferenceManager = new PreferenceManager(this.context)
+
+  private clearDecision_: string = 'idle';
+  private navigationEpoch_: number = 0;
+  onPageHide(): void { this.navigationEpoch_++; }
+
+  /** 查询只返回消息引用和类型，正文可能含玩家身份或应用私有诊断。 */
+  private async skillAction_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (method === 'readMessages') {
+      await this.refresh_();
+      if (this.loadingError) return { 'state': 'failed', 'reason': 'messageStore' };
+      return { 'state': 'ready', 'unread': this.unreadCount_(), 'clearDecision': this.clearDecision_,
+        'messages': this.messages.map((m: AppMessage): SkillFields => ({ 'id': m.id, 'kind': m.kind, 'read': m.read, 'createdAt': m.createdAt })) };
+    }
+    if (!this.loaded || this.loadingError) return { 'state': 'unavailable', 'reason': 'messageStore' };
+    if (method === 'markAllMessagesRead') {
+      await this.markAllRead_();
+      return { 'state': this.loadingError ? 'failed' : 'ready', 'unread': this.unreadCount_() };
+    }
+    if (method === 'openMessage') {
+      const msg = this.messages.find((m: AppMessage): boolean => m.id === args['messageId']);
+      if (!msg) return { 'state': 'failed', 'reason': 'messageNotFound' };
+      return this.onTapMessage_(msg);
+    }
+    if (method === 'requestClearMessages') {
+      if (this.messages.length === 0) return { 'state': 'ready', 'remaining': 0 };
+      this.confirmClear_();
+      return { 'state': this.clearDecision_ === 'pending' ? 'needsUser' : 'failed', 'decision': this.clearDecision_ };
+    }
+    return { 'state': 'failed', 'reason': 'unknownOperation' };
+  }
+
+  private bindSkill_(): void {
+    LauncherSkillBus.bind('messages', this, (method: string, args: SkillFields): Promise<SkillFields> => this.skillAction_(method,args), (): boolean => {
+      const page = this.getUIContext().getRouter().getState().name;
+      return page === 'MessageCenterPage' || page === 'pages/MessageCenterPage';
+    });
+  }
+
+  aboutToDisappear(): void { LauncherSkillBus.unbind('messages',this); }
 
   aboutToAppear() {
     this.applyTheme_()
@@ -102,62 +143,72 @@ struct MessageCenterPage {
    * 的 sessionKey + `router.back()`，由 Index 的 @Watch 消费）—— 四个入口收敛到
    * `openErrorSheetBySession`，不各写一套。
    */
-  private async onTapMessage_(msg: AppMessage): Promise<void> {
+  private async onTapMessage_(msg: AppMessage): Promise<SkillFields> {
+    const generation = this.navigationEpoch_;
     this.loadingError = ''
     try {
-      await getAppMessageStore().markRead(msg.id)
+      await getAppMessageStore().markRead(msg.id,msg)
       refreshUnreadCount()
       this.messages = getAppMessageStore().list()
-      cancelNotification(msg.id)
     } catch (e) {
       this.loadingError = '更新消息状态失败：' + (e as Error).message
-      return
+      return { 'state':'failed', 'reason':'messageNotCommitted' }
     }
 
+    const removed = await cancelNotification(msg.id)
+    if (this.navigationEpoch_ !== generation) return { 'state':'unknown', 'read':true, 'destinationReached':false, 'notificationGone':removed };
+    let shown = msg.action.type === AppMessageActionType.NONE
     if (msg.action.type === AppMessageActionType.OPEN_ERROR_SHEET) {
-      let key = Number.parseInt(msg.action.payload, 10)
-      if (!Number.isNaN(key) && key > 0) {
-        AppStorage.setOrCreate('amcl_open_error_sheet_session', key)
-        try {
+      const key = Number(msg.action.payload)
+      if (Number.isSafeInteger(key) && key > 0) {
+        shown = await MessageDestination.open(key, (): void => {
           this.getUIContext().getRouter().back()
-        } catch (e) {
-          hilog.warn(0x0000, TAG, 'router.back failed: %{public}s', (e as Error).message)
-        }
+          AppStorage.setOrCreate('amcl_open_error_sheet_session', key)
+        })
       }
     } else if (msg.action.type === AppMessageActionType.OPEN_PAGE) {
       if (msg.action.payload.length > 0) {
         try {
-          this.getUIContext().getRouter().pushUrl({ url: msg.action.payload })
+          await this.getUIContext().getRouter().pushUrl({ url: msg.action.payload })
+          const target = this.getUIContext().getRouter().getState().name
+          shown = target === msg.action.payload || 'pages/' + target === msg.action.payload
         } catch (e) {
+          this.loadingError = '消息已读，目标页未能打开';
           hilog.warn(0x0000, TAG, 'pushUrl failed: %{public}s', (e as Error).message)
         }
       }
     }
+    return { 'state':shown && removed ? 'ready' : 'unknown', 'read':true, 'destinationReached':shown, 'notificationGone':removed }
   }
 
-  private async clearAll_(): Promise<void> {
+  private async clearAll_(original: AppMessage[]): Promise<void> {
     this.loadingError = ''
     try {
-      await getAppMessageStore().clear()
+      await getAppMessageStore().clear(original)
       refreshUnreadCount()
       this.messages = []
     } catch (e) { this.loadingError = '清空消息失败：' + (e as Error).message }
   }
 
   private confirmClear_(): void {
-    if (this.messages.length === 0) return
+    if (this.messages.length === 0 || this.clearDecision_ === 'pending') return
+    this.clearDecision_ = 'pending'
+    const original = this.messages.slice();
     try {
-      this.getUIContext().getPromptAction().showDialog({
+      const decision = this.getUIContext().getPromptAction().showDialog({
         title: '清空消息？',
         message: '这会删除消息中心里的通知记录，不会删除活动日志或分享链接。',
         buttons: [
           { text: '取消', color: this.theme.actionText as string },
           { text: '清空消息', color: this.theme.errorText as string },
         ],
-      }).then((res: promptAction.ShowDialogSuccessResponse) => {
-        if (res.index === 1) this.clearAll_()
-      }).catch(() => { /* 点框外 = 取消 */ })
-    } catch (e) { this.loadingError = '无法打开确认框：' + (e as Error).message }
+      }).then(async (res: promptAction.ShowDialogSuccessResponse): Promise<void> => {
+        if (res.index !== 1) { this.clearDecision_ = 'cancelled'; return }
+        await this.clearAll_(original)
+        this.clearDecision_ = this.loadingError ? 'failed' : 'completed'
+      }).catch((): void => { this.clearDecision_ = 'cancelled' })
+      LauncherSkillBus.followUserDecision('requestClearMessages',decision);
+    } catch (e) { this.clearDecision_ = 'failed'; this.loadingError = '无法打开确认框：' + (e as Error).message }
   }
 
   // ---- 展示 helper ----
@@ -205,7 +256,7 @@ struct MessageCenterPage {
   }
 
   /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
-  onPageShow(): void { this.applyTheme_(); }
+  onPageShow(): void { this.bindSkill_(); this.applyTheme_(); }
 
   build() {
     Column() {

@@ -49,6 +49,8 @@ public final class L2SourceProductionTest {
     private static native int physical(boolean down);
     /** 每5项一条真正bridge L2Next结果，仅观测已返回的原type/i1/i2/i3/i4。 */
     private static native int[] takeTransportTrace();
+    private static native void menuWarpWindow(boolean held);
+    private static native void menuMove(double dx, double dy);
     private static native void armTargetReentry();
     private static native void restoreWindow();
 
@@ -548,12 +550,59 @@ public final class L2SourceProductionTest {
             " publicApiOnly=true gameDocumentApplied=unproven fullXComponentExecuted=false");
     }
 
+    /** 使用真实上游 Mouse、生产 JNI 和共同 bridge 核首帧、22字节绝对坐标及再抓取。 */
+    private static void menuWarp() throws Exception {
+        java.awt.Canvas surface = new java.awt.Canvas();
+        surface.setSize(800, 600);
+        Display.setParent(surface);
+        Mouse.setClipMouseCoordinatesToWindow(true);
+        create();
+        check(org.lwjgl.input.Cursor.getCapabilities() == 0, "menu warp keeps platform cursor capabilities");
+        int[] targets = {137, 0, 599, 263};
+        for (int i = 0; i < targets.length; i++) {
+            int x = 79 + i * 12, y = targets[i];
+            Mouse.setGrabbed(true);
+            long right = accepted(acquire(1, "menu-right", new int[]{-2}), "menu right pressed");
+            Mouse.poll(); empty(); check(Mouse.isButtonDown(1), "world right held");
+            Mouse.setGrabbed(false); empty();
+            menuWarpWindow(true);
+            Mouse.setCursorPosition(x, y);
+            check(Mouse.getX() == x && Mouse.getY() == y, "menu first getter");
+            Mouse.poll();
+            check(Mouse.getX() == x && Mouse.getY() == y, "menu poll directly at target " + y);
+            check(Mouse.next() && Mouse.getEventButton() == -1 &&
+                Mouse.getEventX() == x && Mouse.getEventY() == y && !Mouse.next(), "menu first event directly at target " + y);
+            if (i != 0) {
+                menuMove(9, i == 3 ? -6 : 0);
+                x += 9;
+                if (i == 3) y += 6;
+            }
+            check(release(right)[1] == 1, "menu right released");
+            Mouse.poll();
+            if (i != 0) check(Mouse.next() && Mouse.getEventButton() == -1 &&
+                Mouse.getEventX() == x && Mouse.getEventY() == y, "menu first drag retains target " + y);
+            check(Mouse.next() && Mouse.getEventButton() == 1 && !Mouse.getEventButtonState() &&
+                Mouse.getEventX() == x && Mouse.getEventY() == y && !Mouse.next(), "menu final right release " + y);
+            check(!Mouse.isButtonDown(1) && Mouse.getX() == x && Mouse.getY() == y, "menu release getter");
+            menuWarpWindow(false);
+            Mouse.setGrabbed(true); Mouse.poll();
+            check(Mouse.getDX() == 0 && Mouse.getDY() == 0 && !Mouse.next(), "world regrab has zero camera delta");
+        }
+        Mouse.setGrabbed(false);
+        Mouse.poll(); int origX=Mouse.getX(), origY=Mouse.getY();
+        Mouse.setCursorPosition(318, 91); Mouse.poll();
+        check(Mouse.getX()==origX && Mouse.getY()==origY && !Mouse.next(), "regular menu retains old backend behavior");
+        finish();
+        System.out.println("PASS L2_SOURCE real Mouse setter/current/poll/MOVE22/UP22; both Y edges; stationary release; zero regrab delta");
+    }
+
     public static void main(String[] args) throws Exception {
         System.load(args[1]); System.load(args[0]); initialize(args[2]);
         keyboardCreate = Keyboard.class.getDeclaredMethod("create", InputImplementation.class);
         mouseCreate = Mouse.class.getDeclaredMethod("create", InputImplementation.class);
         keyboardCreate.setAccessible(true); mouseCreate.setAccessible(true);
         Mouse.setClipMouseCoordinatesToWindow(false);
+        if(args.length>3&&args[3].equals("menu-warp")){menuWarp();return;}
         if(args.length>3&&args[3].startsWith("focus:")){focusScalar(args[3].substring(6));return;}
         if (args.length > 3 && args[3].equals("unicode-sequence")) { unicodeSequence(); return; }
         if (args.length > 3 && args[3].equals("unicode-budget")) { unicodeBudget(); return; }

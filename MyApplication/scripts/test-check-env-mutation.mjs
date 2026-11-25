@@ -231,6 +231,10 @@ mutate('control publication loses its once guard', 'entry/src/main/cpp/input/del
 mutate('input descriptor loses once guard', 'entry/src/main/cpp/glfw/input_bridge_ohos.c',
   '    if (atomic_load_explicit(&g_bridgeAddressPublished, memory_order_acquire)) return;',
   '', ['order-pin']);
+// 游戏线程重新调用程序设位不应触发描述符重发。
+mutate('SDL warp descriptor republishes from live present', 'entry/src/main/cpp/glfw/input_bridge_ohos.c',
+  'void inputBridge_sdlNotifyFramePresented(void) {',
+  'void inputBridge_sdlNotifyFramePresented(void) {\n    setenv("AMCL_SDL_MENU_WARP_V1", "late", 1);', ['unlisted']);
 mutate('SDL touch descriptor republishes from live present', 'entry/src/main/cpp/glfw/input_bridge_ohos.c',
   'void inputBridge_sdlNotifyFramePresented(void) {',
   'void inputBridge_sdlNotifyFramePresented(void) {\n    setenv("AMCL_SDL_TOUCH_BRIDGE", "late", 1);', ['unlisted']);

@@ -1,0 +1,174 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b0d83bfa4..4ba023133 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1847,6 +1847,8 @@ endif()
+     )
+     set(HAVE_SDL_VIDEO TRUE)
+     sdl_link_dependency(openharmonyvideo LIBS native_display_manager)
++    # 手机写出使用公开的 OHOS 剪贴板与纯文本数据接口。
++    sdl_link_dependency(openharmonyclipboard LIBS pasteboard udmf)
+ 
+     # Core stuff
+     # find_library(ANDROID_DL_LIBRARY dl)
+diff --git a/src/SDL.c b/src/SDL.c
+index fe8a0e1ce..3567ffa8c 100644
+--- a/src/SDL.c
++++ b/src/SDL.c
+@@ -465,6 +465,14 @@ bool SDL_AMCL_AllowVideo(void)
+     if(parsed>0 && identity.abi==2)return SDL_SetError("AMCL auxiliary SDL cannot initialize video or GPU windows");
+     return true;
+ }
++
++/* 只有真实 SDL 主游戏实例完成宿主绑定后，才可启用手机剪贴板写出。 */
++bool SDL_AMCL_HasPrimaryGameVideo(void)
++{
++    return SDL_GetAtomicInt(&SDL_amclHostMode) == 1 &&
++           SDL_amclHostRuntime.abi == 1 &&
++           SDL_amclHostRuntime.pid == (uint64_t)getpid();
++}
+ #endif
+ 
+ // Private helper to increment a subsystem's ref counter.
+diff --git a/src/core/openharmony/SDL_amclhostruntime.h b/src/core/openharmony/SDL_amclhostruntime.h
+index 433e2f3c7..92e6803de 100644
+--- a/src/core/openharmony/SDL_amclhostruntime.h
++++ b/src/core/openharmony/SDL_amclhostruntime.h
+@@ -184,6 +184,10 @@ static inline int AMCL_SdlHostRetire(AMCL_SdlHostRuntime *runtime, const char *d
+ #ifdef SDL_PLATFORM_OPENHARMONY
+ extern bool SDL_AMCL_ValidateEventThread(bool observe_pump);
+ extern bool SDL_AMCL_AllowVideo(void);
++#if defined(__GNUC__)
++__attribute__((visibility("hidden")))
++#endif
++extern bool SDL_AMCL_HasPrimaryGameVideo(void);
+ #endif
+ 
+ #endif
+diff --git a/src/video/openharmony/SDL_amclphoneclipboard.c b/src/video/openharmony/SDL_amclphoneclipboard.c
+new file mode 100644
+index 000000000..5fcdc7d2d
+--- /dev/null
++++ b/src/video/openharmony/SDL_amclphoneclipboard.c
+@@ -0,0 +1,46 @@
++/* 在 SDL 保存游戏剪贴板数据后，尽力同步手机系统的纯文本剪贴板。 */
++#include "SDL_internal.h"
++#include "SDL_amclphoneclipboard.h"
++
++#include <database/pasteboard/oh_pasteboard.h>
++#include <database/udmf/udmf.h>
++#include <database/udmf/uds.h>
++
++#define AMCL_PHONE_CLIPBOARD_MAX_BYTES (4u * 1024u * 1024u)
++
++bool OPENHARMONY_AMCL_MirrorPhoneClipboardText(struct SDL_VideoDevice *device, const char *text)
++{
++    (void)device;
++    if (!text || !*text || SDL_strnlen(text, AMCL_PHONE_CLIPBOARD_MAX_BYTES + 1u) > AMCL_PHONE_CLIPBOARD_MAX_BYTES) {
++        return true;
++    }
++
++    OH_Pasteboard *board = OH_Pasteboard_Create();
++    OH_UdmfData *data = OH_UdmfData_Create();
++    OH_UdmfRecord *record = OH_UdmfRecord_Create();
++    OH_UdsPlainText *plain = OH_UdsPlainText_Create();
++    int result = -1;
++    if (board && data && record && plain &&
++        OH_UdsPlainText_SetContent(plain, text) == 0 &&
++        OH_UdmfRecord_AddPlainText(record, plain) == 0 &&
++        OH_UdmfData_AddRecord(data, record) == 0) {
++        result = OH_Pasteboard_SetData(board, data);
++    }
++    if (plain) {
++        OH_UdsPlainText_Destroy(plain);
++    }
++    if (record) {
++        OH_UdmfRecord_Destroy(record);
++    }
++    if (data) {
++        OH_UdmfData_Destroy(data);
++    }
++    if (board) {
++        OH_Pasteboard_Destroy(board);
++    }
++    if (result != 0) {
++        SDL_LogWarn(SDL_LOG_CATEGORY_SYSTEM, "AMCL phone system clipboard write failed");
++    }
++    // SDL 内存剪贴板已保存。系统写失败不改变游戏的剪贴板返回语义。
++    return true;
++}
+diff --git a/src/video/openharmony/SDL_amclphoneclipboard.h b/src/video/openharmony/SDL_amclphoneclipboard.h
+new file mode 100644
+index 000000000..9b5a0976a
+--- /dev/null
++++ b/src/video/openharmony/SDL_amclphoneclipboard.h
+@@ -0,0 +1,12 @@
++/* AMCL 手机纯文本剪贴板写入回调，仅供内部 OHOS 视频驱动接线。 */
++#ifndef SDL_amclphoneclipboard_h_
++#define SDL_amclphoneclipboard_h_
++
++struct SDL_VideoDevice;
++
++#if defined(__GNUC__)
++__attribute__((visibility("hidden")))
++#endif
++extern bool OPENHARMONY_AMCL_MirrorPhoneClipboardText(struct SDL_VideoDevice *device, const char *text);
++
++#endif
+diff --git a/src/video/openharmony/SDL_openharmonyvideo.c b/src/video/openharmony/SDL_openharmonyvideo.c
+index 5d7b6f535..248e33ffb 100644
+--- a/src/video/openharmony/SDL_openharmonyvideo.c
++++ b/src/video/openharmony/SDL_openharmonyvideo.c
+@@ -26,6 +26,7 @@
+ // HarmonyOS/OpenHarmony SDL video driver implementation
+ 
+ #include <window_manager/oh_display_manager.h>
++#include <deviceinfo.h>
+ 
+ // !!! FIXME: these are defined as "const uint32_t VARNAME = VALUE;" in native_interface_xcomponent.h, which becomes a global variable in _our_ C code! Maybe C++ handles this differently...?
+ #define OH_XCOMPONENT_ID_LEN_MAX sdl_ohosvideo_OH_XCOMPONENT_ID_LEN_MAX
+@@ -35,12 +36,15 @@
+ // !!! FIXME: move stuff in from Android code
+ 
+ #include "../SDL_sysvideo.h"
++#include "../SDL_clipboard_c.h"
+ #include "../SDL_pixels_c.h"
+ #include "../../events/SDL_events_c.h"
+ #include "../../events/SDL_windowevents_c.h"
+ 
+ #include "SDL_openharmonyvideo.h"
+ #include "SDL_openharmonyopengl.h"
++#include "SDL_amclphoneclipboard.h"
++#include "../../core/openharmony/SDL_amclhostruntime.h"
+ // !!! FIXME
+ //#include "SDL_openharmonyclipboard.h"
+ #include "SDL_openharmonyamcl.h"
+@@ -449,6 +453,15 @@ static void OPENHARMONY_DeleteDevice(SDL_VideoDevice *device)
+     SDL_free(device);
+ }
+ 
++/* 只同步游戏 SDL_SetClipboardText 的纯文本，排除通用剪贴板接口提交的富文本或混合数据。 */
++static bool OPENHARMONY_MirrorPhonePlainClipboard(SDL_VideoDevice *device, const char *text)
++{
++    if (device->clipboard_callback == SDL_ClipboardTextCallback) {
++        return OPENHARMONY_AMCL_MirrorPhoneClipboardText(device, text);
++    }
++    return true;
++}
++
+ static SDL_VideoDevice *OPENHARMONY_CreateDevice(void)
+ {
+     SDL_VideoDevice *device;
+@@ -539,6 +552,12 @@ static SDL_VideoDevice *OPENHARMONY_CreateDevice(void)
+ #endif
+ 
+     OPENHARMONY_DesktopInstall(device);
++    if (!device->SetClipboardText && SDL_AMCL_HasPrimaryGameVideo()) {
++        const char *type = OH_GetDeviceType();
++        if (type && SDL_strcmp(type, "phone") == 0) {
++            device->SetClipboardText = OPENHARMONY_MirrorPhonePlainClipboard;
++        }
++    }
+     device->device_caps = VIDEO_DEVICE_CAPS_SENDS_FULLSCREEN_DIMENSIONS;
+ 
+     return device;

@@ -22,6 +22,15 @@ export struct DownloadAuxiliaryList {
   @Prop hasResults: boolean = false;
   @Prop rowSpacing: number = 8;
   @Prop bottomInset: number = 0;
+  /** 版本目录可绑定自己的控制器并请求原生前插保持；其他目录继续使用私有滚动宿主。 */
+  @Prop preserveRows: boolean = false;
+  rowScroller?: Scroller;
+  onVisibleRows?: (first: number, last: number) => void;
+  /** 版本页在正文上短暂绘制离开视口的旧卡片；手动滚动立即交还原生 List。 */
+  onRowsScroll?: () => void;
+  @BuilderParam rowsOverlay: () => void = this.noRowsOverlay_;
+  @Builder
+  private noRowsOverlay_() { Column() {} }
   /** 插槽不传按值状态参数，父页面保有原 Builder 的状态依赖与业务回调。 */
   @BuilderParam firstLayer: () => void;
   @BuilderParam secondLayer: () => void;
@@ -112,6 +121,7 @@ export struct DownloadAuxiliaryList {
   private index_(first: number, last: number): void {
     this.firstVisible_ = first;
     this.lastVisible_ = last;
+    this.onVisibleRows?.(first, last);
     if (this.hidden_ === 0) this.scrollable_ = this.indexOverflow_();
   }
 
@@ -127,7 +137,7 @@ export struct DownloadAuxiliaryList {
   private restoreAtStart_(settled: boolean = false): boolean {
     if (!this.alive_ || !this.active || !this.hasResults || this.hidden_ <= 0) return false;
     try {
-      const position: OffsetResult = this.scroller_.currentOffset();
+      const position: OffsetResult = (this.rowScroller ?? this.scroller_).currentOffset();
       if (!position || !retreatNeedsTopRestore(this.hidden_, position.yOffset,
         this.returning_, settled && !this.dragging_)) return false;
     } catch (_) { return false; }
@@ -140,6 +150,7 @@ export struct DownloadAuxiliaryList {
   private frame_(offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult {
     if (!this.alive_ || !this.active) return { offsetRemain: offset };
     if (state === ScrollState.Scroll) {
+      if (Math.abs(offset) > 0.01) this.onRowsScroll?.();
       if (offset < -0.01) this.returning_ = true;
       else if (offset > 0.01) this.returning_ = false;
       if (offset < -0.01 && this.restoreAtStart_()) return { offsetRemain: offset };
@@ -192,7 +203,7 @@ export struct DownloadAuxiliaryList {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       if (this.hasResults) {
-        List({ space: this.rowSpacing, scroller: this.scroller_ }) {
+        List({ space: this.rowSpacing, scroller: this.rowScroller ?? this.scroller_ }) {
           // 真正参与内容滚动的首项，只在身份/几何复位前跟随自然测量。
           ListItem() { Column().width('100%').height('100%') }
             .height(retreatLeadItemHeight(this.inset_(), this.rowSpacing))
@@ -201,6 +212,7 @@ export struct DownloadAuxiliaryList {
           this.items()
         }
         .id('download-auxiliary-results').width('100%').height('100%').padding({ left: 16, right: 16 })
+        .maintainVisibleContentPosition(this.preserveRows)
         .contentEndOffset(this.bottomInset).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .onScrollStart(() => { if (!this.animating_) this.policy_.reset(); })
         .onScrollFrameBegin((offset: number, state: ScrollState): OnScrollFrameBeginHandlerResult => this.frame_(offset, state))
@@ -215,6 +227,7 @@ export struct DownloadAuxiliaryList {
         Column() { this.empty() }
           .width('100%').height('100%').padding({ top: this.inset_() })
       }
+      if (this.preserveRows) { this.rowsOverlay() }
       Stack({ alignContent: Alignment.TopStart }) {
         Column() {
           if (this.firstEnabled) {

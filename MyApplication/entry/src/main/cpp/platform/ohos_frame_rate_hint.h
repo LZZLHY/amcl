@@ -3,6 +3,7 @@
 #define AMCL_OHOS_FRAME_RATE_HINT_H
 
 #include <cstdint>
+#include <optional>
 
 struct OH_NativeXComponent;
 
@@ -10,6 +11,8 @@ namespace amcl::ohos {
 
 constexpr int32_t kMinimumUsefulFrameRate = 30;
 constexpr int32_t kMaximumUsefulFrameRate = 240;
+// NativeVSync API 20固定请求范围上限，XComponent旧调度上限另有契约。
+constexpr int32_t kMaximumFixedRefreshRate = 144;
 constexpr int32_t kFallbackDisplayFrameRate = 60;
 
 struct FrameRatePolicy {
@@ -69,11 +72,8 @@ constexpr int32_t SanitizeDisplayFrameRate(int32_t displayRate) {
                             : ClampFrameRate(displayRate);
 }
 
-// Overrides and fpsCap use zero to mean "not specified". The effective cap is
-// always a hard ceiling: if min exceeds it, min is lowered instead of silently
-// raising the cap. Inactive components use one conservative 30 Hz hint.
-// This function deliberately has no OHOS dependencies so policy edge cases can
-// be compile-time tested and reused by host-side tests.
+// 旧选项和环境变量以0表示未指定。正值是调度硬上限；最低值与上限冲突时降低最低值。
+// 不活跃时保留30 Hz提示。纯函数供编译期和宿主回归测试复用。
 constexpr FrameRatePolicy MakeFrameRatePolicy(int32_t displayRate,
                                               int32_t overrideMin = 0,
                                               int32_t overrideMax = 0,
@@ -115,9 +115,10 @@ constexpr bool FrameRatePolicyEqual(const FrameRatePolicy &lhs,
            lhs.expected == rhs.expected;
 }
 
-// The lifecycle controller stores only the XComponent handle. It never owns a
-// render callback or a VSync source. Surface/focus/Ability events merely update
-// the scheduler hint used by Minecraft's existing loop.
+// The lifecycle controller owns the XComponent handle plus, while a rate is
+// pinned, one dedicated VSync source. It never owns a render callback:
+// Surface/focus/Ability events only update the scheduler hint, and Minecraft's
+// existing loop stays the only producer of frames.
 void RegisterFrameRateComponent(OH_NativeXComponent *component);
 void SetFrameRateSurfaceReady(OH_NativeXComponent *component, bool ready,
                               const char *lifecycleStage);
@@ -130,9 +131,7 @@ void SetFrameRateFocused(OH_NativeXComponent *component, bool focused,
 bool SetFrameRateForegroundSource(uint32_t sourceBit, bool foreground,
                                   const char *lifecycleStage);
 
-// Zero clears the runtime cap. Positive values must be in the supported range.
-// This is an explicit input for a cap known by the launcher/game; AMCL never
-// guesses a cap from short-term measured FPS.
+// 0清除运行期上限。正值只约束调度最大帧率，保持现有持久设置含义。
 bool SetRuntimeFrameRateCap(int32_t fpsCap, const char *lifecycleStage);
 
 // Re-applies the current state, for example after a size change. This remains a
@@ -146,12 +145,12 @@ bool ApplyExpectedFrameRateHint(OH_NativeXComponent *component,
 // Returns false while no live surface is registered.
 bool RefreshExpectedFrameRateHint(const char *lifecycleStage);
 
-// 使用ArkTS当前Window display采得的Hz重新计算既有owner政策，避免窗口跨屏时
-// 把default display误当game display。成功且相同的政策只读返回，不重复SDK或日志；
-// 上次失败仍重试，真正component/surface强制边界由原显式入口处理。
-// 非正值保留Native default-display兼容查询；此函数不增加时钟或呈现通知。
+// 当前游戏窗口传入实测刷新率和已通过该屏支持档位核对的固定请求。
+// 省略固定值保持现有调用兼容；0撤回投票。Surface解绑后丢弃此窗口请求。
+// 活跃状态的同一成功策略可去重；启动和续约失败仍会由现有维护刷新重试。
 bool RefreshExpectedFrameRateHintForDisplayRate(
-    int32_t displayRate, const char *lifecycleStage);
+    int32_t displayRate, const char *lifecycleStage,
+    std::optional<int32_t> supportedFixedRate = std::nullopt);
 
 } // namespace amcl::ohos
 

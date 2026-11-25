@@ -185,7 +185,88 @@ void geometryCheckpointIdentity() {
     core.clear(window, 5);
 }
 
+// 用真实发布账本验证SDL请求不能跨原生窗口资源身份，也不会被旧窗口Stop撤销。
+void presentedTextInputDemand() {
+    NativeDriver driver;
+    WindowHostCore core(driver.api());
+    void* window = reinterpret_cast<void*>(0x4321);
+    void* foreign = reinterpret_cast<void*>(0x5678);
+    bool changed = true;
+    check(core.textInputDemandIdentity() == 0, "unpublished window has no demand");
+    check(core.publish(window, 800, 600, nullptr, nullptr, &changed) == 1 && !changed, "initial empty publication");
+    check(!core.setTextInputDemand(foreign, 1, 3, 1, &changed) && !changed, "foreign window refused without wake");
+    check(core.setTextInputDemand(window, 1, 3, 1, &changed) && changed, "focused SDL A needs text");
+    const auto first = core.textInputDemandIdentity();
+    check(first != 0, "first demand receives an identity");
+    check(core.setTextInputDemand(window, 1, 3, 1, &changed) && !changed &&
+          core.textInputDemandIdentity() == first, "same generation's duplicate request is idempotent");
+    check(core.updateSize(window, 1, 900, 600, &changed) == 2 && changed &&
+          core.textInputDemandIdentity() == 0, "same-object resize retires A and requests a wake");
+    check(!core.setTextInputDemand(window, 1, 3, 0, &changed) && !changed, "late A Stop rejected by original generation");
+    check(core.setTextInputDemand(window, 2, 4, 0, &changed) && !changed &&
+          core.textInputDemandIdentity() == 0, "focused B does not inherit A after resize");
+    check(core.setTextInputDemand(window, 2, 4, 1, &changed) && changed, "new generation may request text");
+    const auto second = core.textInputDemandIdentity();
+    check(second > first && core.setTextInputDemand(window, 2, 3, 0, &changed) && !changed &&
+          core.textInputDemandIdentity() == second, "other SDL window cannot clear current request");
+    check(core.setTextInputDemand(window, 2, 4, 0, &changed) && changed && core.textInputDemandIdentity() == 0,
+          "current SDL stop clears demand");
+    check(core.setTextInputDemand(window, 2, 4, 1, &changed) && changed && core.textInputDemandIdentity() > second,
+          "stop and restart in one event-loop turn still creates a new identity");
+    check(core.setTextInputDemand(window, 2, 5, 1, &changed) && changed, "new SDL window rotates identity while active");
+    check(core.clear(window, 2, &changed) == 3 && changed && core.textInputDemandIdentity() == 0,
+          "native retirement clears projection and requests a wake");
+    check(core.publish(window, 800, 600, nullptr, nullptr, &changed) == 4 && !changed &&
+          core.textInputDemandIdentity() == 0, "same-address resource does not inherit demand");
+    check(!core.setTextInputDemand(window, 2, 4, 1, &changed) && !changed, "late old SDL start rejected");
+    core.clear(window, 4);
+}
+
+// 真正的写入边缘与SDL切换串行；A出锁前完成原命令，B生效后再来就根本不调用原命令。
+void scopedTextCommandInterleaving() {
+    NativeDriver driver;
+    WindowHostCore core(driver.api());
+    void* window = reinterpret_cast<void*>(0xcafe);
+    check(core.publish(window, 800, 600) == 1 && core.setTextInputDemand(window, 1, 10, 1) == 1,
+          "A starts on the presented window");
+    const uint64_t a = core.textInputDemandIdentity();
+    struct Command {
+        std::promise<void> entered;
+        std::shared_future<void> release;
+        static int execute(void* context) {
+            auto* self = static_cast<Command*>(context);
+            self->entered.set_value();
+            self->release.wait();
+            return 1;
+        }
+    } work;
+    std::promise<void> release;
+    work.release = release.get_future().share();
+    auto entered = work.entered.get_future();
+    auto submit = std::async(std::launch::async, [&] { return core.runTextInputCommand(a, Command::execute, &work); });
+    entered.wait();
+    std::promise<void> switching;
+    auto switchingStarted = switching.get_future();
+    auto rebind = std::async(std::launch::async, [&] {
+        switching.set_value();
+        return core.setTextInputDemand(window, 1, 10, 0) && core.setTextInputDemand(window, 1, 10, 1);
+    });
+    switchingStarted.wait();
+    check(rebind.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout,
+          "Stop/Start cannot cross a verified native write");
+    release.set_value();
+    check(submit.get() == 1 && rebind.get(), "A publishes before the new demand");
+    const uint64_t b = core.textInputDemandIdentity();
+    check(b > a && core.runTextInputCommand(a, Command::execute, &work) == 0,
+          "old A write cannot run after same-window B starts");
+    check(core.runTextInputCommand(b, +[](void*) -> int { return 1; }, nullptr) == 1,
+          "current B can write");
+    core.clear(window, 1);
+}
+
 int main() {
+    scopedTextCommandInterleaving();
+    presentedTextInputDemand();
     geometryCheckpointIdentity();
     lifetimeAndFailures();
     inputTransactionOrder();

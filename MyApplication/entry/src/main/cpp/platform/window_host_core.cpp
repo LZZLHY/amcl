@@ -53,7 +53,9 @@ bool WindowHostCore::retryRetiredReferences() {
     return pendingRetirements_.empty();
 }
 
-uint64_t WindowHostCore::publish(void* window, int width, int height, AmclWindowHostCommitFn beforeCommit, void* context) {
+uint64_t WindowHostCore::publish(void* window, int width, int height, AmclWindowHostCommitFn beforeCommit,
+                                 void* context, bool* textDemandWithdrawn) {
+    if (textDemandWithdrawn) *textDemandWithdrawn = false;
     std::unique_lock<std::shared_mutex> inputLock(inputPublicationMutex_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (snapshot_.generation == UINT64_MAX) return 0;
@@ -62,6 +64,7 @@ uint64_t WindowHostCore::publish(void* window, int width, int height, AmclWindow
         return 0;
     }
     retryRetiredReferencesLocked();
+    withdrawTextInputDemand(textDemandWithdrawn);
     void* previous = publicationReference_ ? snapshot_.nativeWindow : nullptr;
     snapshot_.nativeWindow = window;
     snapshot_.width = window ? width : 0;
@@ -75,11 +78,14 @@ uint64_t WindowHostCore::publish(void* window, int width, int height, AmclWindow
     return snapshot_.generation;
 }
 
-uint64_t WindowHostCore::updateSize(void* expected, uint64_t generation, int width, int height) {
+uint64_t WindowHostCore::updateSize(void* expected, uint64_t generation, int width, int height,
+                                    bool* textDemandWithdrawn) {
+    if (textDemandWithdrawn) *textDemandWithdrawn = false;
     std::unique_lock<std::shared_mutex> inputLock(inputPublicationMutex_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (!expected || !generation || expected != snapshot_.nativeWindow || generation != snapshot_.generation || generation == UINT64_MAX) return 0;
     const bool continuous = ready() && width > 0 && height > 0;
+    withdrawTextInputDemand(textDemandWithdrawn);
     snapshot_.width = width;
     snapshot_.height = height;
     ++snapshot_.generation;
@@ -90,10 +96,12 @@ uint64_t WindowHostCore::updateSize(void* expected, uint64_t generation, int wid
     return snapshot_.generation;
 }
 
-uint64_t WindowHostCore::clear(void* expected, uint64_t generation) {
+uint64_t WindowHostCore::clear(void* expected, uint64_t generation, bool* textDemandWithdrawn) {
+    if (textDemandWithdrawn) *textDemandWithdrawn = false;
     std::unique_lock<std::shared_mutex> inputLock(inputPublicationMutex_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (!expected || !generation || expected != snapshot_.nativeWindow || generation != snapshot_.generation || generation == UINT64_MAX) return 0;
+    withdrawTextInputDemand(textDemandWithdrawn);
     void* previous = publicationReference_ ? snapshot_.nativeWindow : nullptr;
     snapshot_.nativeWindow = nullptr;
     snapshot_.width = 0;
@@ -217,6 +225,42 @@ int WindowHostCore::movePresentationGeometry(uint64_t token, void* window, uint6
         return 0;
     }
     return 1;
+}
+
+int WindowHostCore::setTextInputDemand(void* window, uint64_t generation, uint32_t sdlWindowId,
+                                       uint32_t wanted, bool* changed) {
+    if (changed) *changed = false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ready() || !sdlWindowId || window != snapshot_.nativeWindow || generation != snapshot_.generation) return 0;
+    const bool alreadyCurrent = textInputPublicationGeneration_ == generation && textInputSdlWindowId_ == sdlWindowId;
+    // 重投同一需求不换身份；新窗口或关后重开，即使合并成一次唤醒也换序号。
+    if (wanted && !alreadyCurrent) {
+        if (textInputDemandSerial_ == UINT64_MAX) {
+            withdrawTextInputDemand(changed);
+            return 0;
+        }
+        ++textInputDemandSerial_;
+        textInputPublicationGeneration_ = generation;
+        textInputSdlWindowId_ = sdlWindowId;
+        activeTextInputDemand_.store(textInputDemandSerial_, std::memory_order_release);
+        if (changed) *changed = true;
+    } else if (!wanted && alreadyCurrent) {
+        withdrawTextInputDemand(changed);
+    }
+    return 1;
+}
+
+void WindowHostCore::withdrawTextInputDemand(bool* wasActive) {
+    if (wasActive) *wasActive = textInputSdlWindowId_ != 0;
+    textInputPublicationGeneration_ = 0;
+    textInputSdlWindowId_ = 0;
+    activeTextInputDemand_.store(0, std::memory_order_release);
+}
+
+int WindowHostCore::runTextInputCommand(uint64_t demand, AmclWindowTextInputCommandFn command, void* context) {
+    if (!demand || !command) return 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return activeTextInputDemand_.load(std::memory_order_relaxed) == demand ? command(context) : 0;
 }
 
 int WindowHostCore::beginInputPublication(int* width, int* height, uint64_t* generation) {

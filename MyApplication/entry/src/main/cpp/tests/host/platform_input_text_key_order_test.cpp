@@ -327,6 +327,46 @@ void TestRejectionsLeakNothing(Consumers& consumers, uint64_t session) {
 }
 
 /** owned编辑键穿过触控模态的前提是仍有效的文本租约；旧号、END/ABORT/失焦不可复用。 */
+/** 实际core和SDL bridge排队跨 A→B；旧包仍携精确原身份，由SDL队列按最新身份拒绝。 */
+void TestScopedImeQueueWire(Consumers& consumers) {
+    constexpr uint64_t a = UINT64_C(0xfedcba009111beef);
+    constexpr uint64_t b = a + 1;
+    constexpr uint64_t oldLease = 250u, newLease = 251u;
+    const uint8_t bytes[] = {'t'};
+    CHECK(PlatformInputTextSessionBegin(oldLease, a));
+    CHECK(PlatformInputTextSessionDemand(oldLease) == a);
+    CHECK(PlatformInputTextCommit(oldLease, bytes, sizeof(bytes)));
+    CHECK(PlatformInputTextEditing(oldLease, bytes, sizeof(bytes), 1, 0));
+    CHECK(PlatformInputTextSessionKeyTap(oldLease, 2055u, 259, true) == PlatformInputTextKeyTapResult::Submitted);
+    CHECK(PlatformInputTextSessionEnd(oldLease));
+    CHECK(PlatformInputTextSessionBegin(newLease, b));
+    CHECK(PlatformInputTextSessionDemand(oldLease) == 0 && PlatformInputTextSessionDemand(newLease) == b);
+    CHECK(!PlatformInputTextCommit(oldLease, bytes, sizeof(bytes)));
+    CHECK(PlatformInputTextCommit(newLease, bytes, sizeof(bytes)));
+    CHECK(PlatformInputTextSessionEnd(newLease));
+
+    std::vector<uint64_t> commits, editing, keys, sessions;
+    AmclBackendInputEvent event{};
+    while(amclBackendInputNext(AMCL_BACKEND_INPUT_SDL3, &event) == AMCL_BACKEND_INPUT_EVENT) {
+        const uint64_t demand = (static_cast<uint64_t>(event.lockState) << 32u) | static_cast<uint32_t>(event.rawCode);
+        if (event.eventType == AMCL_BACKEND_INPUT_EVENT_TEXT_COMMIT || event.eventType == AMCL_BACKEND_INPUT_EVENT_TEXT_EDITING) {
+            (event.eventType == AMCL_BACKEND_INPUT_EVENT_TEXT_COMMIT ? commits : editing).push_back(demand);
+            CHECK(amclBackendInputReleaseText(AMCL_BACKEND_INPUT_SDL3, event.deviceId) == AMCL_BACKEND_INPUT_EVENT);
+        } else if (event.eventType == AMCL_BACKEND_INPUT_EVENT_KEY) {
+            CHECK(event.resetReason == AMCL_BACKEND_SCOPED_TEXT_KEY_REASON);
+            keys.push_back(event.deviceId);
+        } else if (event.eventType == AMCL_BACKEND_INPUT_EVENT_TEXT_SESSION) {
+            sessions.push_back(demand);
+        }
+    }
+    CHECK((commits == std::vector<uint64_t>{a, b}));
+    CHECK((editing == std::vector<uint64_t>{a}));
+    CHECK((keys == std::vector<uint64_t>{a, a}));
+    CHECK((sessions == std::vector<uint64_t>{a, a, b, b}));
+    DrainEverything(consumers);
+    std::cout << "scoped SDL queued commit, preedit, key pair and session preserve full A/B demand identity: PASS\n";
+}
+
 void TestOwnedTextLeaseBoundaries(Consumers& consumers) {
     constexpr uint64_t first=181u,second=182u,third=183u;
     CHECK(!PlatformInputOwnedTextSessionMatches(0u));
@@ -358,6 +398,10 @@ int main() {
     SelectRoute();
     const AmclInputHostApiV1* api = amclInputGetHostApiV1();
     CHECK(api != nullptr);
+#if defined(AMCL_TEXT_ORDER_REAL_DESCRIPTOR)
+    // 独立可执行入口自行发布真实宿主，外部组合夹具用同一张表时幂等。
+    CHECK(amclInputHostDescriptorPublishV1(api) == AMCL_INPUT_HOST_DESCRIPTOR_OK);
+#endif
     CHECK(PlatformInputPhysicalRouteUsesTyped() == (AMCL_TEXT_KEY_ORDER_TYPED != 0));
     PlatformInputSurfaceCreated(800u, 600u, 21u);
 #if AMCL_TEXT_KEY_ORDER_TYPED
@@ -368,6 +412,7 @@ int main() {
     amclBackendInputSetActive(AMCL_BACKEND_INPUT_LWJGL2, 1);
     DrainEverything(consumers);  // 两个 backend 通道在首次 Next 时完成 baseline/READY 握手
     TestOwnedTextLeaseBoundaries(consumers);
+    TestScopedImeQueueWire(consumers);
     constexpr uint64_t kSession = 77u;
     CHECK(PlatformInputTextSessionBegin(kSession));
     DrainEverything(consumers);

@@ -190,10 +190,14 @@ export function refreshUnreadCount(): void {
 }
 
 /** 撤掉某条消息对应的系统通知（用户已在应用内看过了）。 */
-export async function cancelNotification(msgId: string): Promise<void> {
+export async function cancelNotification(msgId: string): Promise<boolean> {
+  const id = notifyIdOf(msgId);
   try {
-    await notificationManager.cancel(notifyIdOf(msgId));
-  } catch (e) {
-    // 通知本来就不存在时会报错，属正常情况
+    await notificationManager.cancel(id);
+    return true;
+  } catch (_) {
+    // 没有发过通知也是正常结果；服务异常却不能冒充撤回成功。
+    try { return !(await notificationManager.getActiveNotifications()).some((notice): boolean => notice.id === id); }
+    catch (_) { return false; }
   }
 }

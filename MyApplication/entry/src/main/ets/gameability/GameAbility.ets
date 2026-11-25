@@ -1,5 +1,5 @@
-import { isInputObservationTestWant, runInputObservationTestWant } from '../components/InputObservationTestWant';
 import { getDesktopSystemBridge } from '../window/DesktopSystemBridge';
+import { ProductQaGame } from 'entry/ProductQaGame';
 /** 游戏UI与JVM共享经过PID/锁核验的私有进程；初始化失败必须先回传并落盘，再关闭。 */
 import { initializeGameProcess, initializeGameProcessLogging } from '../runtime/ProcessRuntime';
 import { stopGameSession, requestExistingGameSessionExit } from '../runtime/GameSessionHost';
@@ -11,8 +11,7 @@ import { GraphicsRecoveryStore } from '../runtime/GraphicsRecoveryStore';
 import { common } from '@kit.AbilityKit';
 import { AbilityConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-import { AppLogger, DiagnosticPolicy } from 'commons';
-import { ProductBuildProfile } from 'entry/ProductBuildProfile';
+import { AppLogger } from 'commons';
 import { LedgerBeginMeta } from 'commons';
 import { ActivityCategory } from 'feature_core';
 import { LogTags } from 'commons';
@@ -36,6 +35,7 @@ export default class GameAbility extends UIAbility {
   // 隔离成立只授予进程退出权限，不等于快照/运行时初始化成功。窗口必须单独检查ready，
   // 避免失败后等待回传期间又加载页面，触发第二次启动或未初始化的HAR访问。
   private startupReady: boolean = false;
+  private closeWindowObservation_: (() => void) | undefined = undefined;
   private startupFailurePending: boolean = false;
   private startupStage: string = 'isolation';
   /** onCreate不能返回Promise；窗口和初始化共用本轮任务，销毁使旧世代只能保留原件。 */
@@ -50,22 +50,6 @@ export default class GameAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     const generation: number = ++this.startupGeneration;
     this.destroyed = false;
-    // 转发检查到旧进程后仍可能竞态冷建Ability。诊断Want绝不消费启动快照、建立Host/
-    // Source或加载游戏窗口。仅初始化原诊断政策并经过同一双门写不可用回执，不能把
-    // startAbility完成当作观察关闭成功，也不能借冷请求建立任何游戏资源。
-    if (isInputObservationTestWant(want)) {
-      try {
-        DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics,testNapi.getDiagnosticCapabilities());
-        runInputObservationTestWant(this.context,want,false);
-      } catch (error) {
-        // 冷诊断失败仍是未知回执，只报告原异常；日志故障不能阻止下方终止冷Ability。
-        // 这里不能进入正常游戏启动补救，也不能为记录错误创建Host或输入来源。
-        try { AppLogger.warn(TAG, 'Cold input observation request failed', error, LOG_DOMAIN_LAUNCH); }
-        catch (_) { /* 日志观察失败仍继续终止原冷Ability。 */ }
-      }
-      try { this.context.terminateSelf().catch((): void => {}) } catch (_) {}
-      return
-    }
     // 独立游戏进程可以先冷启动；下载/processor准入前固定自己的可信files根，不启动HDC。
     this.startupTask = (async (): Promise<void> => { try {
       if (!testNapi.configureSideloadInstallRoot(this.context.filesDir)) throw new Error('无法固定游戏文件事务保护目录');
@@ -161,6 +145,8 @@ export default class GameAbility extends UIAbility {
       // McGamePage 检测到 false 时显示「请通过启动器首页进入游戏」按钮回退。
       AppStorage.setOrCreate('gameAbilityHasValidParams', hasFilesDir && hasMcDir && hasMcVersion)
       this.startupReady = true;
+      // 原快照及进程运行时初始化均已成功；普通启动未携带观测身份时此处不读文件。
+      this.closeWindowObservation_=ProductQaGame.armPrivate(this.context,want,activityId,version);
       this.checkpointStartup_('ready');
     } catch (error) {
       if (!this.destroyed && generation === this.startupGeneration)
@@ -208,13 +194,12 @@ export default class GameAbility extends UIAbility {
     }
   }
 
-  onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
-    // 真实私有热入口只控制本Host/原前端观察，正常聚焦仍保留原启动参数。
-    if (runInputObservationTestWant(this.context,want,this.startupReady)) return;
+  onNewWant(_want: Want, _launchParam: AbilityConstant.LaunchParam): void {
     AppLogger.info(TAG, 'Existing game session focused; launch parameters retained', LOG_DOMAIN_LAUNCH);
   }
 
   onDestroy(): void {
+    if (this.closeWindowObservation_!==undefined) { this.closeWindowObservation_(); this.closeWindowObservation_=undefined; }
     // 先解除同步Java等待；窗口销毁和Host停止重复到达也只能取消原代次。
     try { GameDialogRuntime.detach(); }
     catch (error) { AppLogger.warn(TAG, 'Game dialog retirement failed; continuing destroy', error, LOG_DOMAIN_LAUNCH); }
@@ -225,12 +210,9 @@ export default class GameAbility extends UIAbility {
     this.windowGeneration++;
     if (this.isolated) ModAudioRuntime.detach();
     if (!this.isolated) return;
-    // 撤销原生手柄焦点（native 随即中和全部手柄）。它抛错（如混淆改名）不能跳过下面的桌面桥
-    // 停止、三端释放与进程退出：同步生命周期回调里逃出的异常就是 JS Crash。
-    // 这句调用须保持原文（含分号）：check-desktop-runtime.mjs 要求两个生命周期正文含它，
-    // 其自测按含分号的原文做删除变异。
+    // 销毁时同时撤销焦点与游戏查询资格。该边缘失败也须继续执行桌面桥与输入清理。
     try {
-      testNapi.desktopGamepadFocus(false);
+      testNapi.desktopGamepadFocus(false, false);
     } catch (e) {
       AppLogger.warn(TAG, 'Desktop gamepad focus reset failed; continuing destroy release', e, LOG_DOMAIN_LAUNCH);
     }
@@ -314,6 +296,11 @@ export default class GameAbility extends UIAbility {
 
   onBackground(): void {
     this.abilityForeground = false;
+    // 帧率前台位必须在隔离判断之前撤销：非隔离形态下面板与 XComponent 仍在，
+    // 漏掉会让选定的固定帧率在后台继续投票。
+    try {
+      testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, false)
+    } catch (e) { /* 老 native 兼容 */ }
     if (!this.isolated) return;
     ModAudioRuntime.setForeground(false);
     // 同 onDestroy：焦点撤销失败只记录，下面的三端释放与 native 兜底必须照常执行。
@@ -326,9 +313,6 @@ export default class GameAbility extends UIAbility {
     // 同 onDestroy：先对三端各说一次，再 native 兜底。
     getInputSourceRegistry().releaseAllEnds('game-ability-background')
     try { testNapi.cancelAllInput(2) } catch (e) { /* 老 native 兼容 */ }
-    try {
-      testNapi.setOhosFrameRateForeground(FRAME_RATE_FOREGROUND_SOURCE_GAME, false)
-    } catch (e) { /* 老 native 兼容 */ }
     AppLogger.info(TAG, 'onBackground', LOG_DOMAIN_LAUNCH);
   }
 }

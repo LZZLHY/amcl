@@ -4,7 +4,7 @@
  * 单一来源（SSOT）：所有需要 .minecraft 根的地方都走 resolveMcDir(context, location)，
  * 不再各自硬编码 `filesDir + '/.minecraft'`。
  *
- *   - SANDBOX  : context.filesDir + '/.minecraft'（默认，卸载即删）
+ *   - SANDBOX  : context.filesDir + '/.minecraft'（旧版默认、外部不可用时回退，卸载即删）
  *   - EXTERNAL : <Download>/com.amcl.launcher/.minecraft（包名文件夹 → 文件管理器显示为 AMCL 图标
  *                并进"来源"；卸载不丢）
  *
@@ -20,13 +20,15 @@
  * （filesDir），不随本解析器改变 —— 它们随安装重建，且 JDK .so 必须由 ELF loader 从沙箱加载。
  *
  * 同步契约：resolveMcDir / externalMcDir / isExternalAvailable 全同步、可在热路径调用。
- * 唯一的异步是 ensurePhoneExternalDir（手机首次启用时 picker 学路径），只在「启用外部」动作里 await。
+ * 新安装首次准备外部目录后才交付实际根；已存在的位置始终优先，部署和扫描沿用同一结果。
  */
 
-import { common, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { common, abilityAccessCtrl, bundleManager, Permissions } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { Environment, fileIo as fs, picker, fileUri } from '@kit.CoreFileKit';
 import { AppLogger } from 'commons';
 import { PreferenceManager } from './PreferenceManager';
+import { systemNative } from './SystemNativeBridge';
 
 const TAG = 'GameStorage';
 const DOWNLOAD_PERM: Permissions = 'ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY';
@@ -45,6 +47,8 @@ export enum StorageLocation {
   EXTERNAL = 'external',
 }
 
+export type ExternalStorageResult = 'ready' | 'permissionDenied' | 'unavailable';
+
 /** 把持久化的字符串还原成枚举（未知值→沙箱） */
 export function parseStorageLocation(s: string): StorageLocation {
   return s === StorageLocation.EXTERNAL ? StorageLocation.EXTERNAL : StorageLocation.SANDBOX;
@@ -53,7 +57,6 @@ export function parseStorageLocation(s: string): StorageLocation {
 export class GameStorage {
   // Download 根路径缓存（getUserDownloadDir 同一会话内不变；避免热路径反复 syscall/抛异常）
   private static cachedDownloadDir: string | null = null;
-  private static downloadDirTried: boolean = false;
 
   // 手机端「学」到的外部应用目录（…/Download/com.amcl.launcher）。'' = 尚未学过。
   // 启动期由 EntryAbility 从 Preferences 注入；启用流程学到新值后即时再注入（本会话生效）。
@@ -74,8 +77,7 @@ export class GameStorage {
    * 设备不支持 / 取不到 → 返回 ''。结果缓存。仅平板路线使用。
    */
   static downloadDir(): string {
-    if (!GameStorage.downloadDirTried) {
-      GameStorage.downloadDirTried = true;
+    if (GameStorage.cachedDownloadDir === null) {
       try {
         let d = Environment.getUserDownloadDir();
         GameStorage.cachedDownloadDir = (d && d.length > 0) ? d : null;
@@ -90,6 +92,95 @@ export class GameStorage {
   /** 沙箱内 .minecraft 根 */
   static sandboxMcDir(context: common.Context): string {
     return context.filesDir + '/.minecraft';
+  }
+
+  /** 首装包管理记录的安装/更新时间相同；即使时间命中，已有或读不清的旧游戏根也沿用沙箱。 */
+  static isFreshInstall(context: common.UIAbilityContext): boolean {
+    try {
+      const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+      if (!Number.isSafeInteger(info.installTime) || info.installTime <= 0 || info.installTime !== info.updateTime) return false;
+    } catch (error) {
+      AppLogger.warn(TAG, 'Bundle installation history unavailable; retaining private game directory', error);
+      return false;
+    }
+    try {
+      fs.lstatSync(GameStorage.sandboxMcDir(context));
+      return false;
+    } catch (error) {
+      // 只有文件 API 的明确 ENOENT 才代表没有旧根；包信息失败或其他 I/O 错误保守处理。
+      return (error as BusinessError).code === 13900002;
+    }
+  }
+
+  /** 目录创建/枚举与实际游戏用的 POSIX 读写都要成功；探针只使用自己的临时文件。 */
+  static verifyExternalRoot(): boolean {
+    const root = GameStorage.externalMcDir();
+    if (!root) return false;
+    try {
+      try { fs.mkdirSync(root, true); } catch (error) {
+        if ((error as BusinessError).code !== 13900015) throw error as Error;
+      }
+      fs.listFileSync(root, { listNum: 1 });
+      return systemNative().verifyGameDirectoryWritable(root);
+    } catch (error) {
+      AppLogger.warn(TAG, 'External game directory read/write check failed', error);
+      return false;
+    }
+  }
+
+  /** 首次/设置切换可请求下载权限，已选外部在冷启动只复核已有授权。先接续旧目录再创建新根。 */
+  static async prepareExternal(context: common.UIAbilityContext, pref: PreferenceManager,
+    requestPermission: boolean): Promise<ExternalStorageResult> {
+    if (GameStorage.isTabletSilent()) {
+      if (!GameStorage.downloadDir()) return 'unavailable';
+      if (!GameStorage.isDownloadPermissionGranted(context) &&
+        (!requestPermission || !await GameStorage.requestDownloadPermission(context))) return 'permissionDenied';
+      if (!GameStorage.migrateLegacyExternalFolder()) return 'unavailable';
+    } else {
+      const cached = !GameStorage.needsPhoneLearn();
+      if (!await GameStorage.ensurePhoneExternalDir(context, pref)) return 'unavailable';
+      if (GameStorage.verifyExternalRoot()) return 'ready';
+      // 手动重试能够更正失效的旧 picker 路径。新学到但不可写的目录只确认一次，交回用户。
+      if (!cached || !requestPermission || !await GameStorage.ensurePhoneExternalDir(context, pref, true)) return 'unavailable';
+    }
+    return GameStorage.verifyExternalRoot() ? 'ready' : 'unavailable';
+  }
+
+  /** 页面返回时只复核已选位置，不弹授权。可读写时接回外部根，权限撤销只影响当前会话。 */
+  static currentLocation(context: common.UIAbilityContext, preferred: StorageLocation): StorageLocation {
+    if (preferred !== StorageLocation.EXTERNAL || !GameStorage.isExternalAvailable()) return StorageLocation.SANDBOX;
+    if (GameStorage.isTabletSilent() && (!GameStorage.isDownloadPermissionGranted(context) ||
+      !GameStorage.migrateLegacyExternalFolder())) return StorageLocation.SANDBOX;
+    return GameStorage.verifyExternalRoot() ? StorageLocation.EXTERNAL : StorageLocation.SANDBOX;
+  }
+
+  /** 缺键旧用户固定原沙箱；新安装只确认一次实际可用根。已有外部偏好临时不可用时保留原偏好。 */
+  static async prepareStartupLocation(context: common.UIAbilityContext, pref: PreferenceManager,
+    active: () => boolean, publish?: (location: StorageLocation) => void): Promise<StorageLocation> {
+    let stored = await pref.confirmedMcStorageLocation();
+    while (active()) {
+      let selected = StorageLocation.SANDBOX;
+      if (stored === StorageLocation.EXTERNAL || (stored === undefined && GameStorage.isFreshInstall(context))) {
+        if (await GameStorage.prepareExternal(context, pref, stored === undefined) === 'ready') {
+          selected = StorageLocation.EXTERNAL;
+        } else {
+          AppLogger.warn(TAG, 'External game storage unavailable; using private game directory');
+        }
+      }
+      if (stored === undefined) await pref.saveLauncherFields({ 'mcStorageLocation': selected }, active, true);
+      // 系统授权、picker 或保存期间，另一窗口可能已改选。按最新选择复核后同步发布实际根。
+      const expected = stored ?? selected;
+      const confirmed = await pref.confirmedMcStorageLocation((value: string | undefined): void => {
+        if (value === expected && active() && publish) publish(selected);
+      });
+      if (confirmed === undefined) throw new Error('游戏数据位置保存后未读回');
+      if (confirmed === expected) {
+        if (!active()) break;
+        return selected;
+      }
+      stored = confirmed;
+    }
+    throw new Error('启动页面已离开');
   }
 
   /**
@@ -172,24 +263,11 @@ export class GameStorage {
    * 仅在「启用外部」动作里 await。返回 appDir（…/com.amcl.launcher）或 ''（取消/失败）。
    * 平板不应调用（平板走 Environment + requestDownloadPermission）。
    */
-  static async ensurePhoneExternalDir(ctx: common.UIAbilityContext, pref: PreferenceManager): Promise<string> {
-    if (GameStorage.phoneExternalDir.length > 0) return GameStorage.phoneExternalDir;
+  static async ensurePhoneExternalDir(ctx: common.UIAbilityContext, pref: PreferenceManager, refresh: boolean = false): Promise<string> {
+    if (!refresh && GameStorage.phoneExternalDir.length > 0) return GameStorage.phoneExternalDir;
     let dir = await GameStorage.learnPhoneExternalDir(ctx);
     if (dir.length === 0) return '';
-    // 轻量校验：确保其下能有 .minecraft 目录才算真就绪（防极端路径不可写）。
-    // 注意：HarmonyOS fs.mkdirSync(path, true) 在目录已存在时仍会抛 EEXIST，
-    // 故 mkdir 仅 best-effort，真正以 statSync 确认目录存在为准。
-    try { fs.mkdirSync(dir + '/.minecraft', true); } catch (e) { /* 可能已存在，下面 stat 校验 */ }
-    try {
-      let st = fs.statSync(dir + '/.minecraft');
-      if (!st.isDirectory()) {
-        AppLogger.warn(TAG, 'ensurePhoneExternalDir: .minecraft exists but not a directory');
-        return '';
-      }
-    } catch (e) {
-      AppLogger.warn(TAG, 'ensurePhoneExternalDir verify failed', e);
-      return '';
-    }
+    // 这个偏好只缓存系统返回的路径；是否选用由 prepareExternal 在实际读写后单独确认。
     pref.phoneExternalDir = dir;            // 落盘（跨重启）
     GameStorage.setPhoneExternalDir(dir);   // 即时注入（本会话生效）
     AppLogger.info(TAG, `learned phone external dir: ${dir}`);
@@ -255,22 +333,29 @@ export class GameStorage {
    * 一次性把旧的外部公共文件夹 Download/AMCL 改名为 Download/com.amcl.launcher（包名）。
    * 早期用自定义名 "AMCL"（不被文件管理器识别为应用、不进"来源"）；改成包名后会带 App 图标、
    * 自动出现在"来源"，且把里面已下载的 .minecraft 数据无缝带过去。
-   * 仅当新文件夹不存在、旧文件夹存在时改名；需外部可用 + 权限，失败静默跳过。
+   * 仅当新文件夹不存在、旧文件夹存在时改名；失败保留重试机会，避免随后创建空根遮住旧数据。
    */
-  private static legacyFolderMigrated: boolean = false;
-  static migrateLegacyExternalFolder(): void {
-    if (GameStorage.legacyFolderMigrated) return;
-    GameStorage.legacyFolderMigrated = true;
+  static migrateLegacyExternalFolder(): boolean {
     let d = GameStorage.downloadDir();
-    if (d.length === 0) return;
+    if (d.length === 0) return false;
     let newDir = d + '/' + EXTERNAL_FOLDER;
     let oldDir = d + '/' + LEGACY_EXTERNAL_FOLDER;
-    try { fs.statSync(newDir); return; } catch (e) { /* 新目录不存在，继续 */ }
+    try { return fs.statSync(newDir).isDirectory(); } catch (error) {
+      if ((error as BusinessError).code !== 13900002) return false;
+    }
     try {
-      fs.statSync(oldDir);          // 旧目录存在才迁移
+      if (!fs.statSync(oldDir).isDirectory()) return false;
+    } catch (error) {
+      return (error as BusinessError).code === 13900002;
+    }
+    try {
       fs.renameSync(oldDir, newDir);
       AppLogger.info(TAG, `migrated external folder ${oldDir} -> ${newDir}`);
-    } catch (e) { /* 无旧目录或无权限，跳过 */ }
+      return true;
+    } catch (error) {
+      AppLogger.warn(TAG, 'Legacy external game directory could not be moved', error);
+      return false;
+    }
   }
 
   /**

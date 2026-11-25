@@ -61,6 +61,13 @@ struct HapProviderAlias {
     const char* oldValue;
 };
 
+/** 旧槽不读取现代分配库；现代槽在创建 JVM 前核对实际 HAP 文件，把缺件交给启动诊断。 */
+template <typename IsRegularFile>
+inline bool CheckModernAllocatorFile(const std::string& slot, const std::string& nativeDir,
+                                    IsRegularFile isRegularFile) {
+    return slot != "LWJGL3" || isRegularFile(nativeDir + "/libamcl_lwjgl_jemalloc.so");
+}
+
 inline const std::vector<HapProviderAlias>& HapOwnedProviderAliases() {
     static const std::vector<HapProviderAlias> aliases{
         {"org.lwjgl.glfw.libname", "libglfw.so", "libglfw.so"},

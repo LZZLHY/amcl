@@ -12,6 +12,8 @@
  */
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { DraftLeaveDecision, LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { ThemeColors, AppIconName } from 'commons';
 import { ExportRequest, ExportFormat, ExportLauncher, ExportIssue, exportHasErrors,
   ExportContentTree, ExportContentGroup, ExportContentItem, ExportContentSelectionResult, defaultExportContentSelection,
@@ -129,6 +131,7 @@ export struct GameExportSheet {
   @State private layer_: string = 'main';
   @State private detailsKind_: string = 'plan';
   @State private showLeaveConfirm_: boolean = false;
+  private skillLeave_: DraftLeaveDecision | undefined = undefined;
   @State private savingLeave_: boolean = false;
   @State private draftSaving_: boolean = false;
   @State private taskStage_: string = '';
@@ -216,10 +219,139 @@ export struct GameExportSheet {
   private viewGeneration_: number = 0;
 
 
+  private skillPlanRef_: string = '';
+  private skillPlan_: ExportPreview | null = null;
+  private skillPicker_: string = 'idle';
+
+  /** 节点引用来自本轮源盘点的选择树。任何传入的字符串都不能扩展目录边界。 */
+  private skillNodes_(groups: ExportContentGroup[], parent: string): SkillFields[] | undefined {
+    for (const group of groups) {
+      if (group.id === parent) {
+        const children = group.children.map((g: ExportContentGroup): SkillFields => ({
+          'id':g.id, 'label':g.label, 'kind':'group', 'selection':this.contentGroupState_(g), 'availability':g.availability }));
+        const items = group.items.map((item: ExportContentItem): SkillFields => ({
+          'id':item.id, 'label':item.label, 'kind':item.kind, 'selected':this.contentItemSelected_(item), 'available':item.available }));
+        return children.concat(items);
+      }
+      const nested = this.skillNodes_(group.children,parent);
+      if (nested !== undefined) return nested;
+    }
+    return undefined;
+  }
+
+  private setExportLauncher_(launcher: ExportLauncher): void {
+    if (!this.editable_() || (launcher === 'pcl' && !this.pclAllowed_())) return;
+    this.launcher_ = launcher;
+    this.changed_();
+  }
+
+  private async skillExport_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (args['instance'] !== this.versionId_) return { 'state':'failed', 'reason':'instanceChanged' };
+    if (method === 'getExportTask') {
+      this.refreshTask_();
+      const task = getGameExportCoordinator().getTask();
+      if (!task || !this.displayedTaskId_ || task.id !== this.displayedTaskId_ ||
+        task.request.versionId !== this.versionId_ || task.request.mcRoot !== this.mcRoot ||
+        (args['taskId'] && args['taskId'] !== task.id)) {
+        return { 'state': 'unavailable', 'picker':this.skillPicker_, 'reason':'noMatchingTask' };
+      }
+      return { 'state':'ready', 'taskId':task.id, 'phase':task.stage, 'taskState':task.state, 'size':task.size,
+        'processed':task.processedFiles, 'total':task.totalFiles, 'verified':task.readbackVerified, 'digest':task.sha256,
+        'format':task.request.format, 'recipient':task.request.launcher, 'platform':this.taskPlatform_, 'picker':this.skillPicker_,
+        'recipientGuide':this.recipientGuide_() };
+    }
+    if (method === 'cancelExportTask') {
+      const task = getGameExportCoordinator().getTask();
+      if (!task || task.id !== args['taskId'] || this.displayedTaskId_ !== task.id || task.request.versionId !== this.versionId_ ||
+        task.request.mcRoot !== this.mcRoot || task.state !== 'running') return { 'state':'failed', 'reason':'taskChanged' };
+      this.cancel_();
+      return { 'state':'accepted', 'taskId':task.id, 'taskState':this.taskState_ };
+    }
+    if (!this.loaded_ || !this.source_ || this.scanState_ !== 'ready' || !this.contentTree_) {
+      return { 'state': this.scanState_ === 'loading' ? 'initializing' : 'unavailable', 'scan':this.scanState_ };
+    }
+    if (method === 'getExportPlan') {
+      const parent = String(args['group'] ?? '');
+      const offset = Number(args['offset'] ?? 0);
+      if (!Number.isSafeInteger(offset) || offset < 0) return { 'state':'failed', 'reason':'invalidOffset' };
+      const nodes = parent ? this.skillNodes_(this.contentTree_.groups,parent) :
+        this.contentTree_.groups.map((g: ExportContentGroup): SkillFields => ({
+          'id':g.id, 'label':g.label, 'kind':'group', 'selection':this.contentGroupState_(g), 'availability':g.availability }));
+      if (nodes === undefined) return { 'state':'failed', 'reason':'groupNotInInventory' };
+      return { 'state':'ready','instance':this.versionId_, 'shared':this.shared_, 'format':this.format_, 'launcher':this.launcher_,
+        'supportsPcl':this.pclAllowed_(), 'nodes':nodes.slice(offset,offset+50), 'total':nodes.length,
+        'dirty':this.dirty_, 'files':this.previewFiles_, 'bytes':this.previewBytes_, 'downloads':this.previewDownloads_,
+        'downloadBytes':this.previewDownloadBytes_, 'tempBytes':this.previewTempBytes_, 'checked':this.previewReady_,
+        'recipient':this.receiverLabel_(), 'planSummary':this.previewSummary_,
+        'issues':this.previewIssues_.length > 0 ? this.previewIssues_ : this.sourceIssues_ };
+    }
+    if (this.showLeaveConfirm_ || !this.editable_()) return { 'state':'busy' };
+    if (method === 'configureExport') {
+      const format = String(args['format']);
+      const launcher = String(args['launcher']);
+      if (!['full','modrinth','curseforge'].includes(format) || !['pcl','hmcl'].includes(launcher)) {
+        return { 'state':'failed', 'reason':'invalidFormat' };
+      }
+      if (launcher === 'pcl' && !this.pclAllowed_(format)) {
+        return { 'state':'unavailable', 'reason':'unsupportedRecipient' };
+      }
+      this.chooseFormat_(format);
+      this.setExportLauncher_(launcher as ExportLauncher);
+      return { 'state':this.format_ === format && this.launcher_ === launcher ? 'ready' : 'unavailable',
+        'format':this.format_, 'launcher':this.launcher_ };
+    }
+    if (method === 'selectExportContent') {
+      const id = String(args['node']);
+      const inTree = this.contentProjection_.items.has(id) || this.contentProjection_.groups.has(id);
+      if (!inTree || typeof args['selected'] !== 'boolean') return { 'state':'failed', 'reason':'nodeNotInInventory' };
+      const before = this.contentProjection_.groups.get(id);
+      if (before !== undefined && before.total === 0) return { 'state':'unavailable', 'reason':'noSelectableItems' };
+      this.selectNode_(id,args['selected'] as boolean);
+      const selected = this.contentProjection_.items.get(id);
+      const group = this.contentProjection_.groups.get(id);
+      if ((selected !== undefined && selected !== args['selected']) ||
+        (group !== undefined && (group.total === 0 || group.selected !== (args['selected'] ? group.total : 0)))) {
+        return { 'state':'failed', 'reason':'selectionNotApplied' };
+      }
+      return { 'state':'ready', 'node':id, 'selection':selected ?? group?.state ?? 'none' };
+    }
+    if (method === 'resetExportContent') { this.resetContentSelection_(); return { 'state':'ready', 'selectedCount':this.selectedEntryCount_() }; }
+    if (method === 'saveExportDraft') return { 'state':await this.saveDraft_() ? 'ready' : 'failed' };
+    if (method === 'discardExportEdits') {
+      if (!this.requestClose_()) return { 'state':'busy', 'reason':'leaveUnavailable' };
+      if (this.showLeaveConfirm_) {
+        const generation=this.viewGeneration_;
+        this.skillLeave_=LauncherSkillBus.draftLeave(method, (): boolean =>
+          this.currentView_(generation) && this.showLeaveConfirm_);
+      }
+      return { 'state':this.showLeaveConfirm_ ? 'needsUser' : 'ready', 'unsaved':this.dirty_ };
+    }
+    if (method === 'retryExport') { this.retry_(); return { 'state':'ready', 'checked':this.previewReady_ }; }
+    if (method === 'checkExportPlan') {
+      await this.check_();
+      if (!this.alive_ || !this.preview_ || !this.previewReady_) return { 'state':'failed', 'reason':'planUnavailable' };
+      this.skillPlanRef_ = util.generateRandomUUID(); this.skillPlan_ = this.preview_;
+      return { 'state':'ready', 'plan':this.skillPlanRef_, 'files':this.previewFiles_, 'bytes':this.previewBytes_, 'downloads':this.previewDownloads_ };
+    }
+    if (method === 'startExport') {
+      if (this.step_ !== 1 || !this.previewReady_ || !this.skillPlan_ || this.skillPlan_ !== this.preview_ ||
+        args['plan'] !== this.skillPlanRef_) return { 'state':'failed', 'reason':'planChanged' };
+      this.skillPlan_ = null; this.skillPlanRef_ = ''; this.skillPicker_ = 'waiting';
+      const generation = this.viewGeneration_;
+      const selection = this.start_().then((id: string | undefined): void => {
+        if (this.currentView_(generation)) this.skillPicker_ = id === undefined ? 'unknown' : (id ? 'accepted' : 'cancelled');
+      });
+      LauncherSkillBus.followUserDecision(method, selection);
+      return { 'state':'needsUser', 'surface':'savePicker' };
+    }
+    return { 'state':'failed', 'reason':'unknownOperation' };
+  }
+
   /** 注册保护先于异步读取；检查、Picker 与草稿写入期间宿主不能提前销毁组件。 */
   aboutToAppear(): void {
     this.viewGeneration_++;
     this.alive_ = true;
+    LauncherSkillBus.bind('gameExport',this,(method: string,args: SkillFields): Promise<SkillFields> => this.skillExport_(method,args),(): boolean => this.alive_);
     // 旧挂载的异步结果只由原代次结算；重挂不得继承一个永远等不到finally的busy。
     this.busy_ = false;
     this.draftSaving_ = false;
@@ -242,7 +374,10 @@ export struct GameExportSheet {
 
   /** 只解除页面资源；任务所有权属于协调器，切回详情或关闭 Sheet 均继续运行。 */
   aboutToDisappear(): void {
+    this.skillLeave_?.dismiss();
     this.alive_ = false;
+    this.skillPlan_ = null; this.skillPlanRef_ = ''; this.skillPicker_ = 'idle';
+    LauncherSkillBus.unbind('gameExport',this);
     this.viewGeneration_++;
     this.scanGeneration_++;
     this.pageMotion_.dispose();
@@ -552,7 +687,7 @@ export struct GameExportSheet {
   }
 
   /** 取得系统另存目标后才执行重工作。取消另存返回空 ID，保持预览供用户再次选择。 */
-  private async start_(): Promise<void> {
+  private async start_(): Promise<string | undefined> {
     const generation: number = this.viewGeneration_;
     if (this.busy_ || this.activeTask_() || this.preview_ === null || !this.previewReady_) return;
     if (this.context_ === undefined) { this.error_ = '应用上下文已失效，请返回后重试。'; return; }
@@ -564,8 +699,10 @@ export struct GameExportSheet {
       if (!this.currentView_(generation)) return;
       if (id.length === 0) this.notice_ = '已取消另存，导出选择和检查结果仍保留。';
       else { this.step_ = 2; this.refreshTask_(); this.syncNavigation_(1); }
+      return id;
     } catch (e) {
       if (this.currentView_(generation)) this.error_ = '无法开始导出：' + (e as Error).message;
+      return undefined;
     } finally {
       if (this.currentView_(generation)) this.busy_ = false;
     }
@@ -676,8 +813,8 @@ export struct GameExportSheet {
       ? '完整游戏包 · 全部可导出资料' : '完整游戏包 · 自定义内容';
   }
   /** 完整包保留 PCL；标准包 NeoForge/Quilt 的接收端限制与清单生成器保持一致。 */
-  private pclAllowed_(): boolean {
-    return this.format_ === 'full' || (this.loaderKind_ !== 'neoforge' && this.loaderKind_ !== 'quilt');
+  private pclAllowed_(format: string = this.format_): boolean {
+    return format === 'full' || (this.loaderKind_ !== 'neoforge' && this.loaderKind_ !== 'quilt');
   }
   private chooseFormat_(format: string): void {
     if (!this.editable_() || this.format_ === format || this.contentTree_ === null) return;
@@ -726,6 +863,10 @@ export struct GameExportSheet {
     return (this.taskLauncher_ === 'pcl' ? 'PCL' : 'HMCL') +
       (this.taskFormat_ === 'full' ? ' · ' + this.taskPlatform_ : ' · 标准包安装');
   }
+  private recipientGuide_(): string {
+    return this.taskFormat_ === 'full' ? '将完整游戏包解压到电脑上的新目录，在启动器中添加其中的 .minecraft 游戏目录，并确认版本隔离。' :
+      '在所选启动器的整合包安装入口导入归档，保持联网以安装游戏、加载器和清单资源。';
+  }
   /** 检查后的“包含什么”仅显示快照摘要；调整内容须回到设置，避免旧预览继续可执行。 */
   private openDetails_(kind: string): void {
     if (this.pageMotion_.moving) return;
@@ -740,24 +881,26 @@ export struct GameExportSheet {
    */
   private requestBack_(): void {
     if (this.busy_ || this.savingLeave_ || this.draftSaving_ || this.pageMotion_.moving) { this.notice_ = '当前操作正在完成，请稍候。'; return; }
-    if (this.showLeaveConfirm_) { this.showLeaveConfirm_ = false; return; }
+    if (this.showLeaveConfirm_) { this.skillLeave_?.dismiss(); this.showLeaveConfirm_ = false; return; }
     if (this.layer_ !== 'main') { this.layer_ = 'main'; this.syncNavigation_(-1); return; }
     if (this.step_ === 1) { this.step_ = 0; this.syncNavigation_(-1); return; }
     this.requestLeave_(false);
   }
   /** 关闭始终离开宿主；活动任务仅收起，草稿改动需要保存、放弃或继续编辑。 */
-  private requestClose_(): void { this.requestLeave_(true); }
-  private requestLeave_(close: boolean): void {
-    if (this.busy_ || this.savingLeave_ || this.draftSaving_ || this.pageMotion_.moving) { this.notice_ = '当前操作正在完成，请稍候。'; return; }
+  private requestClose_(): boolean { return this.requestLeave_(true); }
+  private requestLeave_(close: boolean): boolean {
+    if (this.busy_ || this.savingLeave_ || this.draftSaving_ || this.pageMotion_.moving) { this.notice_ = '当前操作正在完成，请稍候。'; return false; }
     if (this.activeTask_() || !this.dirty_ || this.source_ === null) {
       if (close) this.onClose(); else this.onBack();
-      return;
+      return true;
     }
     this.leaveToClose_ = close;
     this.showLeaveConfirm_ = true;
+    return true;
   }
   /** 放弃仅丢弃本次未保存的界面选择，不能删除其他已落盘草稿或已启动任务。 */
   private finishLeave_(): void {
+    this.skillLeave_?.dismiss();
     this.showLeaveConfirm_ = false;
     if (this.leaveToClose_) this.onClose(); else this.onBack();
   }
@@ -766,7 +909,9 @@ export struct GameExportSheet {
     if (this.savingLeave_) return;
     this.savingLeave_ = true;
     try {
-      if (await this.saveDraft_() && this.currentView_(generation)) this.finishLeave_();
+      const save=this.saveDraft_();
+      this.skillLeave_?.hold(save);
+      if (await save && this.currentView_(generation)) this.finishLeave_();
     } finally { if (this.currentView_(generation)) this.savingLeave_ = false; }
   }
   /** 重试只回配置并废弃旧计划，不自动创建第二个任务或重复弹系统另存。 */
@@ -919,7 +1064,7 @@ export struct GameExportSheet {
             .backgroundColor(this.launcher_ === launcher ? this.theme.bgCard : Color.Transparent)
             .opacity(launcher === 'pcl' && !this.pclAllowed_() ? 0.4 : 1)
             .enabled(this.editable_() && (launcher !== 'pcl' || this.pclAllowed_()))
-            .onClick(() => { this.launcher_ = launcher as ExportLauncher; this.changed_(); })
+            .onClick(() => { this.setExportLauncher_(launcher as ExportLauncher); })
         }, (launcher: string): string => launcher)
       }.width('100%').padding(3).borderRadius(14).backgroundColor(this.theme.bgInput)
       if (!this.pclAllowed_()) {
@@ -1255,8 +1400,7 @@ export struct GameExportSheet {
           .fontSize(13).fontColor(this.theme.textSecondary).width('100%')
       } else if (kind === 'use') {
         Text('使用 ' + (this.taskLauncher_ === 'pcl' ? 'PCL' : 'HMCL') + ' 导入').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.theme.textPrimary).width('100%')
-        Text(this.taskFormat_ === 'full' ? '将完整游戏包解压到电脑上的新目录，在启动器中添加其中的 .minecraft 游戏目录，并确认版本隔离。' :
-          '在所选启动器的整合包安装入口导入归档，保持联网以安装游戏、加载器和清单资源。')
+        Text(this.recipientGuide_())
           .fontSize(14).fontColor(this.theme.textPrimary).width('100%')
         Text('电脑端仍需安装合适的 Java，并使用自己的游戏账户。归档中附有使用说明；请在文件管理器中查看刚才选择的保存位置。')
           .fontSize(13).fontColor(this.theme.textSecondary).width('100%')
@@ -1332,7 +1476,7 @@ export struct GameExportSheet {
         Button('放弃本次修改').width('100%').height(44).backgroundColor(this.theme.bgInput).fontColor(this.theme.textPrimary)
           .enabled(!this.savingLeave_).onClick(() => { this.finishLeave_(); })
         Button('继续编辑').width('100%').height(44).backgroundColor(Color.Transparent).fontColor(this.theme.actionText)
-          .enabled(!this.savingLeave_).onClick(() => { this.showLeaveConfirm_ = false; })
+          .enabled(!this.savingLeave_).onClick(() => { this.skillLeave_?.dismiss(); this.showLeaveConfirm_ = false; })
         if (this.error_.length > 0) Text(this.error_).fontSize(13).fontColor(this.theme.errorText).width('100%')
         }.width('100%').padding(22).backgroundColor(this.theme.bgCard).borderRadius(22)
       }.width('100%').constraintSize({ maxWidth: 420, maxHeight: '90%' }).scrollBar(BarState.Auto).borderRadius(22)

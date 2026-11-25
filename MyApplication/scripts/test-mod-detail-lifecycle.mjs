@@ -29,8 +29,9 @@ const output = path.join(outputRoot,
 fs.mkdirSync(output, { recursive: true });
 const pageFile = 'entry/src/main/ets/pages/ModBrowsePage.ets';
 const sheetFile = 'entry/src/main/ets/components/ModDetailSheet.ets';
+const resourceControlFile = 'entry/src/main/ets/runtime/UnavailableResourceControl.ets';
 const typesFile = 'mods/src/main/ets/ModTypes.ets';
-const sources = [pageFile, sheetFile, typesFile, 'mods/src/main/ets/ModDependencyResolver.ets',
+const sources = [pageFile, sheetFile, resourceControlFile, typesFile, 'mods/src/main/ets/ModDependencyResolver.ets',
   'mods/src/main/ets/ModpackInstaller.ets', 'feature_core/src/main/ets/modloader/MavenUtils.ets',
   'scripts/lib/unified-actions-fixture.mjs', 'scripts/lib/load-pure-ets.mjs', 'scripts/lib/ets-compiler.mjs'];
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -148,7 +149,7 @@ function fixture(kind, { mutatePage, validTarget = false } = {}) {
     methods: ['openDetail', 'closeDetail', 'invalidateLocalScanCache', 'invalidateDetailWork_',
       'resetDetailState_', 'detailInteractionActive_', 'detailWillAppearCallback_',
       'detailWillDisappearCallback_', 'detailDidDisappearCallback_',
-      'onDetailWillDisappear_', 'onDetailDidDisappear_', 'aboutToDisappear', 'ModDetailSheetBuilder',
+      'onDetailWillDisappear_', 'onDetailDidDisappear_', 'aboutToDisappear', 'dismissLocalDraft_', 'ModDetailSheetBuilder',
       'prefetchDetail', 'pickDetailVersion', 'loadChosenDetail', 'buildDeclaredDepRows',
       'detailInstallIssue', 'buildDepRows', 'confirmInstallFromSheet', 'switchDetailSource',
       'usesCustomResourceSave_', 'currentBrowseKind_', 'retireModpackRecoveryScan_'],
@@ -159,6 +160,8 @@ function fixture(kind, { mutatePage, validTarget = false } = {}) {
       makeResolverFromRouter: () => ({ resolve: async () => ({ dependencies: [], conflicts: [],
         depthExceeded: false, hasCompatWarning: false }) }) },
       commons: { AppLogger: { warn() {} } },
+      'entry/ProductQaResources': pureLoad(resourceControlFile),
+      '../launcherskill/LauncherSkillBus': pureLoad('entry/src/main/ets/launcherskill/LauncherSkillBus.ets'),
       '../services/ModTranslationLoader': { offTranslationStoresUpdated() {} },
       '../services/ModFileSave': { supportsCustomResourceSave: kind => ['mod', 'resourcepack', 'shader'].includes(kind) },
       '../components/ModDetailSheet': { ModDetailSheet: options => { Object.assign(sheet, options); } } } });
@@ -328,18 +331,25 @@ try {
     const session = f.page.detailSession_;
     f.page.resolveCounterpart = async () => ({ ...f.project, source: types.ModSource.CURSEFORGE,
       id: 'other-source', title: 'Other Source' });
-    await f.page.switchDetailSource(types.ModSource.CURSEFORGE);
+    const changing = f.page.switchDetailSource(types.ModSource.CURSEFORGE);
+    // 切换等待目标来源的真实目录。先让生产代码发起请求，再由平台替身回包。
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.page.detailSession_, session); assert.equal(f.page.detailPresentedSession_, session);
     assert.equal(f.requests.length, 2); assert.equal(f.page.detailProject_.id, 'other-source');
-    f.requests[1].resolve([f.version]); await f.page.prefetchJob; f.render();
+    f.requests[1].resolve([f.version]); assert.equal(await changing, 'other-source'); await f.page.prefetchJob; f.render();
     return { sessionRetained: true };
   });
 
   await check('页面卸载只退休普通工作与服务，生命周期及迟到Promise不写State', async () => {
     const f = fixture(kinds[0]); await openFixture(f);
     const callbacks = f.lifecycle(), before = f.page.detailFetchEpoch_;
+    const discarded=[];
+    f.page.localArchiveOwner_=flag=>discarded.push(flag);
+    f.page.localModpackArchive_='/owned/local.mrpack';
     f.forbidStateWrites = true;
     f.page.aboutToDisappear();
+    assert.deepEqual(discarded,[true]);
+    assert.equal(f.page.localModpackArchive_,'');
     assert.ok(f.page.detailFetchEpoch_ > before);
     assert.equal(f.page.detailDisposed_, true);
     callbacks.will(); callbacks.did();
@@ -358,8 +368,9 @@ try {
       assert.equal(f.calls.installed.length, 1); assert.equal(f.page.showDetailSheet_, false);
       assertExitSnapshot(f, { project, selected: version, versions: f.page.detailAllVersions_ });
       callbacks.did(); assertCleared(f);
+      // 正常页面提交保留四项业务参数，且没有 QA 任务观察回调。
       assert.deepEqual(f.calls.installed[0], [project, version, primary,
-        kind === types.ResourceKind.MODPACK ? name : deps]);
+        kind === types.ResourceKind.MODPACK ? name : deps, undefined]);
       return { kind, installSubmittedOnce: true };
     });
   }

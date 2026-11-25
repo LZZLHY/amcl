@@ -387,7 +387,7 @@
   "sources": [
     {
       "path": "scripts/build-game-compat.py",
-      "sha256": "c31440dc85b0c912a1efbc0b58f61bc94b8905a15411c68390466ab51b1165b8"
+      "sha256": "8ea2b15eb8411937a47d6d4fbfab7d5ecffeffbb5b5930a87d4bcd71bf4bba4b"
     },
     {
       "path": "scripts/lib/game_compat_inputs.py",
@@ -407,7 +407,7 @@
     },
     {
       "path": "prebuilt/lwjgl3/modern-slot.manifest.json",
-      "sha256": "e8ea20fc78b9092f3c9e2fee4aeb293a635a01e6e1d86a40b0f31eb46f590838"
+      "sha256": "c43c04fa66ea40a22e542fe157b82b1278782d4814ec72233527d223371b9758"
     },
     {
       "path": "scripts/lwjgl-stack-backfill/lib/sources.json",

@@ -101,7 +101,7 @@ async function fixture() {
   const load = makePureEtsLoader({ commons: { ...policy, ...languages, ProcessPreferences: { open: () => store, isGameProcess: () => false }, formatError: String },
     '@kit.PerformanceAnalysisKit': { hilog: { warn() {} } } });
   const { PreferenceManager } = load('feature_system/src/main/ets/PreferenceManager.ets');
-  const helpers = { ...policy, ...tokens, formatError: String };
+  const helpers = { ...policy, ...tokens, ...pure('entry/src/main/ets/launcherskill/LauncherSkillBus.ets'), formatError: String };
   const types = editorTypes(PreferenceManager, helpers);
   const manager = new PreferenceManager({ preferencesDir: '/editor-fixture' });
   await manager.saveResolutionScalePercent(75);
@@ -258,8 +258,13 @@ await group('游戏内apply只提交当局NAPI请求，不修改持久比例', a
   const methods = owner.members.filter(n => ['apply', 'requiresRestart'].includes(n.name?.text));
   const code = compiler.transpileModule('return class PanelProbe {' + methods.map(method => method.getText(tree)).join('\n') + '}', { compilerOptions: { target: compiler.ScriptTarget.ES2022 } }).outputText;
   const calls = []; const Type = new Function('testNapi', code)({ mcRequestResolutionScale: percent => { calls.push(percent); return true; } });
-  const panel = Object.assign(new Type(), { draft: 50, refresh() {}, error: '', snapshot: { phase: 'confirmed' } });
+  const panel = Object.assign(new Type(), { active: true, draft: 50, refresh() {}, error: '',
+    snapshot: { phase: 'confirmed', canRequest: true } });
   const before = plain([...f.store.values]); panel.apply();
+  assert.deepEqual(calls, [50]); assert.deepEqual(plain([...f.store.values]), before);
+  // 点击形成后资格变化或宿主离开，迟到回调不能向当前游戏提交。
+  panel.snapshot.canRequest = false; panel.apply();
+  panel.active = false; panel.snapshot.canRequest = true; panel.apply();
   assert.deepEqual(calls, [50]); assert.deepEqual(plain([...f.store.values]), before);
 });
 

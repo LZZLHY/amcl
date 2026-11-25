@@ -46,6 +46,13 @@ export function resolveWindowGlobalPosition(
   return resolveDisplayGlobalPosition(displayId, relative)
 }
 
+/** 一次完整采样同时持有拓扑、Native 数值和对应的可用区域监听对象。 */
+class DesktopDisplaySnapshot {
+  devices: display.Display[] = []
+  values: number[] = []
+  names: string[] = []
+}
+
 /** Owns one Window lease. Native requests are serialized here on the UI thread. */
 export class DesktopSystemBridge {
   private win: window.Window | undefined = undefined
@@ -58,7 +65,7 @@ export class DesktopSystemBridge {
   private limits: window.WindowLimits = {}
   private baseLimits: window.WindowLimits = {}
   private publishChain: Promise<void> = Promise.resolve()
-  private displays: display.Display[] = []
+  private displaySnapshot: DesktopDisplaySnapshot = new DesktopDisplaySnapshot()
   // Display enumeration and available-area observers were added to the public
   // desktop surface in API 26. API 22 still has a usable default display and
   // native window, so keep the older route free of those newer calls.
@@ -135,12 +142,12 @@ export class DesktopSystemBridge {
   }
 
   private clearDisplayListeners(): void {
-    for (let i = 0; i < this.displays.length; i++) {
+    for (let i = 0; i < this.displaySnapshot.devices.length; i++) {
       if (this.enhancedDisplays) {
-        try { this.displays[i].off('availableAreaChange', this.areaListener) } catch (_) {}
+        try { this.displaySnapshot.devices[i].off('availableAreaChange', this.areaListener) } catch (_) {}
       }
     }
-    this.displays = []
+    this.displaySnapshot = new DesktopDisplaySnapshot()
   }
 
   private refresh(): void {
@@ -170,64 +177,29 @@ export class DesktopSystemBridge {
     const win: window.Window | undefined = this.win
     const generation: number = this.generation
     if (win === undefined || generation === 0) return
-    const properties: window.WindowProperties = win.getWindowProperties()
-    const displayId: number | undefined = properties.displayId
-    if (displayId === undefined) throw new Error('Desktop window display ID unavailable')
-    let devices: display.Display[] = []
+    const sampledDisplay: number | undefined = win.getWindowProperties().displayId
+    if (sampledDisplay === undefined || sampledDisplay < 0) throw new Error('Desktop window display ID unavailable')
+    let snapshot: DesktopDisplaySnapshot
     try {
-      devices = this.enhancedDisplays
-        ? await display.getAllDisplays()
-        : [display.getDefaultDisplaySync()]
+      const devices: display.Display[] = this.enhancedDisplays
+        ? await display.getAllDisplays() : [display.getDefaultDisplaySync()]
+      if (devices.length === 0) throw new Error('No desktop display reported for the live window')
+      snapshot = await this.readDisplayFacts(devices, sampledDisplay)
     } catch (error) {
-      // Window facts can still be published from WindowProperties when the
-      // display service is between stages. Keep the display list empty for
-      // this refresh and let the listener trigger a later retry.
+      // 枚举或读取某一屏失败都不是拔屏。复用本代最后一次完整采样，窗口状态仍独立刷新。
+      if (generation !== this.generation || win !== this.win) return
       AppLogger.warn('DesktopWindow', 'Display enumeration unavailable during refresh', error, LOG_DOMAIN_LAUNCH)
-    }
-    let primaryId: number = displayId
-    try { primaryId = display.getDefaultDisplaySync().id } catch (_) { /* retain the window display id */ }
-    devices.sort((a: display.Display, b: display.Display): number => {
-      if (a.id === b.id) return 0
-      if (a.id === primaryId) return -1
-      if (b.id === primaryId) return 1
-      return a.id - b.id
-    })
-    const values: number[] = []
-    const names: string[] = []
-    for (let i = 0; i < devices.length && i < 16; i++) {
-      const item: display.Display = devices[i]
-      const position: display.Position = { x: 0, y: 0 }
-      const relative: display.RelativePosition = { displayId: item.id, position: position }
-      let origin: display.Position
-      try {
-        origin = item.id === primaryId
-          ? position
-          : display.convertRelativeToGlobalCoordinate(relative)
-      } catch (error) {
-        if (item.id !== primaryId) {
-          AppLogger.warn('DesktopWindow', 'Secondary display origin unavailable; retrying later', error, LOG_DOMAIN_LAUNCH)
-          continue
-        }
-        origin = position
+      snapshot = this.displaySnapshot
+      if (snapshot.devices.length === 0) {
+        // 新窗口没有历史拓扑时只发布系统可核实的当前屏，后续正常枚举再补齐其他屏。
+        snapshot = await this.readDisplayFacts([display.getDisplayByIdSync(sampledDisplay)], sampledDisplay)
       }
-      const area: display.Rect = this.enhancedDisplays
-        ? await item.getAvailableArea()
-        : { left: 0, top: 0, width: item.width, height: item.height }
-      values.push(item.id, origin.x, origin.y, item.width, item.height,
-        origin.x + area.left, origin.y + area.top, area.width, area.height,
-        item.densityPixels, item.refreshRate,
-        item.xDPI > 0 ? item.width * 25.4 / item.xDPI : 0,
-        item.yDPI > 0 ? item.height * 25.4 / item.yDPI : 0)
-      names.push(item.name)
     }
     if (generation !== this.generation || win !== this.win) return
-    this.clearDisplayListeners()
-    this.displays = devices
-    for (let i = 0; i < devices.length; i++) {
-      if (this.enhancedDisplays) {
-        try { devices[i].on('availableAreaChange', this.areaListener) } catch (_) {}
-      }
-    }
+    // 枚举显示器会让出事件循环。窗口模式、所在显示器和位置从同一次最终回读发布。
+    const properties: window.WindowProperties = win.getWindowProperties()
+    const displayId: number | undefined = properties.displayId
+    if (displayId === undefined || displayId < 0) throw new Error('Desktop window display ID unavailable')
     const outer: window.Rect = properties.windowRect
     const rect: window.Rect = properties.drawableRect
     if (rect.width <= 0 || rect.height <= 0) throw new Error('Window drawable area unavailable')
@@ -236,9 +208,49 @@ export class DesktopSystemBridge {
       rect.width, rect.height, win.getWindowStatus() as number,
       this.decorated ? 1 : 0, this.resizable ? 1 : 0, rect.left, rect.top,
       outer.width - rect.left - rect.width, outer.height - rect.top - rect.height]
-    if (!testNapi.desktopPublishState(generation, facts, values, names)) {
+    if (!testNapi.desktopPublishState(generation, facts, snapshot.values, snapshot.names)) {
       throw new Error('Desktop window facts rejected')
     }
+    if (snapshot !== this.displaySnapshot) {
+      this.clearDisplayListeners()
+      this.displaySnapshot = snapshot
+      if (this.enhancedDisplays) {
+        for (const item of snapshot.devices) {
+          try { item.on('availableAreaChange', this.areaListener) } catch (_) {}
+        }
+      }
+    }
+  }
+
+  /** 先把各屏的工作区与全局坐标读齐；任一采样失败整批保留旧拓扑。 */
+  private async readDisplayFacts(devices: display.Display[], displayId: number): Promise<DesktopDisplaySnapshot> {
+    let primaryId: number = displayId
+    try { primaryId = display.getDefaultDisplaySync().id } catch (_) { /* retain the window display id */ }
+    devices.sort((a: display.Display, b: display.Display): number => {
+      if (a.id === b.id) return 0
+      if (a.id === primaryId) return -1
+      if (b.id === primaryId) return 1
+      return a.id - b.id
+    })
+    const snapshot = new DesktopDisplaySnapshot()
+    snapshot.devices = devices
+    for (let i = 0; i < devices.length && i < 16; i++) {
+      const item: display.Display = devices[i]
+      const position: display.Position = { x: 0, y: 0 }
+      const relative: display.RelativePosition = { displayId: item.id, position: position }
+      const origin: display.Position = item.id === primaryId
+        ? position : display.convertRelativeToGlobalCoordinate(relative)
+      const area: display.Rect = this.enhancedDisplays
+        ? await item.getAvailableArea()
+        : { left: 0, top: 0, width: item.width, height: item.height }
+      snapshot.values.push(item.id, origin.x, origin.y, item.width, item.height,
+        origin.x + area.left, origin.y + area.top, area.width, area.height,
+        item.densityPixels, item.refreshRate,
+        item.xDPI > 0 ? item.width * 25.4 / item.xDPI : 0,
+        item.yDPI > 0 ? item.height * 25.4 / item.yDPI : 0)
+      snapshot.names.push(item.name)
+    }
+    return snapshot
   }
 
   private async drain(): Promise<void> {
@@ -248,21 +260,104 @@ export class DesktopSystemBridge {
       while (this.win !== undefined) {
         const command: DesktopHostCommand | undefined = testNapi.desktopTakeCommand()
         if (command === undefined) break
+        const win: window.Window = this.win
         let error: number = 0
         try {
           if (command.generation !== this.generation) throw new Error('Stale desktop command')
-          await this.execute(command, this.win)
-          if (command.generation !== this.generation) throw new Error('Window detached during command')
-          await this.publish()
+          await this.execute(command, win)
+          this.checkCommandWindow(command, win)
         } catch (e) {
           const failure = e as BusinessError
           error = failure.code || -1
           AppLogger.warn('DesktopWindow', 'Command failed kind=' + command.kind +
             ' sequence=' + command.sequence + ' code=' + error, e, LOG_DOMAIN_LAUNCH)
         }
+        // 系统拒绝也可能发生在 recover 或移动已成功之后，先回读最终事实再确认原序号。
+        if (command.generation === this.generation && win === this.win) {
+          try { await this.publish() } catch (e) {
+            if (error === 0) error = (e as BusinessError).code || -1
+            AppLogger.warn('DesktopWindow', 'Window facts unavailable after command', e, LOG_DOMAIN_LAUNCH)
+          }
+        }
         testNapi.desktopCompleteCommand(command.generation, command.sequence, error)
       }
     } finally { this.draining = false }
+  }
+
+  private checkCommandWindow(command: DesktopHostCommand, win: window.Window): void {
+    if (command.generation !== this.generation || this.win !== win) throw new Error('Window detached during command')
+  }
+
+  /** moveWindowToGlobal 采用外框原点。先记住系统从全屏恢复出的浮窗位置，便于原屏回退。 */
+  private outerOrigin(properties: window.WindowProperties): display.Position {
+    const rect: window.Rect = properties.drawableRect
+    const origin: display.Position = resolveWindowGlobalPosition(properties, rect)
+    return { x: origin.x - rect.left, y: origin.y - rect.top }
+  }
+
+  private async switchFullscreenDisplay(command: DesktopHostCommand, win: window.Window,
+    originalDisplay: number, originalStatus: window.WindowStatusType): Promise<void> {
+    this.checkCommandWindow(command, win)
+    // 先验证目标屏，包括可能失败的坐标查询。目标已拔掉时不动原屏全屏状态。
+    const target: display.Display = display.getDisplayByIdSync(command.b)
+    const targetOrigin: display.Position = resolveDisplayGlobalPosition(target.id, { x: 0, y: 0 })
+    let restoreOrigin: display.Position = this.outerOrigin(win.getWindowProperties())
+    const fullscreen: boolean = originalStatus === window.WindowStatusType.FULL_SCREEN
+    const maximized: boolean = originalStatus === window.WindowStatusType.MAXIMIZE
+    try {
+      if (fullscreen || maximized) {
+        await win.recover()
+        this.checkCommandWindow(command, win)
+        restoreOrigin = this.outerOrigin(win.getWindowProperties())
+      }
+      await win.moveWindowToGlobal(targetOrigin.x, targetOrigin.y)
+      this.checkCommandWindow(command, win)
+      // 移动 Promise 完成后目标也可能刚被拔掉，不能在系统选中的另一屏执行最大化。
+      if (win.getWindowProperties().displayId !== target.id) throw new Error('Window did not reach the target display')
+      await win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE)
+      this.checkCommandWindow(command, win)
+      if (win.getWindowProperties().displayId !== target.id || win.getWindowStatus() !== window.WindowStatusType.FULL_SCREEN) {
+        throw new Error('Target fullscreen state was not confirmed')
+      }
+    } catch (failure) {
+      try { await this.restoreFullscreenSource(command, win, originalDisplay, originalStatus, restoreOrigin) }
+      catch (error) { AppLogger.warn('DesktopWindow', 'Cross-display fullscreen restoration failed', error, LOG_DOMAIN_LAUNCH) }
+      throw failure as Error
+    }
+  }
+
+  /** 只补偿原命令涉及的窗口和屏幕。旧窗口被替换、用户已最小化或移到第三屏时停止。 */
+  private async restoreFullscreenSource(command: DesktopHostCommand, win: window.Window, originalDisplay: number,
+    originalStatus: window.WindowStatusType, restoreOrigin: display.Position): Promise<void> {
+    if (command.generation !== this.generation || this.win !== win) return
+    let currentDisplay = win.getWindowProperties().displayId
+    let currentMode: window.WindowStatusType = win.getWindowStatus()
+    if (currentMode === window.WindowStatusType.MINIMIZE ||
+        (currentDisplay !== originalDisplay && currentDisplay !== command.b)) return
+    const restoreFloating: boolean = originalStatus === window.WindowStatusType.FLOATING
+    if (currentDisplay !== originalDisplay || restoreFloating) {
+      display.getDisplayByIdSync(originalDisplay)
+      if (currentMode === window.WindowStatusType.FULL_SCREEN || currentMode === window.WindowStatusType.MAXIMIZE) {
+        await win.recover()
+        this.checkCommandWindow(command, win)
+      }
+      const properties: window.WindowProperties = win.getWindowProperties()
+      currentDisplay = properties.displayId
+      currentMode = win.getWindowStatus()
+      if (currentMode === window.WindowStatusType.MINIMIZE ||
+          (currentDisplay !== originalDisplay && currentDisplay !== command.b)) return
+      const actual: display.Position = this.outerOrigin(properties)
+      if (currentDisplay !== originalDisplay || actual.x !== restoreOrigin.x || actual.y !== restoreOrigin.y) {
+        await win.moveWindowToGlobal(restoreOrigin.x, restoreOrigin.y)
+        this.checkCommandWindow(command, win)
+      }
+    }
+    if (win.getWindowProperties().displayId !== originalDisplay || win.getWindowStatus() === originalStatus) return
+    if (originalStatus === window.WindowStatusType.FULL_SCREEN) {
+      await win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE)
+    } else if (originalStatus === window.WindowStatusType.MAXIMIZE) {
+      await win.maximize(window.MaximizePresentation.EXIT_IMMERSIVE)
+    }
   }
 
   private async execute(command: DesktopHostCommand, win: window.Window): Promise<void> {
@@ -290,10 +385,9 @@ export class DesktopSystemBridge {
           const targetId: number = command.b
           const currentId: number | undefined = win.getWindowProperties().displayId
           if (targetId >= 0 && targetId !== currentId) {
-            if (status === window.WindowStatusType.FULL_SCREEN || status === window.WindowStatusType.MAXIMIZE) await win.recover()
-            const target: display.Display = display.getDisplayByIdSync(targetId)
-            const origin: display.Position = resolveDisplayGlobalPosition(target.id, { x: 0, y: 0 })
-            await win.moveWindowToGlobal(origin.x, origin.y)
+            if (currentId === undefined || currentId < 0) throw new Error('Current desktop display unavailable')
+            await this.switchFullscreenDisplay(command, win, currentId, status)
+            break
           }
           if (win.getWindowStatus() !== window.WindowStatusType.FULL_SCREEN) await win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE)
         } else if (status === window.WindowStatusType.FULL_SCREEN || status === window.WindowStatusType.MAXIMIZE) {

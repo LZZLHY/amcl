@@ -1,0 +1,3741 @@
+[
+  {
+    "name": "findLauncherSettings",
+    "domain": "settings",
+    "description": "按当前产品和设备的真实设置目录列出功能，可搜索名称、说明和关键词。",
+    "args": [
+      {
+        "name": "query",
+        "type": "string",
+        "description": "留空列出全部可见项",
+        "required": false
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "section": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "item",
+            "section",
+            "title"
+          ]
+        }
+      },
+      "section": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "items",
+        "section"
+      ]
+    },
+    "inputExamples": [
+      {
+        "query": "网络"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "section": "overview",
+        "items": [
+          {
+            "item": "network",
+            "title": "网络检测",
+            "section": "logs"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "readLauncherSetting",
+    "domain": "settings",
+    "description": "读取当前设置的确认值、有效候选或需要前台操作的原因。",
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "description": "当前设置目录返回的稳定项标识",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "unknown",
+      "failed"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "value": {
+        "type": "string"
+      },
+      "choices": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "title": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "mode": {
+        "type": "string"
+      },
+      "accent": {
+        "type": "string"
+      },
+      "percent": {
+        "type": "integer"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "checked": {
+        "type": "boolean"
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "independent": {
+        "type": "boolean"
+      },
+      "policy": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "navigation": {
+        "type": "string"
+      },
+      "bottomBar": {
+        "type": "boolean"
+      },
+      "titleButtons": {
+        "type": "boolean"
+      },
+      "manualMaterial": {
+        "type": "boolean"
+      },
+      "saving": {
+        "type": "boolean"
+      },
+      "max": {
+        "type": "integer"
+      },
+      "megabytes": {
+        "type": "integer"
+      },
+      "autoCheck": {
+        "type": "boolean"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "available": {
+        "type": "boolean"
+      },
+      "publisherEnabled": {
+        "type": "boolean"
+      },
+      "requested": {
+        "type": "boolean"
+      },
+      "hasCustomArguments": {
+        "type": "boolean"
+      },
+      "summary": {
+        "type": "string"
+      },
+      "relay": {
+        "type": "object",
+        "properties": {
+          "sessionReady": {
+            "type": "boolean"
+          },
+          "usable": {
+            "type": "boolean"
+          },
+          "tripped": {
+            "type": "boolean"
+          },
+          "connecting": {
+            "type": "boolean"
+          },
+          "hasNativeCounters": {
+            "type": "boolean"
+          },
+          "fallbacks": {
+            "type": "integer"
+          }
+        }
+      },
+      "currentVersion": {
+        "type": "string"
+      },
+      "delivery": {
+        "type": "string",
+        "enum": [
+          "appMarket",
+          "sideload"
+        ]
+      },
+      "saveFailed": {
+        "type": "boolean"
+      },
+      "currentCode": {
+        "type": "integer",
+        "description": "系统 BMS 实际安装码，仅身份得到确认时返回"
+      }
+    },
+    "inputExamples": [
+      {
+        "item": "memory"
+      },
+      {
+        "item": "network"
+      },
+      {
+        "item": "theme"
+      }
+    ],
+    "requiredOutput": {
+      "ready": [
+        "item"
+      ],
+      "needsUser": [
+        "item"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "item": "memory",
+        "megabytes": 2048,
+        "max": 4096
+      },
+      "needsUser": {
+        "item": "network"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready",
+          "item": "memory"
+        },
+        "require": [
+          "megabytes",
+          "max"
+        ],
+        "example": {
+          "megabytes": 2048,
+          "max": 4096
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "mode",
+          "accent"
+        ],
+        "example": {
+          "item": "theme",
+          "mode": "system",
+          "accent": "blue"
+        },
+        "args": {
+          "item": "theme"
+        },
+        "expect": {
+          "item": "theme"
+        }
+      },
+      {
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "megabytes",
+          "max"
+        ],
+        "example": {
+          "item": "memory",
+          "megabytes": 2048,
+          "max": 4096
+        },
+        "args": {
+          "item": "memory"
+        },
+        "expect": {
+          "item": "memory"
+        }
+      }
+    ],
+    "echoArgs": {
+      "item": "item"
+    }
+  },
+  {
+    "name": "openLauncherSetting",
+    "domain": "settings",
+    "description": "定位真实设置项，进入相应的原生编辑、系统授权、剪贴板或帮助流程。",
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "description": "当前设置目录返回的稳定项标识",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser",
+      "failed"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "reference": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser"
+        },
+        "require": [
+          "item",
+          "reference"
+        ],
+        "example": {
+          "item": "jvm",
+          "reference": "editor-1"
+        },
+        "args": {
+          "item": "jvm"
+        },
+        "expect": {
+          "item": "jvm"
+        }
+      },
+      {
+        "when": {
+          "state": "needsUser"
+        },
+        "require": [
+          "item",
+          "reference"
+        ],
+        "example": {
+          "item": "storage",
+          "reference": "editor-1"
+        },
+        "args": {
+          "item": "storage"
+        },
+        "expect": {
+          "item": "storage"
+        }
+      },
+      {
+        "when": {
+          "state": "needsUser"
+        },
+        "require": [
+          "item"
+        ],
+        "example": {
+          "item": "network"
+        },
+        "args": {
+          "item": "network"
+        },
+        "expect": {
+          "item": "network"
+        }
+      }
+    ],
+    "inputExamples": [
+      {
+        "item": "jvm"
+      },
+      {
+        "item": "network"
+      },
+      {
+        "item": "storage"
+      }
+    ],
+    "requiredOutput": {
+      "needsUser": [
+        "item"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "item": "network"
+      }
+    },
+    "echoArgs": {
+      "item": "item"
+    }
+  },
+  {
+    "name": "setLauncherChoice",
+    "domain": "settings",
+    "description": "从当前有效候选中选择全局Java、游戏语言、帧率、下载来源或JDK更新通道。",
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "description": "选择项",
+        "required": true,
+        "enum": [
+          "java",
+          "language",
+          "frame-rate",
+          "fixed-refresh-rate",
+          "mc-source",
+          "jdk-source",
+          "mod-source",
+          "jdk-update"
+        ]
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "readLauncherSetting列出的已启用候选值",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "value": {
+        "type": "string"
+      },
+      "choices": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value",
+            "title",
+            "enabled"
+          ]
+        }
+      },
+      "mode": {
+        "type": "string"
+      },
+      "accent": {
+        "type": "string"
+      },
+      "percent": {
+        "type": "integer"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "checked": {
+        "type": "boolean"
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "independent": {
+        "type": "boolean"
+      },
+      "policy": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "navigation": {
+        "type": "string"
+      },
+      "bottomBar": {
+        "type": "boolean"
+      },
+      "titleButtons": {
+        "type": "boolean"
+      },
+      "manualMaterial": {
+        "type": "boolean"
+      },
+      "saving": {
+        "type": "boolean"
+      },
+      "max": {
+        "type": "integer"
+      },
+      "megabytes": {
+        "type": "integer"
+      },
+      "autoCheck": {
+        "type": "boolean"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "available": {
+        "type": "boolean"
+      },
+      "publisherEnabled": {
+        "type": "boolean"
+      },
+      "requested": {
+        "type": "boolean"
+      },
+      "hasCustomArguments": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "item",
+        "value",
+        "choices"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "item": "mc-source",
+        "value": "auto",
+        "choices": [
+          {
+            "value": "auto",
+            "title": "自动",
+            "enabled": true
+          },
+          {
+            "value": "mirror",
+            "title": "镜像优先",
+            "enabled": true
+          },
+          {
+            "value": "official",
+            "title": "源站",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    "inputExamples": [
+      {
+        "item": "mc-source",
+        "value": "auto"
+      }
+    ],
+    "echoArgs": {
+      "item": "item",
+      "value": "value"
+    }
+  },
+  {
+    "name": "setLauncherSwitch",
+    "domain": "settings",
+    "description": "更改启动器的可见布尔设置，版本隔离和独立进程切换须由用户确认。",
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "description": "设置开关",
+        "required": true,
+        "enum": [
+          "virtual-memory",
+          "game-keep-screen-on",
+          "isolation",
+          "process",
+          "remote-cache",
+          "acceleration",
+          "jdk-web",
+          "jdk-auto"
+        ]
+      },
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "description": "目标启用状态",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "cancelled",
+      "unknown",
+      "failed",
+      "needsUser"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "value": {
+        "type": "string"
+      },
+      "choices": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "title": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "mode": {
+        "type": "string"
+      },
+      "accent": {
+        "type": "string"
+      },
+      "percent": {
+        "type": "integer"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "checked": {
+        "type": "boolean"
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "independent": {
+        "type": "boolean"
+      },
+      "policy": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "navigation": {
+        "type": "string"
+      },
+      "bottomBar": {
+        "type": "boolean"
+      },
+      "titleButtons": {
+        "type": "boolean"
+      },
+      "manualMaterial": {
+        "type": "boolean"
+      },
+      "saving": {
+        "type": "boolean"
+      },
+      "max": {
+        "type": "integer"
+      },
+      "megabytes": {
+        "type": "integer"
+      },
+      "autoCheck": {
+        "type": "boolean"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "available": {
+        "type": "boolean"
+      },
+      "publisherEnabled": {
+        "type": "boolean"
+      },
+      "requested": {
+        "type": "boolean"
+      },
+      "hasCustomArguments": {
+        "type": "boolean"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "item"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "item": "isolation",
+        "enabled": true
+      },
+      "cancelled": {
+        "item": "isolation"
+      }
+    },
+    "inputExamples": [
+      {
+        "item": "isolation",
+        "enabled": true
+      }
+    ]
+  },
+  {
+    "name": "setLauncherAppearance",
+    "domain": "settings",
+    "description": "应用完整主题组合，等待原持久化事务完成。",
+    "args": [
+      {
+        "name": "mode",
+        "type": "string",
+        "description": "明暗模式",
+        "required": true,
+        "enum": [
+          "system",
+          "light",
+          "dark"
+        ]
+      },
+      {
+        "name": "accent",
+        "type": "string",
+        "description": "强调色",
+        "required": true,
+        "enum": [
+          "rose",
+          "blue",
+          "teal",
+          "violet"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "mode": {
+        "type": "string"
+      },
+      "accent": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "mode",
+        "accent"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "mode": "system",
+        "accent": "blue"
+      }
+    },
+    "inputExamples": [
+      {
+        "mode": "system",
+        "accent": "blue"
+      }
+    ],
+    "echoArgs": {
+      "mode": "mode",
+      "accent": "accent"
+    }
+  },
+  {
+    "name": "setLauncherSheetHeight",
+    "domain": "settings",
+    "description": "设置手机面板百分比，50至100且取5的整数倍，默认80。",
+    "args": [
+      {
+        "name": "percent",
+        "type": "integer",
+        "description": "手机面板可用高度百分比",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "percent": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "percent"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "percent": 80
+      }
+    },
+    "inputExamples": [
+      {
+        "percent": 80
+      }
+    ],
+    "echoArgs": {
+      "percent": "percent"
+    }
+  },
+  {
+    "name": "setLauncherLightMaterial",
+    "domain": "settings",
+    "description": "设置沉浸光感的总开关、底部栏/标题按钮模块或导航材质。",
+    "args": [
+      {
+        "name": "part",
+        "type": "string",
+        "description": "光感设置项",
+        "required": true,
+        "enum": [
+          "enabled",
+          "bottomBar",
+          "titleButtons",
+          "material"
+        ]
+      },
+      {
+        "name": "value",
+        "type": "string",
+        "description": "开关用on/off；材质用实际支持的枚举",
+        "required": true,
+        "enum": [
+          "on",
+          "off",
+          "adaptive",
+          "exquisite",
+          "gentle",
+          "smooth"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "navigation": {
+        "type": "string"
+      },
+      "bottomBar": {
+        "type": "boolean"
+      },
+      "titleButtons": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "item",
+        "enabled",
+        "navigation",
+        "bottomBar",
+        "titleButtons"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "item": "immersive",
+        "enabled": true,
+        "navigation": "adaptive",
+        "bottomBar": true,
+        "titleButtons": false
+      }
+    },
+    "inputExamples": [
+      {
+        "part": "enabled",
+        "value": "on"
+      }
+    ]
+  },
+  {
+    "name": "setLauncherMemory",
+    "domain": "settings",
+    "description": "提交设备支持范围内的 JVM 堆内存 MB；风险值留在原界面确认。",
+    "args": [
+      {
+        "name": "megabytes",
+        "type": "integer",
+        "description": "512至本机上限，以256为单位",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "unknown",
+      "failed",
+      "needsUser"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "value": {
+        "type": "string"
+      },
+      "choices": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "title": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "mode": {
+        "type": "string"
+      },
+      "accent": {
+        "type": "string"
+      },
+      "percent": {
+        "type": "integer"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "checked": {
+        "type": "boolean"
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "independent": {
+        "type": "boolean"
+      },
+      "policy": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "navigation": {
+        "type": "string"
+      },
+      "bottomBar": {
+        "type": "boolean"
+      },
+      "titleButtons": {
+        "type": "boolean"
+      },
+      "manualMaterial": {
+        "type": "boolean"
+      },
+      "saving": {
+        "type": "boolean"
+      },
+      "max": {
+        "type": "integer"
+      },
+      "megabytes": {
+        "type": "integer"
+      },
+      "autoCheck": {
+        "type": "boolean"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "available": {
+        "type": "boolean"
+      },
+      "publisherEnabled": {
+        "type": "boolean"
+      },
+      "requested": {
+        "type": "boolean"
+      },
+      "hasCustomArguments": {
+        "type": "boolean"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "item",
+        "megabytes",
+        "max"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "item": "memory",
+        "megabytes": 2048,
+        "max": 4096
+      }
+    },
+    "inputExamples": [
+      {
+        "megabytes": 2048
+      }
+    ]
+  },
+  {
+    "name": "scheduleTouchGuide",
+    "domain": "settings",
+    "description": "预约真实游戏中的下次触控教学并读回登记状态。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "requested": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "item",
+        "requested"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "item": "touch-help",
+        "requested": true
+      }
+    }
+  },
+  {
+    "name": "prepareStorageChange",
+    "domain": "settings",
+    "description": "选择真实游戏数据位置，由用户选择复制迁移或仅切换并授予系统权限。",
+    "args": [
+      {
+        "name": "target",
+        "type": "string",
+        "description": "所需数据位置",
+        "required": true,
+        "enum": [
+          "sandbox",
+          "external"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "failed"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "reference": {
+        "type": "string"
+      },
+      "value": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "item": "storage"
+        },
+        "require": [
+          "reference"
+        ]
+      }
+    ],
+    "requiredOutput": {
+      "needsUser": [
+        "item",
+        "reference"
+      ],
+      "ready": [
+        "item",
+        "value"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "item": "storage",
+        "reference": "editor-1"
+      },
+      "ready": {
+        "item": "storage",
+        "value": "sandbox",
+        "choices": [
+          {
+            "value": "sandbox",
+            "enabled": true,
+            "title": "沙箱目录"
+          }
+        ]
+      }
+    },
+    "echoArgs": {
+      "value": "target"
+    },
+    "inputExamples": [
+      {
+        "target": "sandbox"
+      },
+      {
+        "target": "external"
+      }
+    ]
+  },
+  {
+    "name": "listGraphicsBackends",
+    "domain": "settings",
+    "description": "查看对应实例的真实渲染器候选、已选项和不可用原因。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "version": {
+        "type": "string"
+      },
+      "backends": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "selectable": {
+              "type": "boolean"
+            },
+            "selected": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "selectable",
+            "selected",
+            "reason"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "version",
+        "backends"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "version": "1.20.1",
+        "backends": [
+          {
+            "id": "auto",
+            "label": "自动选择",
+            "selectable": true,
+            "selected": true,
+            "reason": "auto"
+          },
+          {
+            "id": "mobileglues",
+            "label": "MobileGlues",
+            "selectable": true,
+            "selected": false,
+            "reason": "admitted"
+          },
+          {
+            "id": "gl4es",
+            "label": "gl4es (Holy-GL4ES)",
+            "selectable": false,
+            "selected": false,
+            "reason": "artifact-missing"
+          },
+          {
+            "id": "mobilegl",
+            "label": "MobileGL (DirectVulkan)",
+            "selectable": true,
+            "selected": false,
+            "reason": "admitted"
+          },
+          {
+            "id": "nativegl",
+            "label": "HarmonyOS OpenGL",
+            "selectable": true,
+            "selected": false,
+            "reason": "admitted"
+          },
+          {
+            "id": "minecraft-vulkan",
+            "label": "Minecraft Vulkan",
+            "selectable": false,
+            "selected": false,
+            "reason": "artifact-missing"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "selectGraphicsBackend",
+    "domain": "settings",
+    "description": "为指定实例在原设置页选中渲染器草稿，留给用户确认；随后重读。",
+    "args": [
+      {
+        "name": "version",
+        "type": "string",
+        "description": "候选列表返回的实例",
+        "required": true
+      },
+      {
+        "name": "id",
+        "type": "string",
+        "description": "真实可选图形后端的标识",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "id": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "id"
+      ],
+      "needsUser": [
+        "id",
+        "reason"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "id": "auto"
+      },
+      "needsUser": {
+        "id": "nativegl",
+        "reason": "confirmGraphicsChoice"
+      }
+    },
+    "echoArgs": {
+      "id": "id"
+    },
+    "inputExamples": [
+      {
+        "version": "1.20.1",
+        "id": "auto"
+      },
+      {
+        "version": "1.20.1",
+        "id": "nativegl"
+      }
+    ]
+  },
+  {
+    "name": "getGlobalResolution",
+    "domain": "settings",
+    "description": "读取启动器全局渲染比例和解析后的有效比例。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "percent": {
+        "type": "integer"
+      },
+      "effective": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "percent",
+        "effective"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "percent": 80,
+        "effective": 80
+      }
+    }
+  },
+  {
+    "name": "setGlobalResolution",
+    "domain": "settings",
+    "description": "设置全局渲染比例，0恢复默认；不改变单实例覆盖。",
+    "args": [
+      {
+        "name": "percent",
+        "type": "integer",
+        "description": "0或产品支持的50至100整数百分比",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "percent": {
+        "type": "integer"
+      },
+      "effective": {
+        "type": "integer"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "percent",
+        "effective"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "percent": 80,
+        "effective": 80
+      }
+    },
+    "inputExamples": [
+      {
+        "percent": 80
+      }
+    ],
+    "echoArgs": {
+      "percent": "percent"
+    }
+  },
+  {
+    "name": "getGameLogRetention",
+    "domain": "settings",
+    "description": "查看实际归档局数、占用、每版本保留量和样本状态。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "count": {
+        "type": "integer"
+      },
+      "bytes": {
+        "type": "integer"
+      },
+      "archivedSessions": {
+        "type": "integer"
+      },
+      "versionCount": {
+        "type": "integer"
+      },
+      "estimatedBytesPerSlot": {
+        "type": "number"
+      },
+      "incomplete": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "count",
+        "bytes",
+        "archivedSessions",
+        "versionCount",
+        "estimatedBytesPerSlot",
+        "incomplete"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/components/LogRetentionSettings.ets",
+      "test": "scripts/test-log-retention-async.mjs"
+    },
+    "examples": {
+      "ready": {
+        "count": 5,
+        "bytes": 0,
+        "archivedSessions": 0,
+        "versionCount": 0,
+        "estimatedBytesPerSlot": 0,
+        "incomplete": false
+      }
+    }
+  },
+  {
+    "name": "setGameLogRetention",
+    "domain": "settings",
+    "description": "调整每版本保留局数，清理前展示真实淘汰范围并等待用户决定。",
+    "args": [
+      {
+        "name": "count",
+        "type": "integer",
+        "description": "5至100局",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "needsUser"
+    ],
+    "output": {
+      "count": {
+        "type": "integer"
+      },
+      "bytes": {
+        "type": "integer"
+      },
+      "archivedSessions": {
+        "type": "integer"
+      },
+      "versionCount": {
+        "type": "integer"
+      },
+      "estimatedBytesPerSlot": {
+        "type": "number"
+      },
+      "incomplete": {
+        "type": "boolean"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "count",
+        "bytes",
+        "archivedSessions",
+        "versionCount",
+        "estimatedBytesPerSlot",
+        "incomplete"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/components/LogRetentionSettings.ets",
+      "test": "scripts/test-log-retention-async.mjs"
+    },
+    "examples": {
+      "ready": {
+        "count": 10,
+        "bytes": 0,
+        "archivedSessions": 0,
+        "versionCount": 0,
+        "estimatedBytesPerSlot": 0,
+        "incomplete": false
+      },
+      "failed": {
+        "reason": "changeNotCommitted"
+      }
+    },
+    "inputExamples": [
+      {
+        "count": 10
+      }
+    ],
+    "echoArgs": {
+      "count": "count"
+    }
+  },
+  {
+    "name": "bluetoothMidiAccess",
+    "domain": "settings",
+    "description": "读取蓝牙MIDI权限或请求前台系统授权；不承诺硬件连通。",
+    "args": [
+      {
+        "name": "operation",
+        "type": "string",
+        "description": "按当前状态选择的操作",
+        "required": true,
+        "enum": [
+          "inspect",
+          "request"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "needsUser"
+    ],
+    "output": {
+      "permission": {
+        "type": "integer"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "permission"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "permission": 0
+      }
+    }
+  },
+  {
+    "name": "getModMicrophone",
+    "domain": "settings",
+    "description": "读取模组麦克风应用开关和实际系统授权。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "permissionGranted": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "enabled",
+        "permissionGranted"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "enabled": false,
+        "permissionGranted": false
+      }
+    }
+  },
+  {
+    "name": "configureModMicrophone",
+    "domain": "settings",
+    "description": "由已有音频所有者保存应用开关，必要时显示真实系统授权。",
+    "args": [
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "description": "目标应用开关",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown",
+      "needsUser"
+    ],
+    "output": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "permissionGranted": {
+        "type": "boolean"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "enabled",
+        "permissionGranted"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "enabled": false,
+        "permissionGranted": false
+      }
+    }
+  },
+  {
+    "name": "getDesktopInteraction",
+    "domain": "settings",
+    "description": "查询支持设备的交互偏好及是否待重启。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "mode": {
+        "type": "string"
+      },
+      "restartRequired": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "mode",
+        "restartRequired"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "mode": "auto",
+        "restartRequired": false
+      }
+    }
+  },
+  {
+    "name": "setDesktopInteraction",
+    "domain": "settings",
+    "description": "选择电脑交互偏好并回读确认结果。",
+    "args": [
+      {
+        "name": "mode",
+        "type": "string",
+        "description": "交互方式",
+        "required": true,
+        "enum": [
+          "auto",
+          "touch",
+          "desktop"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "mode": {
+        "type": "string"
+      },
+      "restartRequired": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "mode",
+        "restartRequired"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "mode": "auto",
+        "restartRequired": false
+      }
+    },
+    "echoArgs": {
+      "mode": "mode"
+    },
+    "inputExamples": [
+      {
+        "mode": "auto"
+      }
+    ]
+  },
+  {
+    "name": "getGamepadMode",
+    "domain": "settings",
+    "description": "查询手柄由游戏处理还是由启动器处理。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "native": {
+        "type": "boolean"
+      },
+      "effectiveAt": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "native",
+        "effectiveAt"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/components/DesktopGamepadSettings.ets",
+      "test": "scripts/test-frozen-settings-save.mjs"
+    },
+    "examples": {
+      "ready": {
+        "native": false,
+        "effectiveAt": "nextLaunch"
+      }
+    }
+  },
+  {
+    "name": "setGamepadMode",
+    "domain": "settings",
+    "description": "修改下一次游戏启动时生效的手柄处理方式。",
+    "args": [
+      {
+        "name": "native",
+        "type": "boolean",
+        "description": "true交给游戏，false由启动器处理",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "native": {
+        "type": "boolean"
+      },
+      "effectiveAt": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "native",
+        "effectiveAt"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/components/DesktopGamepadSettings.ets",
+      "test": "scripts/test-frozen-settings-save.mjs"
+    },
+    "examples": {
+      "ready": {
+        "native": false,
+        "effectiveAt": "nextLaunch"
+      }
+    },
+    "echoArgs": {
+      "native": "native"
+    },
+    "inputExamples": [
+      {
+        "native": false
+      }
+    ]
+  },
+  {
+    "name": "openLauncherDiagnostic",
+    "domain": "settings",
+    "description": "在产品实际允许的情况下进入指定诊断页，界面内的探针由用户操作。",
+    "args": [
+      {
+        "name": "tool",
+        "type": "string",
+        "description": "允许的诊断页面",
+        "required": true,
+        "enum": [
+          "tools",
+          "gles",
+          "vulkan",
+          "input",
+          "desktop"
+        ]
+      }
+    ],
+    "results": [
+      "needsUser",
+      "failed"
+    ],
+    "output": {
+      "tool": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "tool",
+        "reason"
+      ]
+    },
+    "examples": {
+      "needsUser": {
+        "tool": "vulkan",
+        "reason": "performDiagnosticsInApp"
+      }
+    },
+    "inputExamples": [
+      {
+        "tool": "vulkan"
+      }
+    ],
+    "echoArgs": {
+      "tool": "tool"
+    }
+  },
+  {
+    "name": "readDiagnosticObservation",
+    "domain": "diagnosticObservation",
+    "description": "读取当前前台诊断页的摘要，不读取或传出完整控制台日志。",
+    "args": [
+      {
+        "name": "tool",
+        "type": "string",
+        "description": "当前前台诊断页面",
+        "required": true,
+        "enum": [
+          "tools",
+          "gles",
+          "vulkan",
+          "input",
+          "desktop"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "page": {
+        "type": "string"
+      },
+      "tool": {
+        "type": "string"
+      },
+      "running": {
+        "type": "boolean"
+      },
+      "status": {
+        "type": "string"
+      },
+      "hasOutput": {
+        "type": "boolean"
+      },
+      "vulkanAvailable": {
+        "type": "boolean"
+      },
+      "paused": {
+        "type": "boolean"
+      },
+      "events": {
+        "type": "integer"
+      },
+      "verdict": {
+        "type": "string"
+      },
+      "saved": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "page"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "page": "gles",
+        "running": false,
+        "hasOutput": false,
+        "status": ""
+      }
+    },
+    "echoArgs": {
+      "page": "tool"
+    },
+    "inputExamples": [
+      {
+        "tool": "gles"
+      },
+      {
+        "tool": "tools"
+      }
+    ]
+  },
+  {
+    "name": "listJavaRuntimes",
+    "domain": "runtimeSlots",
+    "description": "读取真实JDK目录及本机槽位；分别返回目录来源、最新刷新状态和槽数组，缓存或失败不会充当成功空目录。",
+    "args": [],
+    "results": [
+      "ready",
+      "initializing",
+      "unknown",
+      "failed"
+    ],
+    "output": {
+      "channel": {
+        "type": "string"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "importing": {
+        "type": "boolean"
+      },
+      "slots": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "major": {
+              "type": "string"
+            },
+            "installed": {
+              "type": "boolean"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "imported": {
+              "type": "boolean"
+            },
+            "repairRequired": {
+              "type": "boolean"
+            },
+            "rollback": {
+              "type": "boolean"
+            },
+            "updateAvailable": {
+              "type": "boolean"
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "installedBuild": {
+              "type": "string"
+            },
+            "recommendedBuild": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "major",
+            "installed",
+            "available",
+            "imported",
+            "repairRequired",
+            "rollback",
+            "updateAvailable",
+            "running",
+            "installedBuild",
+            "recommendedBuild"
+          ]
+        }
+      },
+      "catalogSource": {
+        "type": "string",
+        "enum": [
+          "builtin",
+          "verifiedSnapshot",
+          "network"
+        ],
+        "description": "当前展示身份：随包目录、之前接受并保留的可信快照、或此代刷新取得的网络目录。"
+      },
+      "refreshState": {
+        "type": "string",
+        "enum": [
+          "notRequested",
+          "configurationMismatch",
+          "loadingCache",
+          "refreshing",
+          "updated",
+          "failed"
+        ],
+        "description": "当前配置代次的实际获取状态；刷新失败仍可展示内置槽和已核验缓存。"
+      },
+      "catalogChannel": {
+        "type": "string",
+        "description": "展示快照实际所属的通道，可能与请求通道不同。"
+      },
+      "catalogRevision": {
+        "type": "integer",
+        "description": "已显示目录的真实代次。"
+      },
+      "recommendationUsable": {
+        "type": "boolean",
+        "description": "快照是否具备推荐资格，单个槽还需要通过原安装策略。"
+      },
+      "refreshSerial": {
+        "type": "integer",
+        "description": "本进程仓库实际发起的刷新序号，不代表成功。"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "channel",
+        "checking",
+        "importing",
+        "slots",
+        "catalogSource",
+        "refreshState",
+        "catalogChannel",
+        "catalogRevision",
+        "recommendationUsable",
+        "refreshSerial"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "channel": "stable",
+        "checking": false,
+        "importing": false,
+        "slots": [
+          {
+            "major": "17",
+            "installed": false,
+            "available": true,
+            "imported": false,
+            "repairRequired": false,
+            "rollback": false,
+            "updateAvailable": false,
+            "running": false,
+            "installedBuild": "",
+            "recommendedBuild": "jdk17-build-1"
+          }
+        ],
+        "catalogSource": "network",
+        "refreshState": "updated",
+        "catalogChannel": "stable",
+        "catalogRevision": 1,
+        "recommendationUsable": true,
+        "refreshSerial": 1
+      },
+      "initializing": {
+        "channel": "stable",
+        "checking": true,
+        "importing": false,
+        "slots": [
+          {
+            "major": "17",
+            "installed": false,
+            "available": true,
+            "imported": false,
+            "repairRequired": false,
+            "rollback": false,
+            "updateAvailable": false,
+            "running": false,
+            "installedBuild": "",
+            "recommendedBuild": "jdk17-build-1"
+          }
+        ],
+        "catalogSource": "verifiedSnapshot",
+        "refreshState": "refreshing",
+        "catalogChannel": "stable",
+        "catalogRevision": 1,
+        "recommendationUsable": true,
+        "refreshSerial": 1,
+        "reason": "readingCatalog"
+      },
+      "unknown": {
+        "channel": "stable",
+        "checking": false,
+        "importing": false,
+        "slots": [
+          {
+            "major": "17",
+            "installed": false,
+            "available": true,
+            "imported": false,
+            "repairRequired": false,
+            "rollback": false,
+            "updateAvailable": false,
+            "running": false,
+            "installedBuild": "",
+            "recommendedBuild": "jdk17-build-1"
+          }
+        ],
+        "catalogSource": "verifiedSnapshot",
+        "refreshState": "notRequested",
+        "catalogChannel": "stable",
+        "catalogRevision": 1,
+        "recommendationUsable": true,
+        "refreshSerial": 1,
+        "reason": "noFreshCatalog"
+      }
+    }
+  },
+  {
+    "name": "refreshJavaRuntimes",
+    "domain": "runtimeSlots",
+    "description": "对选中的通道发起实际目录刷新，并等原请求完成后回读同一可信代次；失败返回仍可见的本机槽，未发起或来源变化说明原因。",
+    "args": [],
+    "results": [
+      "ready",
+      "initializing",
+      "unknown",
+      "failed"
+    ],
+    "output": {
+      "channel": {
+        "type": "string"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "importing": {
+        "type": "boolean"
+      },
+      "slots": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "major": {
+              "type": "string"
+            },
+            "installed": {
+              "type": "boolean"
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "imported": {
+              "type": "boolean"
+            },
+            "repairRequired": {
+              "type": "boolean"
+            },
+            "rollback": {
+              "type": "boolean"
+            },
+            "updateAvailable": {
+              "type": "boolean"
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "installedBuild": {
+              "type": "string"
+            },
+            "recommendedBuild": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "major",
+            "installed",
+            "available",
+            "imported",
+            "repairRequired",
+            "rollback",
+            "updateAvailable",
+            "running",
+            "installedBuild",
+            "recommendedBuild"
+          ]
+        }
+      },
+      "catalogSource": {
+        "type": "string",
+        "enum": [
+          "builtin",
+          "verifiedSnapshot",
+          "network"
+        ],
+        "description": "当前展示身份：随包目录、之前接受并保留的可信快照、或此代刷新取得的网络目录。"
+      },
+      "refreshState": {
+        "type": "string",
+        "enum": [
+          "notRequested",
+          "configurationMismatch",
+          "loadingCache",
+          "refreshing",
+          "updated",
+          "failed"
+        ],
+        "description": "当前配置代次的实际获取状态；刷新失败仍可展示内置槽和已核验缓存。"
+      },
+      "catalogChannel": {
+        "type": "string",
+        "description": "展示快照实际所属的通道，可能与请求通道不同。"
+      },
+      "catalogRevision": {
+        "type": "integer",
+        "description": "已显示目录的真实代次。"
+      },
+      "recommendationUsable": {
+        "type": "boolean",
+        "description": "快照是否具备推荐资格，单个槽还需要通过原安装策略。"
+      },
+      "refreshSerial": {
+        "type": "integer",
+        "description": "本进程仓库实际发起的刷新序号，不代表成功。"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "channel",
+        "checking",
+        "importing",
+        "slots",
+        "catalogSource",
+        "refreshState",
+        "catalogChannel",
+        "catalogRevision",
+        "recommendationUsable",
+        "refreshSerial"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "channel": "stable",
+        "checking": false,
+        "importing": false,
+        "slots": [
+          {
+            "major": "17",
+            "installed": false,
+            "available": true,
+            "imported": false,
+            "repairRequired": false,
+            "rollback": false,
+            "updateAvailable": false,
+            "running": false,
+            "installedBuild": "",
+            "recommendedBuild": "jdk17-build-1"
+          }
+        ],
+        "catalogSource": "network",
+        "refreshState": "updated",
+        "catalogChannel": "stable",
+        "catalogRevision": 1,
+        "recommendationUsable": true,
+        "refreshSerial": 1
+      },
+      "initializing": {
+        "channel": "stable",
+        "checking": true,
+        "importing": false,
+        "slots": [
+          {
+            "major": "17",
+            "installed": false,
+            "available": true,
+            "imported": false,
+            "repairRequired": false,
+            "rollback": false,
+            "updateAvailable": false,
+            "running": false,
+            "installedBuild": "",
+            "recommendedBuild": "jdk17-build-1"
+          }
+        ],
+        "catalogSource": "verifiedSnapshot",
+        "refreshState": "refreshing",
+        "catalogChannel": "stable",
+        "catalogRevision": 1,
+        "recommendationUsable": true,
+        "refreshSerial": 1,
+        "reason": "readingCatalog"
+      },
+      "unknown": {
+        "channel": "stable",
+        "checking": false,
+        "importing": false,
+        "slots": [
+          {
+            "major": "17",
+            "installed": false,
+            "available": true,
+            "imported": false,
+            "repairRequired": false,
+            "rollback": false,
+            "updateAvailable": false,
+            "running": false,
+            "installedBuild": "",
+            "recommendedBuild": "jdk17-build-1"
+          }
+        ],
+        "catalogSource": "verifiedSnapshot",
+        "refreshState": "notRequested",
+        "catalogChannel": "stable",
+        "catalogRevision": 1,
+        "recommendationUsable": true,
+        "refreshSerial": 1,
+        "reason": "noFreshCatalog"
+      }
+    }
+  },
+  {
+    "name": "pickJavaRuntimeArchive",
+    "domain": "runtimeSlots",
+    "description": "请求系统文件选择器导入本地JDK包，用户自己指定归属槽。",
+    "args": [],
+    "results": [
+      "needsUser",
+      "failed"
+    ],
+    "output": {
+      "reference": {
+        "type": "string",
+        "minLength": 1
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "systemFilePicker"
+        },
+        "require": [
+          "reference"
+        ],
+        "example": {
+          "reference": "picker-1"
+        }
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "systemFilePicker",
+        "reference": "picker-1"
+      }
+    },
+    "requiredOutput": {
+      "needsUser": [
+        "reason",
+        "reference"
+      ]
+    }
+  },
+  {
+    "name": "manageJavaRuntime",
+    "domain": "runtimeSlots",
+    "description": "安装目录项或经确认替换、修复和删除指定槽，按原任务和目录回读。",
+    "args": [
+      {
+        "name": "major",
+        "type": "string",
+        "description": "从listJavaRuntimes返回的主版本",
+        "required": true,
+        "example": "17"
+      },
+      {
+        "name": "operation",
+        "type": "string",
+        "description": "按当前状态选择的操作",
+        "required": true,
+        "enum": [
+          "install",
+          "replace",
+          "remove"
+        ]
+      }
+    ],
+    "results": [
+      "accepted",
+      "needsUser",
+      "cancelled",
+      "failed",
+      "ready",
+      "unknown"
+    ],
+    "output": {
+      "major": {
+        "type": "string"
+      },
+      "taskId": {
+        "type": "string"
+      },
+      "removed": {
+        "type": "boolean"
+      },
+      "activityId": {
+        "type": "integer",
+        "description": "生产队列为原任务分配的活动号；排队尚未分配时为0"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "accepted": [
+        "major",
+        "taskId",
+        "activityId"
+      ],
+      "ready": [
+        "major",
+        "removed"
+      ]
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "ready",
+          "removed": true
+        },
+        "require": [
+          "major"
+        ],
+        "example": {
+          "major": "17",
+          "removed": true
+        }
+      }
+    ],
+    "examples": {
+      "accepted": {
+        "major": "17",
+        "taskId": "jdk:17",
+        "activityId": 42
+      },
+      "ready": {
+        "removed": true,
+        "major": "17"
+      }
+    },
+    "echoArgs": {
+      "major": "major"
+    }
+  },
+  {
+    "name": "inspectNetwork",
+    "domain": "settingsNetwork",
+    "description": "读取或重跑真实网络检测、按用户要求复制原诊断报告。",
+    "args": [
+      {
+        "name": "operation",
+        "type": "string",
+        "description": "按当前状态选择的操作",
+        "required": true,
+        "enum": [
+          "read",
+          "retry",
+          "copy"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "accepted",
+      "busy",
+      "failed",
+      "unavailable"
+    ],
+    "output": {
+      "verdict": {
+        "type": "string"
+      },
+      "probes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "copied": {
+        "type": "boolean",
+        "description": "系统剪贴板是否确认写入本次报告。"
+      }
+    },
+    "examples": {
+      "ready": {
+        "copied": true
+      },
+      "failed": {
+        "reason": "noReport"
+      }
+    },
+    "inputExamples": [
+      {
+        "operation": "copy"
+      },
+      {
+        "operation": "read"
+      }
+    ],
+    "outputCases": [
+      {
+        "args": {
+          "operation": "copy"
+        },
+        "when": {
+          "state": "ready"
+        },
+        "require": [
+          "copied"
+        ],
+        "expect": {
+          "copied": true
+        },
+        "example": {
+          "copied": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "getLauncherUpdate",
+    "domain": "softwareUpdate",
+    "description": "读取侧载更新页当前版本、真实通道及推荐身份。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "current": {
+        "type": "string"
+      },
+      "channel": {
+        "type": "string"
+      },
+      "developer": {
+        "type": "boolean"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "importing": {
+        "type": "boolean"
+      },
+      "pending": {
+        "type": "boolean"
+      },
+      "recommended": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "installable": {
+        "type": "boolean"
+      },
+      "currentCode": {
+        "type": "integer",
+        "description": "系统 BMS 实际安装码，仅身份得到确认时返回"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "current",
+        "currentCode",
+        "channel",
+        "developer",
+        "checking",
+        "importing",
+        "pending",
+        "recommended",
+        "target",
+        "installable"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "current": "1.0.7",
+        "currentCode": 1000911,
+        "channel": "stable",
+        "developer": false,
+        "checking": false,
+        "importing": false,
+        "pending": false,
+        "recommended": "",
+        "target": "",
+        "installable": false
+      }
+    }
+  },
+  {
+    "name": "checkLauncherUpdate",
+    "domain": "softwareUpdate",
+    "description": "按当前通道检查推荐，保留网络失败与开发者版主动选择限制。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "current": {
+        "type": "string"
+      },
+      "channel": {
+        "type": "string"
+      },
+      "developer": {
+        "type": "boolean"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "importing": {
+        "type": "boolean"
+      },
+      "pending": {
+        "type": "boolean"
+      },
+      "recommended": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "installable": {
+        "type": "boolean"
+      },
+      "currentCode": {
+        "type": "integer",
+        "description": "系统 BMS 实际安装码，仅身份得到确认时返回"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "current",
+        "currentCode",
+        "channel",
+        "developer",
+        "checking",
+        "importing",
+        "pending",
+        "recommended",
+        "target",
+        "installable"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "current": "1.0.7",
+        "currentCode": 1000911,
+        "channel": "stable",
+        "developer": false,
+        "checking": false,
+        "importing": false,
+        "pending": false,
+        "recommended": "",
+        "target": "",
+        "installable": false
+      }
+    }
+  },
+  {
+    "name": "selectLauncherUpdateChannel",
+    "domain": "softwareUpdate",
+    "description": "选择稳定或预览更新订阅；开发者版按产品退出流程处理。",
+    "args": [
+      {
+        "name": "channel",
+        "type": "string",
+        "description": "更新通道",
+        "required": true,
+        "enum": [
+          "stable",
+          "preview"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "current": {
+        "type": "string"
+      },
+      "channel": {
+        "type": "string"
+      },
+      "developer": {
+        "type": "boolean"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "importing": {
+        "type": "boolean"
+      },
+      "pending": {
+        "type": "boolean"
+      },
+      "recommended": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "installable": {
+        "type": "boolean"
+      },
+      "currentCode": {
+        "type": "integer",
+        "description": "系统 BMS 实际安装码，仅身份得到确认时返回"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "current",
+        "currentCode",
+        "channel",
+        "developer",
+        "checking",
+        "importing",
+        "pending",
+        "recommended",
+        "target",
+        "installable"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "current": "1.0.7",
+        "currentCode": 1000911,
+        "channel": "stable",
+        "developer": false,
+        "checking": false,
+        "importing": false,
+        "pending": false,
+        "recommended": "",
+        "target": "",
+        "installable": false
+      }
+    },
+    "echoArgs": {
+      "channel": "channel"
+    },
+    "inputExamples": [
+      {
+        "channel": "stable"
+      }
+    ]
+  },
+  {
+    "name": "openUpdateSource",
+    "domain": "softwareUpdate",
+    "description": "打开正版发布页、系统本地HAP选择器或原先挂起的更新流程。",
+    "args": [
+      {
+        "name": "source",
+        "type": "string",
+        "description": "更新来源",
+        "required": true,
+        "enum": [
+          "officialReleasePage",
+          "localPackage",
+          "previousAttempt"
+        ]
+      }
+    ],
+    "results": [
+      "needsUser",
+      "failed"
+    ],
+    "output": {
+      "reference": {
+        "type": "string",
+        "minLength": 1
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "systemFilePicker"
+        },
+        "require": [
+          "reference"
+        ],
+        "example": {
+          "reference": "picker-1"
+        }
+      },
+      {
+        "args": {
+          "source": "localPackage"
+        },
+        "when": {
+          "state": "needsUser"
+        },
+        "expect": {
+          "reason": "systemFilePicker"
+        },
+        "require": [
+          "reference"
+        ],
+        "example": {
+          "reference": "picker-1"
+        }
+      },
+      {
+        "args": {
+          "source": "officialReleasePage"
+        },
+        "when": {
+          "state": "needsUser"
+        },
+        "expect": {
+          "reason": "browser"
+        },
+        "require": [],
+        "example": {}
+      },
+      {
+        "args": {
+          "source": "previousAttempt"
+        },
+        "when": {
+          "state": "needsUser"
+        },
+        "expect": {
+          "reason": "existingUpdate"
+        },
+        "require": [],
+        "example": {}
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "systemFilePicker",
+        "reference": "picker-1"
+      }
+    },
+    "inputExamples": [
+      {
+        "source": "officialReleasePage"
+      },
+      {
+        "source": "previousAttempt"
+      },
+      {
+        "source": "localPackage"
+      }
+    ],
+    "requiredOutput": {
+      "needsUser": [
+        "reason"
+      ]
+    }
+  },
+  {
+    "name": "installRecommendedUpdate",
+    "domain": "softwareUpdate",
+    "description": "向用户展示已查到的确切候选，获得同意后进入原安装流程。",
+    "args": [
+      {
+        "name": "target",
+        "type": "string",
+        "description": "getLauncherUpdate返回的当前候选引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "needsUser",
+      "cancelled",
+      "failed",
+      "unknown"
+    ],
+    "output": {
+      "target": {
+        "type": "string"
+      }
+    },
+    "userHandoff": true,
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "updatePageOpened"
+        },
+        "require": [
+          "target"
+        ],
+        "example": {
+          "target": "v1.0.8:1000912:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ],
+    "examples": {
+      "failed": {
+        "reason": "targetChanged"
+      }
+    },
+    "echoArgs": {
+      "target": "target"
+    },
+    "inputExamples": [
+      {
+        "target": "v1.0.8:1000912:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  {
+    "name": "updateAccountAccess",
+    "domain": "softwareUpdate",
+    "description": "查看或检查华为开发者授权，由用户在产品真实登录界面完成授权。",
+    "args": [
+      {
+        "name": "operation",
+        "type": "string",
+        "description": "按当前状态选择的操作",
+        "required": true,
+        "enum": [
+          "inspect",
+          "check",
+          "login",
+          "retry",
+          "close"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "cancelled",
+      "failed"
+    ],
+    "output": {
+      "authorization": {
+        "type": "string"
+      },
+      "checking": {
+        "type": "boolean"
+      },
+      "loginVisible": {
+        "type": "boolean"
+      },
+      "needsLogin": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "authorization"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "authorization": "missing",
+        "checking": false,
+        "loginVisible": false,
+        "needsLogin": true
+      },
+      "needsUser": {
+        "reason": "developerLogin"
+      }
+    }
+  },
+  {
+    "name": "getActiveLauncherUpdate",
+    "domain": "activeUpdate",
+    "description": "读取已打开更新事务的原活动、阶段、连接与进度。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "activityId": {
+        "type": "integer"
+      },
+      "phase": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "number"
+      },
+      "checkingConnection": {
+        "type": "boolean"
+      },
+      "connectionReady": {
+        "type": "boolean"
+      },
+      "needsLogin": {
+        "type": "boolean"
+      },
+      "loginVisible": {
+        "type": "boolean"
+      },
+      "recovery": {
+        "type": "string"
+      },
+      "failedPhase": {
+        "type": "string"
+      },
+      "canContinue": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "activityId",
+        "phase",
+        "version",
+        "progress",
+        "checkingConnection",
+        "connectionReady",
+        "loginVisible",
+        "needsLogin",
+        "recovery",
+        "failedPhase",
+        "canContinue"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "activityId": 42,
+        "phase": "running",
+        "version": "1.0.8-pre2",
+        "progress": 0,
+        "checkingConnection": false,
+        "connectionReady": false,
+        "loginVisible": false,
+        "needsLogin": false,
+        "recovery": "none",
+        "failedPhase": "",
+        "canContinue": false
+      }
+    }
+  },
+  {
+    "name": "controlActiveLauncherUpdate",
+    "domain": "activeUpdate",
+    "description": "只对读到的原活动和阶段展示详情、接力到无线设置、重查或确认继续/退出。",
+    "args": [
+      {
+        "name": "activityId",
+        "type": "integer",
+        "description": "原活动号",
+        "required": true
+      },
+      {
+        "name": "phase",
+        "type": "string",
+        "description": "getActiveLauncherUpdate返回的原阶段",
+        "required": true
+      },
+      {
+        "name": "operation",
+        "type": "string",
+        "description": "按当前状态选择的操作",
+        "required": true,
+        "enum": [
+          "details",
+          "viewActivity",
+          "manualPort",
+          "retryConnection",
+          "wirelessSettings",
+          "continue",
+          "close"
+        ]
+      }
+    ],
+    "results": [
+      "needsUser",
+      "accepted",
+      "cancelled",
+      "failed"
+    ],
+    "output": {
+      "activityId": {
+        "type": "integer"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "accepted": [
+        "activityId"
+      ]
+    },
+    "examples": {
+      "accepted": {
+        "activityId": 42
+      }
+    },
+    "echoArgs": {
+      "activityId": "activityId"
+    },
+    "inputExamples": [
+      {
+        "activityId": 42,
+        "phase": "running",
+        "operation": "retryConnection"
+      },
+      {
+        "activityId": 42,
+        "phase": "running",
+        "operation": "manualPort"
+      }
+    ]
+  },
+  {
+    "domain": "settings",
+    "name": "navigateLauncherSettings",
+    "description": "在实际设置页返回、清除搜索或浏览当前可见的设置分区。",
+    "args": [
+      {
+        "name": "section",
+        "type": "string",
+        "description": "overview、back、clearSearch 或 findLauncherSettings 返回的分区",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "section": {
+        "type": "string"
+      },
+      "editorOpen": {
+        "type": "boolean"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "section",
+        "editorOpen"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "section": "overview",
+        "editorOpen": false
+      }
+    },
+    "inputExamples": [
+      {
+        "section": "overview"
+      }
+    ]
+  },
+  {
+    "domain": "settings",
+    "name": "readSettingHandoff",
+    "description": "按原引用回读人工 JVM 编辑或存储迁移／切换结果，保留取消和失败。 存储请求返回 requestedTarget（请求指定时）和 selectedTarget（用户提交后）；changedTarget 表示用户成功保存了不同位置。",
+    "args": [
+      {
+        "name": "reference",
+        "type": "string",
+        "description": "openLauncherSetting 或 prepareStorageChange 返回的当前编辑引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "item": {
+        "type": "string"
+      },
+      "reference": {
+        "type": "string"
+      },
+      "outcome": {
+        "enum": [
+          "waiting",
+          "saving",
+          "saved",
+          "submitted",
+          "unconfirmed",
+          "cancelled",
+          "permissionDenied",
+          "unavailable",
+          "failed",
+          "changedTarget"
+        ],
+        "type": "string"
+      },
+      "requestedTarget": {
+        "type": "string",
+        "enum": [
+          "sandbox",
+          "external"
+        ]
+      },
+      "selectedTarget": {
+        "type": "string",
+        "enum": [
+          "sandbox",
+          "external"
+        ]
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "reference",
+        "item",
+        "outcome"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "reference": "editor-1",
+        "item": "storage",
+        "outcome": "waiting"
+      }
+    },
+    "inputExamples": [
+      {
+        "reference": "editor-1"
+      }
+    ],
+    "echoArgs": {
+      "reference": "reference"
+    },
+    "outputCases": [
+      {
+        "when": {
+          "outcome": "changedTarget",
+          "state": "ready"
+        },
+        "require": [
+          "requestedTarget",
+          "selectedTarget",
+          "item",
+          "reference"
+        ],
+        "expect": {
+          "item": "storage",
+          "state": "ready"
+        },
+        "example": {
+          "reference": "editor-1",
+          "requestedTarget": "external",
+          "selectedTarget": "sandbox"
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "outcome": "saved",
+          "requestedTarget": "sandbox"
+        },
+        "require": [
+          "item",
+          "selectedTarget",
+          "reference"
+        ],
+        "expect": {
+          "item": "storage",
+          "selectedTarget": "sandbox"
+        },
+        "example": {
+          "reference": "editor-1"
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "outcome": "changedTarget",
+          "requestedTarget": "sandbox"
+        },
+        "require": [
+          "item",
+          "selectedTarget",
+          "reference"
+        ],
+        "expect": {
+          "item": "storage",
+          "selectedTarget": "external"
+        },
+        "example": {
+          "reference": "editor-1"
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "outcome": "saved",
+          "requestedTarget": "external"
+        },
+        "require": [
+          "item",
+          "selectedTarget",
+          "reference"
+        ],
+        "expect": {
+          "item": "storage",
+          "selectedTarget": "external"
+        },
+        "example": {
+          "reference": "editor-1"
+        }
+      },
+      {
+        "when": {
+          "state": "ready",
+          "outcome": "changedTarget",
+          "requestedTarget": "external"
+        },
+        "require": [
+          "item",
+          "selectedTarget",
+          "reference"
+        ],
+        "expect": {
+          "item": "storage",
+          "selectedTarget": "sandbox"
+        },
+        "example": {
+          "reference": "editor-1"
+        }
+      }
+    ],
+    "verification": {
+      "owner": "entry/src/main/ets/pages/tabs/SettingsTab.ets",
+      "test": "scripts/test-settings-ui.mjs"
+    }
+  },
+  {
+    "domain": "settings",
+    "name": "copyLauncherDiagnostic",
+    "description": "经用户确认后由原启动器将脱敏应用日志摘要复制到系统剪贴板。",
+    "args": [],
+    "results": [
+      "ready",
+      "cancelled",
+      "failed",
+      "needsUser"
+    ],
+    "output": {
+      "copied": {
+        "type": "boolean"
+      }
+    },
+    "userHandoff": true,
+    "requiredOutput": {
+      "ready": [
+        "copied"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "copied": true
+      }
+    }
+  },
+  {
+    "domain": "updateNotice",
+    "name": "getUpdateNotice",
+    "description": "查看当前 App／JDK 联合更新提醒及可选运行时；不发起更新。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "reference": {
+        "type": "string",
+        "minLength": 1
+      },
+      "required": {
+        "type": "boolean"
+      },
+      "version": {
+        "type": "string"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "current": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "current",
+            "target",
+            "selected"
+          ]
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "reference",
+        "required",
+        "version",
+        "items"
+      ]
+    },
+    "examples": {
+      "ready": {
+        "reference": "mxy1k8so-1",
+        "required": false,
+        "version": "稳定通道",
+        "items": [
+          {
+            "id": "17",
+            "title": "JDK 17",
+            "current": "旧安装",
+            "target": "jdk17-build-1",
+            "selected": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "domain": "updateNotice",
+    "name": "chooseRuntimeUpdateItem",
+    "description": "绑定当前可选 JDK 提示与槽位，选择或取消一项，最终安装由用户确认。",
+    "args": [
+      {
+        "name": "reference",
+        "type": "string",
+        "description": "getUpdateNotice 返回的本次提示引用",
+        "required": true
+      },
+      {
+        "name": "id",
+        "type": "string",
+        "description": "当前可选运行时 ID",
+        "required": true
+      },
+      {
+        "name": "selected",
+        "type": "boolean",
+        "description": "是否选中",
+        "required": true
+      }
+    ],
+    "results": [
+      "ready",
+      "failed"
+    ],
+    "output": {
+      "reference": {
+        "type": "string",
+        "minLength": 1
+      },
+      "selected": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "reference",
+        "selected"
+      ]
+    },
+    "inputExamples": [
+      {
+        "reference": "mxy1k8so-1",
+        "id": "17",
+        "selected": false
+      }
+    ],
+    "examples": {
+      "ready": {
+        "reference": "mxy1k8so-1",
+        "selected": []
+      },
+      "failed": {
+        "reason": "itemChanged"
+      }
+    },
+    "echoArgs": {
+      "reference": "reference"
+    }
+  },
+  {
+    "domain": "updateNotice",
+    "name": "answerUpdateNotice",
+    "description": "暂缓当前提示或展示详细目标给用户确认，保留产品必要更新的准入条件。",
+    "args": [
+      {
+        "name": "reference",
+        "type": "string",
+        "description": "getUpdateNotice 返回的提示引用",
+        "required": true
+      },
+      {
+        "name": "answer",
+        "type": "string",
+        "description": "用户意图",
+        "required": true,
+        "enum": [
+          "later",
+          "review"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "needsUser",
+      "failed"
+    ],
+    "output": {
+      "reference": {
+        "type": "string",
+        "minLength": 1
+      },
+      "required": {
+        "type": "boolean"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "outcome",
+        "required"
+      ],
+      "needsUser": [
+        "reason",
+        "reference"
+      ]
+    },
+    "outputCases": [
+      {
+        "when": {
+          "state": "needsUser",
+          "reason": "confirmDisplayedTarget"
+        },
+        "require": [
+          "reference"
+        ],
+        "example": {
+          "reference": "mxy1k8so-1"
+        }
+      }
+    ],
+    "inputExamples": [
+      {
+        "reference": "mxy1k8so-1",
+        "answer": "review"
+      },
+      {
+        "reference": "mxy1k8so-1",
+        "answer": "later"
+      }
+    ],
+    "examples": {
+      "needsUser": {
+        "reason": "confirmDisplayedTarget",
+        "reference": "mxy1k8so-1"
+      },
+      "ready": {
+        "required": false,
+        "outcome": "postponed"
+      }
+    },
+    "echoArgs": {
+      "reference": "reference"
+    }
+  },
+  {
+    "domain": "runtimeSlots",
+    "name": "readJavaArchiveImport",
+    "description": "从本次选择引用回读系统JDK导入的取消、失败或真实槽结果。",
+    "args": [
+      {
+        "name": "reference",
+        "type": "string",
+        "description": "pickJavaRuntimeArchive 返回的本次选择器引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "waiting",
+      "ready",
+      "cancelled",
+      "failed"
+    ],
+    "output": {
+      "major": {
+        "type": "string"
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "major"
+      ]
+    },
+    "inputExamples": [
+      {
+        "reference": "picker-1"
+      }
+    ],
+    "examples": {
+      "ready": {
+        "major": "17"
+      },
+      "failed": {
+        "reason": "importExpired"
+      },
+      "waiting": {
+        "state": "waiting"
+      },
+      "cancelled": {
+        "major": "17"
+      }
+    }
+  },
+  {
+    "domain": "updatePackageReceipt",
+    "name": "readUpdatePackageSelection",
+    "description": "按原引用从任意启动器页面查询本地 HAP 是否已转交更新流程，重启后可查最近终态。读取不会再次打开选择器或发起安装。",
+    "verification": {
+      "owner": "entry/src/main/ets/pages/Index.ets",
+      "test": "qa/device/test-named-skill-session.mjs"
+    },
+    "args": [
+      {
+        "name": "reference",
+        "type": "string",
+        "description": "openUpdateSource(localPackage) 返回的本次选择引用",
+        "required": true
+      }
+    ],
+    "results": [
+      "waiting",
+      "accepted",
+      "cancelled",
+      "failed"
+    ],
+    "output": {
+      "target": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "requiredOutput": {
+      "accepted": [
+        "target"
+      ]
+    },
+    "inputExamples": [
+      {
+        "reference": "picker-1"
+      }
+    ],
+    "examples": {
+      "accepted": {
+        "target": "v1.0.8:1000912:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "failed": {
+        "reason": "selectionExpired"
+      }
+    }
+  }
+]

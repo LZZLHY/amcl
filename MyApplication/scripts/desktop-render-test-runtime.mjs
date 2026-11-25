@@ -109,7 +109,8 @@ export function runtime(product, forceDesktopProvider = false) {
       files: evidence.listSessionEvidence(context.filesDir, id) });
     return Object.assign(new Activity(), { context, activityId: id, draft, generation: 0, alive: true, advanced: true,
       destination: 'logshare', phase: 'select', shared: undefined, snapshot: undefined,
-      previewName: '', previews: [], requestAi: false, onBusyChanged() {}, onShared() {}, onAdvancedChanged() {},
+      previewName: '', previews: [], requestAi: false, shareOutcomes: [], onBusyChanged() {}, onShared() {}, onAdvancedChanged() {},
+      onShareOutcome(state,reason,receipt) { this.shareOutcomes.push({state,reason,receipt}); },
       getUIContext, toast_: text => state.toasts.push(text) });
   }
   return { state, Provider, client, logExport, ledger, evidence, page, sheet, activity, seed, context, control,

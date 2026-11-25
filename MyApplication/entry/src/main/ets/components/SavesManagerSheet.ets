@@ -19,14 +19,18 @@
 
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors } from 'commons';
 import { resolveInstanceGameDir } from 'commons';
 import { AppIconName } from 'commons';
-import { removeDirRecursive } from 'commons';
 import { AppIcon } from './AppIcon';
 import { GameArchiveIO } from './GameArchiveIO';
+import { ArchiveEntryConfirmation, ArchiveSelectionScope } from './ArchiveSelectionScope';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { SkillFileScope } from '../launcherskill/SkillFileScope';
+import { textArg, result } from '../launcherskill/LibraryResult';
 
 const TAG = 'SavesManagerSheet';
 
@@ -43,11 +47,11 @@ interface SaveRow {
 export struct SavesManagerSheet {
   @Prop theme: ThemeColors = {} as ThemeColors;
   @Prop bottomSafeHeight: number = 0;
-  /** .minecraft 根（不带尾部 /） */
-  @Prop mcDir: string = '';
+  /** 同名版本也可能切换存储根或隔离目录；已挂载的存档页需要重新枚举。 */
+  @Prop @Watch('onScopeChanged') mcDir: string = '';
   /** 目标版本 id；为空显示空态 */
   @Prop @Watch('onScopeChanged') versionId: string = '';
-  @Prop versionIsolation: boolean = true;
+  @Prop @Watch('onScopeChanged') versionIsolation: boolean = true;
   /** 嵌入 VersionManagerSheet 第四步时为 true（用返回按钮取代拖拽指示条） */
   @Prop embedded: boolean = false;
   /** 仅当滑到本步时扫描磁盘 */
@@ -69,16 +73,68 @@ export struct SavesManagerSheet {
 
   aboutToAppear() {
     this.navigationProjectionAlive_ = true;
+    this.bindFileSkill_();
     if (this.active) this.refresh();
   }
 
   onScopeChanged(): void {
+    this.dismissEntry_();
     if (this.active) this.refresh();
   }
 
 
   /** 卸载后不再向父标题发布迟到状态；文件任务和扫描的原所有权不变。 */
   private navigationProjectionAlive_: boolean = false;
+
+  private skillScope_: SkillFileScope = new SkillFileScope();
+  private skillScanError_: boolean = false;
+  private pendingEntry_: ArchiveEntryConfirmation | undefined = undefined;
+
+  private bindFileSkill_(): void {
+    LauncherSkillBus.bind('worlds',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>this.fileSkill_(method,args),
+      ():boolean=>this.navigationProjectionAlive_ && this.active && AppStorage.get<boolean>('appInForeground')===true);
+  }
+
+  /** 目录和行引用均取自本次业务查询；异步选择器沿用面板的 busy / toast / 刷新逻辑。 */
+  private async fileSkill_(method:string,args:Record<string,Object>):Promise<Record<string,Object>> {
+    if (!this.active || !this.navigationProjectionAlive_ || textArg(args,'instance')!==this.versionId) return result('failed','instanceChanged');
+    if (this.navigationBlocked_()) return result('needsUser','panelBusy');
+    const dir=this.savesDir();
+    if (method==='listWorlds') {
+      this.refresh();
+      if (this.skillScanError_) return result('failed','directoryUnreadable');
+      const folder=this.skillScope_.list(this.mcDir,dir,this.versionId,true);
+      if (!folder) return result('failed','directoryUnavailable');
+      return {'state':'ready','instance':this.versionId,'folder':folder,'shared':resolveInstanceGameDir(this.mcDir,this.versionId,this.versionIsolation)===this.mcDir,
+        'entries':this.rows.map((item):Record<string,Object>=>({'ref':this.skillScope_.row(item.name),'name':item.name,'valid':item.valid,'modified':item.mtimeMs}))};
+    }
+    const folder=textArg(args,'folder');
+    if (!this.skillScope_.belongs(this.mcDir,dir,this.versionId,folder)) return result('failed','directoryChanged');
+
+    if (method==='importWorlds') return await this.doImport(folder);
+    const ref=textArg(args,'ref');
+    const name=this.skillScope_.resolve(this.mcDir,dir,this.versionId,folder,ref);
+    const item=this.rows.find(r=>r.name===name);
+    if (!name || !item) return result('failed','entryChanged');
+
+    if (method==='exportWorld') return await this.doExport(name);
+    if (method==='requestWorldDeletion') {
+      const shared=resolveInstanceGameDir(this.mcDir,this.versionId,this.versionIsolation)===this.mcDir;
+      const target = ArchiveEntryConfirmation.capture(this.mcDir, dir, this.versionId, name, true);
+      if (!target) return result('failed','entryChanged');
+      try {
+        LauncherSkillBus.awaitingUser(method);
+        const accepted=await this.getUIContext().getPromptAction().showDialog({title:'删除「'+name+'」？',
+          message:shared?'目标属于共享目录，将影响使用此目录的实例。':'目标属于所选实例。',buttons:[
+          {text:'取消',color:this.theme.textSecondary as string},{text:'删除',color:this.theme.errorText as string}]}).catch(():undefined=>undefined);
+        if (accepted?.index!==1) return result('cancelled');
+        if (!this.active || !this.navigationProjectionAlive_ || this.navigationBlocked_() || this.skillScope_.resolve(this.mcDir,this.savesDir(),this.versionId,folder,ref)!==name) return result('failed','entryChanged');
+        return this.removeConfirmed_(target) ? {'state':'ready','removed':name,'shared':shared} : result('failed','deleteFailed');
+      } finally { target.close(); }
+    }
+    return result('failed','unsupportedOperation');
+  }
+
 
   /** 导航只观察原遮罩事实，不取消任务或跳过原确认；未屏蔽正文时仍允许原返回。 */
   private navigationBlocked_(): boolean { return this.busy || this.pendingDelete.length > 0; }
@@ -89,7 +145,11 @@ export struct SavesManagerSheet {
   }
 
   /** 仅注销标题状态投影，不新增任务取消或覆盖原文件事务。 */
-  aboutToDisappear(): void { this.navigationProjectionAlive_ = false; }
+  aboutToDisappear(): void {
+    this.dismissEntry_();
+    this.navigationProjectionAlive_ = false;
+    LauncherSkillBus.unbind('worlds',this);
+  }
 
   build() {
     if (this.embedded) {
@@ -231,7 +291,7 @@ export struct SavesManagerSheet {
         }
         .width(36).height(36).borderRadius(10)
         .backgroundColor(this.theme.errorBg).justifyContent(FlexAlign.Center)
-        .onClick(() => { this.pendingDelete = row.name })
+        .onClick(() => { this.openDelete_(row.name, true) })
       }
       .alignItems(VerticalAlign.Center)
     }
@@ -309,7 +369,7 @@ export struct SavesManagerSheet {
           Button('取消')
             .type(ButtonType.Capsule).height(36).fontSize(14).layoutWeight(1)
             .fontColor(this.theme.textSecondary).backgroundColor(this.theme.bgInput)
-            .onClick(() => { this.pendingDelete = '' })
+            .onClick(() => { this.dismissEntry_() })
           Button('删除')
             .type(ButtonType.Capsule).height(36).fontSize(14).layoutWeight(1)
             .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.error)
@@ -325,7 +385,7 @@ export struct SavesManagerSheet {
     .position({ x: 0, y: 0 })
     .backgroundColor(this.theme.overlayShade)
     .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-    .onClick(() => { this.pendingDelete = '' })
+    .onClick(() => { this.dismissEntry_() })
   }
 
   // ============================================================
@@ -347,9 +407,11 @@ export struct SavesManagerSheet {
       return
     }
     let entries: string[] = []
+    this.skillScanError_ = false
     try {
       entries = fs.listFileSync(dir)
     } catch (e) {
+      this.skillScanError_ = (e as BusinessError).code !== 13900002
       this.rows = []
       this.loaded = true
       return
@@ -389,68 +451,114 @@ export struct SavesManagerSheet {
     }
   }
 
-  private async doImport(): Promise<void> {
-    if (this.busy) return
+  private async doImport(folderRef:string=''): Promise<Record<string,Object>> {
+    if (this.busy) return result('needsUser','panelBusy')
     let ctx = this.getAbilityCtx()
-    if (ctx === null) { this.safeToast('上下文不可用，无法导入', 1500); return }
+    if (ctx === null) { this.safeToast('上下文不可用，无法导入', 1500); return result('failed','contextUnavailable') }
     let dir = this.savesDir()
-    if (dir.length === 0) { this.safeToast('请先选择一个已装版本', 1500); return }
+    if (dir.length === 0) { this.safeToast('请先选择一个已装版本', 1500); return result('failed','contextUnavailable') }
+    const originalRoot=this.mcDir, originalVersion=this.versionId, isolated=this.versionIsolation;
+
+    const current=():boolean=>this.navigationProjectionAlive_ && this.active && this.mcDir===originalRoot && this.versionId===originalVersion &&
+      this.versionIsolation===isolated && this.savesDir()===dir;
+    const shared=resolveInstanceGameDir(this.mcDir,this.versionId,this.versionIsolation)===this.mcDir;
+    const scope:ArchiveSelectionScope={root:originalRoot,current:current,consent:async():Promise<boolean>=>{
+      if (!shared) return true;
+      const choice=await this.getUIContext().getPromptAction().showDialog({title:'导入到共享 .minecraft 目录？',
+        message:'使用同一游戏目录的实例都会看到本次导入。已有同名文件将保留。',buttons:[
+        {text:'取消',color:this.theme.textSecondary as string},{text:'选择文件',color:this.theme.actionText as string}]}).catch(():undefined=>undefined);
+      return choice?.index===1;
+    }};
+    if (folderRef && !this.skillScope_.belongs(originalRoot,dir,originalVersion,folderRef)) return result('failed','directoryChanged');
     this.busy = true
     this.busyLabel = '正在导入存档…'
     try {
-      let r = await GameArchiveIO.importSaveZips(ctx, dir)
+      LauncherSkillBus.awaitingUser('importWorlds');
+      let r = await GameArchiveIO.importSaveZips(ctx, dir,scope)
       this.busy = false
-      if (r.cancelled) return
+      if (r.cancelled) return result('cancelled')
       this.safeToast(r.message, r.failures.length > 0 ? 3500 : 1800)
       if (r.names.length > 0) {
         this.refresh()
         this.onChanged()
       }
+      return {'state':r.failures.length>0?(r.names.length?'partial':'failed'):'ready','imported':r.names,'failedCount':r.failures.length,'reason':r.targetChanged?'directoryChanged':r.failures.length?'fileRejected':''}
     } catch (e) {
       this.busy = false
       hilog.warn(0x0000, TAG, 'doImport failed: %{public}s', (e as Error).message)
       this.safeToast('导入失败：' + (e as Error).message, 2400)
+      return result('failed','fileOperationFailed')
     }
   }
 
-  private async doExport(name: string): Promise<void> {
-    if (this.busy) return
+  private async doExport(name: string): Promise<Record<string,Object>> {
+    if (this.busy) return result('needsUser','panelBusy')
     let ctx = this.getAbilityCtx()
-    if (ctx === null) { this.safeToast('上下文不可用，无法导出', 1500); return }
+    if (ctx === null) { this.safeToast('上下文不可用，无法导出', 1500); return result('failed','contextUnavailable') }
     let dir = this.savesDir()
-    if (dir.length === 0) return
+    if (dir.length === 0) return result('failed','directoryUnavailable')
+    const root=this.mcDir, version=this.versionId, isolation=this.versionIsolation;
+    const scope:ArchiveSelectionScope={root:root,current:():boolean=>this.navigationProjectionAlive_ && this.active &&
+      version===this.versionId && root===this.mcDir && isolation===this.versionIsolation && this.savesDir()===dir};
     this.busy = true
     this.busyLabel = '正在打包存档…'
     try {
-      let r = await GameArchiveIO.exportSaveZip(ctx, dir, name)
+      LauncherSkillBus.awaitingUser('exportWorld');
+      let r = await GameArchiveIO.exportSaveZip(ctx, dir, name,scope)
       this.busy = false
-      if (r.cancelled) return
+      if (r.cancelled) return result('cancelled')
       if (r.ok) {
         this.safeToast('已导出「' + r.name + '.zip」', 1800)
       } else {
         this.safeToast(r.message, 2400)
       }
+      return r.ok ? {'state':'ready','exported':r.name} : result('failed','exportFailed')
     } catch (e) {
       this.busy = false
       hilog.warn(0x0000, TAG, 'doExport failed: %{public}s', (e as Error).message)
       this.safeToast('导出失败：' + (e as Error).message, 2400)
+      return result('failed','fileOperationFailed')
     }
   }
 
+  /** 展示玩家的确认前固定原条目，取消、换页或关闭时归还全部句柄。 */
+  private openDelete_(name: string, isDirectory: boolean): void {
+    this.dismissEntry_();
+    const target = ArchiveEntryConfirmation.capture(this.mcDir, this.savesDir(), this.versionId, name, isDirectory);
+    if (!target) { this.safeToast('项目已变化，请刷新后重试', 2000); return; }
+    this.pendingEntry_ = target;
+    this.pendingDelete = name;
+  }
+
+  private dismissEntry_(): void {
+    this.pendingEntry_?.close();
+    this.pendingEntry_ = undefined;
+    this.pendingDelete = '';
+  }
+
   private executeDelete(): void {
-    let target = this.pendingDelete
-    this.pendingDelete = ''
-    if (target.length === 0) return
-    let dir = this.savesDir()
-    if (dir.length === 0) return
+    const target = this.pendingEntry_;
+    if (!target || this.pendingDelete !== target.name) { this.dismissEntry_(); return; }
+    try { this.removeConfirmed_(target); } finally { this.dismissEntry_(); }
+  }
+
+  /** 玩家与具名调用共用原对象校验和删除后的实况回读，部分删除不会提示成功。 */
+  private removeConfirmed_(target: ArchiveEntryConfirmation): boolean {
+    const dir = this.savesDir();
+    if (!this.active || !this.navigationProjectionAlive_ || !target.matches(this.mcDir, dir, this.versionId)) {
+      this.safeToast('原项目已变化，已停止删除', 2200);
+      return false;
+    }
     try {
-      removeDirRecursive(dir + '/' + target)
-      this.safeToast('已删除「' + target + '」', 1500)
-      this.refresh()
-      this.onChanged()
-    } catch (e) {
-      hilog.warn(0x0000, TAG, 'delete failed: %{public}s', (e as Error).message)
-      this.safeToast('删除失败：' + (e as Error).message, 2200)
+      target.commit(this.mcDir, dir, this.versionId);
+      this.safeToast('已删除原项目「' + target.name + '」', 1500);
+      this.refresh();
+      this.onChanged();
+      return true;
+    } catch (error) {
+      this.safeToast('删除未完成：' + (error as Error).message, 2200);
+      this.refresh();
+      return false;
     }
   }
 

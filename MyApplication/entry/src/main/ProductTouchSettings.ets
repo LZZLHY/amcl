@@ -3,9 +3,12 @@
  * 本轮只统一组内排版与搜索锚点，不改变保存成功、失败或待重启的生命周期围栏。
  */
 import { common } from '@kit.AbilityKit'
+import { LauncherSkillBus } from './ets/launcherskill/LauncherSkillBus'
+import { SettingsSkillData, settingKeys, settingText, settingFailure } from './ets/launcherskill/SettingsSkillValues'
 import { ThemeColors, AppIconName } from 'commons'
 import { SettingsValueRow } from './ets/components/SettingsPrimitives'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
+import { PreferenceManager } from 'feature_system'
 
 @Component
 export struct ProductTouchSettings {
@@ -19,6 +22,9 @@ export struct ProductTouchSettings {
 
   /** 每次挂接读本进程确认的desired与冻结状态，不从旧保存的临时显示借值。 */
   aboutToAppear(): void {
+    LauncherSkillBus.bind('settingsInteraction',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.skillInteraction_(method,args), (): boolean => this.mounted && ProductInputProfile.canChooseInteraction() &&
+        AppStorage.get<boolean>('amclSettingsTabVisible') === true && AppStorage.get<boolean>('appInForeground') === true)
     this.mounted = true
     this.appearance++
     this.saving = false
@@ -28,7 +34,24 @@ export struct ProductTouchSettings {
   }
 
   /** 持久请求独立完成；旧await只能失去显示权，不能写新页面或切本局route。 */
-  aboutToDisappear(): void { this.mounted = false; this.appearance++ }
+  aboutToDisappear(): void { LauncherSkillBus.unbind('settingsInteraction',this); this.mounted = false; this.appearance++ }
+
+  /** 保存、冻结和回读与电脑交互选择行使用同一所有者。 */
+  private async skillInteraction_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (this.saving) return settingFailure('busy')
+    if (method === 'setDesktopInteraction' && settingKeys(args,['mode'])) {
+      const mode = settingText(args,'mode')
+      if (!['auto','touch','desktop'].includes(mode)) return settingFailure('invalidMode')
+      await this.changeInteraction_(mode)
+      if (!this.mounted || ProductInputProfile.interaction() !== mode) return settingFailure('notSaved')
+    } else if (method !== 'getDesktopInteraction' || !settingKeys(args,[])) return settingFailure('invalidArguments')
+    try {
+      const context=this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const mode=new PreferenceManager(context).strictLauncherField('desktopInteraction');
+      return mode === ProductInputProfile.interaction() ? {'state':'ready','mode':mode,'restartRequired':ProductInputProfile.interactionPending()} :
+        {'state':'unknown','reason':'selectionChanged'};
+    } catch (_) { return {'state':'unknown','reason':'settingUnreadable'}; }
+  }
 
   /** 保存等待期间保持原选项；重复点击拒绝，失败可见且保留旧UI，成功才展示待重启事实。 */
   private async changeInteraction_(value: string): Promise<void> {

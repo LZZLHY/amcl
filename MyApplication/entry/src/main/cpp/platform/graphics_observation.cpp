@@ -27,16 +27,17 @@ struct Observation {
     uint64_t lossSeen = 0;
     std::mutex mutex;
     amcl::graphics::GraphicsObservationCore frames;
-    uint64_t failureSequence = 0, failureGeneration = 0, failurePresentCount = 0;
+    std::atomic<uint64_t> failureSequence{0};
+    uint64_t failureGeneration = 0, failurePresentCount = 0;
     uint32_t failureCode = 0;
     std::string failureStage;
 };
+std::atomic<Observation*> g_observation{nullptr};
 Observation& local() {
-    static std::atomic<Observation*> value{new Observation};
-    auto* observed = value.load(std::memory_order_acquire);
-    if (observed->pid != static_cast<uint64_t>(getpid())) {
+    auto* observed = g_observation.load(std::memory_order_acquire);
+    if (!observed || observed->pid != static_cast<uint64_t>(getpid())) {
         auto* next = new Observation;
-        if (value.compare_exchange_strong(observed, next, std::memory_order_acq_rel)) observed = next;
+        if (g_observation.compare_exchange_strong(observed, next, std::memory_order_acq_rel)) observed = next;
         else delete next;
     }
     return *observed;
@@ -117,8 +118,9 @@ void swapped(const char* provider, uint64_t elapsed, int success, uint32_t) {
 void fatal(const char* stage, uint32_t code, uint64_t generation) {
     auto& state = local(); std::lock_guard<std::mutex> lock(state.mutex);
     // 保留本局第一个致命错误，后续 teardown 错误不能覆盖根因或重新开放重试窗口。
-    if (state.failureSequence) return;
-    state.failureSequence = 1; state.failureStage = token(stage); state.failureCode = code;
+    if (state.failureSequence.load(std::memory_order_relaxed)) return;
+    state.failureSequence.store(1, std::memory_order_release);
+    state.failureStage = token(stage); state.failureCode = code;
     state.failureGeneration = generation; state.failurePresentCount = state.totalFrames.load(std::memory_order_relaxed);
 }
 void foreground(int visible) {
@@ -129,11 +131,11 @@ const char* snapshot(int failuresOnly) {
     static thread_local std::string json;
     auto& state = local(); std::unique_lock<std::mutex> lock(state.mutex);
     // 既有 UI 心跳只询问致命故障，正常帧不做分位数排序或 JSON 分配。
-    if (failuresOnly && !state.failureSequence) return "";
+    const auto failureSequence = state.failureSequence.load(std::memory_order_relaxed);
+    if (failuresOnly && !failureSequence) return "";
     // 锁内只复制固定大小快照；分位数排序与JSON分配全部在锁外、调用采集端的线程执行。
     const auto f = state.frames;
-    const auto failureSequence = state.failureSequence, failureGeneration = state.failureGeneration,
-        failurePresentCount = state.failurePresentCount;
+    const auto failureGeneration = state.failureGeneration, failurePresentCount = state.failurePresentCount;
     const auto failureCode = state.failureCode;
     const std::string failureStage = state.failureStage;
     const auto totalFrames = state.totalFrames.load(std::memory_order_relaxed);
@@ -241,4 +243,12 @@ extern "C" const char* amclGraphicsFailureJsonV1() {
 extern "C" int amclGraphicsObservationEnabledV1() {
     const auto* api = descriptor();
     return api && (api->structSize < offsetof(AmclGraphicsObserverV1, dispatchPresent) || !api->samplesEnabled || api->samplesEnabled());
+}
+extern "C" int amclGraphicsHasUsablePresentationV1() {
+    // JVM 的最终退出回调可能在 safepoint。只读已经发布的原子事实，禁止走 local()、
+    // descriptor() 或 JSON 路径；未拥有实际帧的副本及 fork 继承者一律不能通过。
+    const auto* state = g_observation.load(std::memory_order_acquire);
+    return state && state->pid == static_cast<uint64_t>(getpid()) &&
+        state->totalFrames.load(std::memory_order_relaxed) != 0 &&
+        state->failureSequence.load(std::memory_order_acquire) == 0;
 }

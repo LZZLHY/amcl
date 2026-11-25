@@ -23,6 +23,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors } from 'commons';
 import { AppIconName } from 'commons';
 import { ActivityRecord, ActivityCategory, ActivityStatus } from 'feature_core';
+import { canPerformStoreManagerAction } from '../../components/StoreManagerUiPolicy';
 import { activityCategoryLabel } from '../../components/ActivityUiModel';
 import { getModpackIconPath } from 'mods';
 // 一多适配（响应式）：设备形态 / 断点抽象，由 Index @Provide 下沉。
@@ -30,7 +31,7 @@ import { Breakpoint, DeviceForm } from 'commons';
 import { AppIcon, loaderIconForVersion } from '../../components/AppIcon';
 import { ImmersiveTitleScaffold } from '../../components/ImmersiveTitleScaffold';
 import { AppTitleAction } from '../../components/AppTitleAction';
-import { inferLoaderKey, getLoaderInfo, resolveInstalledLoaderKey } from '../../components/LoaderCatalog';
+import { getInstalledBadgeInfoResolved, resolveInstalledVersionCategory } from '../../components/LoaderCatalog';
 import { MarqueeText } from '../../components/MarqueeText';
 import { VersionBlockIcon } from '../../components/VersionBlockIcon';
 import { MinecraftHeadAvatar } from '../../components/MinecraftHeadAvatar';
@@ -387,6 +388,8 @@ export struct HomeTab {
           // 14dp 跟字号同宽时立体感细节会糊
           VersionBlockIcon({
             versionId: this.mcVersion,
+            category: resolveInstalledVersionCategory(this.mcDir, this.mcVersion),
+            iconIdPrefix: 'home-version-icon',
             iconSize: 18,
             cornerRadius: 0,
             overrideImagePath: getModpackIconPath(this.mcDir, this.mcVersion),
@@ -462,14 +465,14 @@ export struct HomeTab {
       AppIcon({
         name: this.storeManager ? AppIconName.Export : (this.noVersionInstalled() ? AppIconName.Download : (this.isRunning ? AppIconName.Hourglass : AppIconName.Play)),
         iconSize: 22,
-        color: (this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive())
+        color: (this.storeManager ? canPerformStoreManagerAction(this.managerAction) : this.launchButtonActive())
           ? this.theme.textOnPrimary : this.theme.disabledText,
         weight: FontWeight.Bold,
       })
       Text(this.storeManager ? this.managerLabel : this.launchButtonText())
         .fontSize(19)
         .fontWeight(700)
-        .fontColor((this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive())
+        .fontColor((this.storeManager ? canPerformStoreManagerAction(this.managerAction) : this.launchButtonActive())
           ? this.theme.textOnPrimary : this.theme.disabledText)
     }
     .width('100%')
@@ -478,11 +481,11 @@ export struct HomeTab {
     .alignItems(VerticalAlign.Center)
     .borderRadius(32)
     // 禁用态只改呈现，不放开下面既有点击分支；浅深主题都使用配套的禁用字与底。
-    .backgroundColor((this.storeManager ? this.managerAction !== 'checking' : this.launchButtonActive())
+    .backgroundColor((this.storeManager ? canPerformStoreManagerAction(this.managerAction) : this.launchButtonActive())
       ? this.theme.actionPrimary : this.theme.disabledBg)
     .onClick(() => {
       if (this.storeManager) {
-        if (this.managerAction !== 'checking') this.onManagerAction()
+        if (canPerformStoreManagerAction(this.managerAction)) this.onManagerAction()
       } else if (this.noVersionInstalled()) {
         this.onGoDownload()          // 无版本：去「下载-版本」页
       } else if (this.canLaunch()) {
@@ -792,10 +795,9 @@ export struct HomeTab {
 
   private heroLoaderText(): string {
     if (this.storeManager && this.availableVersions.length === 0) return '版本文件待检查'
-    // 整合包/重命名版本名里无 loader 关键字，改用 resolveInstalledLoaderKey 读 version.json 内容判定。
-    let key = resolveInstalledLoaderKey(this.mcDir, this.mcVersion || '')
-    if (key === 'vanilla') return '原版 Vanilla'
-    return getLoaderInfo(key).displayName
+    // 与同排图标共用已装类别，重命名不能改变真实加载器或原版子类。
+    const label = getInstalledBadgeInfoResolved(this.mcDir, this.mcVersion).displayName
+    return label === '原版' ? '原版 Vanilla' : label
   }
 
   private statusColor(): ResourceColor {

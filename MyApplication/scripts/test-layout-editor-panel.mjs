@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import compiler from './lib/ets-compiler.mjs';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+import { actionUiReceiver, loadActionComponent } from './lib/unified-actions-fixture.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/LayoutEditor.ets'), 'utf8');
@@ -41,6 +42,7 @@ const names = ['syncPositionDraft_', 'applyPositionDraft_', 'alignSelectedToScre
   'chooseScene_', 'chooseVisibility_', 'chooseSwipeGroup_', 'addButton', 'addHotbar', 'setMultiSelect',
   'openAddPanel_', 'returnFromAddPanel_', 'addControlOptions_', 'addJoystick_', 'selectForEditor_', 'addControlFromPanel_',
   'openTab', 'compactPanel', 'panelChromeH', 'panelMinContentH', 'panelMaxTop', 'panelTopBase','panelWidth',
+  'wideToolPanel_', 'panelLeftBase_', 'panelContentMaxH', 'swapPanelSide_', 'commitPanelDrag', 'saveLabel_',
   'captureEditorRoute_','backEditor_','switchMainPanel_','secondaryEditingDefinition_','syncSecondarySelection_',
   'freshControlRoute_','placeFreshControl_','editorGroupVisible_','finishInlineKeyPicker_','selectControlIdentity_','repairEditorGroups_'];
 const tree=compiler.createSourceFile('LayoutEditor.ets',source,compiler.ScriptTarget.Latest,true);
@@ -211,6 +213,71 @@ for (const [id, code] of [['space', keys.GLFW_KEY_SPACE], ['shift', keys.GLFW_KE
   assert.equal(view.activeSheet, 'edit'); assert.equal(view.showPanel, true); assert.ok(view.panelY <= view.panelMaxTop());
   assert.equal(view.undoCalls, 0);
   check('未知/旧类型不能创建；返回布局夹回新骨架内且不污染撤销');
+}
+{
+  const view=addFixture();
+  const stick={type:ControlType.JOYSTICK,xPct:0.067,yPct:0.52,itemScale:1.6,baseWidth:120,baseHeight:120};
+  Object.assign(view,{controls:[stick],globalScale:0.7,showPanel:true,panelX:-1,panelY:-1,screenWidth:844,screenHeight:390});
+  assert.ok(view.panelLeftBase_()>view.itemPxX(stick)+view.itemW(stick),'初始工具窗应在真实缩放的摇杆右侧');
+  assert.equal(view.panelTopBase()+view.panelChromeH()+view.panelContentMaxH(),view.panelTopBase()+320);
+  view.swapPanelSide_();
+  assert.equal(view.panelLeftBase_()+view.panelWidth(),830);
+  view.screenWidth=520;assert.equal(view.panelLeftBase_()+view.panelWidth(),506,'停靠时跟随窗口宽度');
+  view.panelDragDx=-30;view.panelDragDy=18;const x=view.panelLeftBase_();view.commitPanelDrag();
+  assert.equal(view.panelLeftBase_(),x-30);assert.equal(view.panelDockSide,'');
+  const savedX=view.panelX;view.screenWidth=300;view.screenHeight=180;
+  assert.ok(view.panelLeftBase_()+view.panelWidth()<=294);assert.equal(view.panelX,savedX);
+  assert.ok(view.panelTopBase()+view.panelChromeH()+view.panelContentMaxH()<=172);
+  view.showPanel=false;view.panelY=140;assert.equal(view.panelTopBase(),120);
+  view.showPanel=true;assert.ok(view.panelTopBase()+view.panelChromeH()+view.panelContentMaxH()<=172);
+  view.screenWidth=1280;view.screenHeight=800;view.panelX=-1;view.panelY=-1;view.globalScale=1.15;
+  assert.equal(view.panelWidth(),292);assert.equal(view.panelChromeH()+view.panelContentMaxH(),428);
+  assert.ok(view.panelLeftBase_()>view.itemPxX(stick)+view.itemW(stick));
+  assert.equal(view.undoCalls,0);assert.equal(stick.xPct,0.067);
+  check('工具窗避开两端真实摇杆，换边随窗缩放，拖动后按当前视口夹取，保留草稿与原自由定位');
+}
+{
+  const view=addFixture();
+  Object.assign(view,{screenWidth:1280,screenHeight:800,globalScale:1,panelX:680,panelY:0,showPanel:true,panelDockSide:''});
+  const button={id:'below',type:ControlType.BUTTON,baseWidth:40,baseHeight:40,itemScale:1,xPct:0,yPct:0};
+  view.placeFreshControl_(button);
+  assert.ok(view.itemPxX(button)>view.panelLeftBase_() && view.itemPxX(button)<view.panelLeftBase_()+view.panelWidth());
+  assert.ok(view.itemPxY(button)>=428+8,'浮窗下方同一列允许新增按键');
+  view.controls=[button];view.selectForEditor_(0);assert.equal(view.panelDockSide,'','下方新键不应导致无谓换边');
+  button.yPct=.45;view.selectForEditor_(0);assert.equal(view.panelDockSide,'left','切入相交属性页时避让所选键');
+  check('新增落点与选键使用即将显示的属性页高度上限，保留浮窗下方的可编辑画布');
+}
+{
+  // 真实 ToolPanel 负责内容包裹、正文上限与脚栏顺序；宿主接收器仅记录 SDK 布局声明。
+  const ui=actionUiReceiver();
+  const receiver=loadActionComponent('entry/src/main/ets/components/LayoutEditor.ets','LayoutEditor',{
+    methods:['ToolPanel'],render:true,
+    globals:{...ui.globals,Scroll:ui.globals.Column,PanGesture:ui.globals.Column,type:value=>ui.globals.Button().type(value),
+      Color:{Transparent:'transparent'},BarState:{Auto:'auto'}},
+    dependencies:{gamecontrol:keys,commons:{AppIconName:{}},'./AppIcon':{AppIcon:ui.globals.AppIcon},'./KeyPickerSheet':{KeyPickerSheet(){}}}
+  }).prototype;
+  const view=addFixture();
+  Object.assign(view,{palette:{},profileName:'自定义方案',panelX:16,panelY:56,showPanel:true,statusMsg:'',
+    canBackEditor_(){return false},PanelNavigation(){},EditTabContent(){ui.globals.Text('真实正文入口')},
+    ControlListPanel_(){ui.globals.Text('真实列表入口')},ActionFooter(){ui.globals.Text('底栏')}});
+  function render(w,h,sheet) {
+    ui.clear();Object.assign(view,{screenWidth:w,screenHeight:h,activeSheet:sheet});
+    receiver.ToolPanel.call(view);
+    return ui.records.find(r=>r.modifiers.id?.[0]==='layout-editor-tool-content');
+  }
+  const short=render(1280,800,'edit');
+  assert.deepEqual(short.modifiers.constraintSize,[{minHeight:0,maxHeight:272}]);
+  assert.deepEqual(short.modifiers.align,['Alignment.TopStart']);
+  assert.equal(short.modifiers.height,undefined,'禁用强制填满正文的固定高度');
+  const long=render(1280,800,'list');
+  assert.deepEqual(long.modifiers.constraintSize,short.modifiers.constraintSize);
+  assert.deepEqual(long.modifiers.scrollBar,['auto']);
+  assert.ok(ui.records.indexOf(long)<ui.records.findIndex(r=>r.args[0]==='底栏'),'保存栏在滚动正文以外');
+  const phone=render(844,390,'edit');
+  assert.deepEqual(phone.modifiers.constraintSize,[{minHeight:164,maxHeight:164}]);
+  view.showPanel=false;
+  assert.equal(render(1280,800,'list'),undefined,'收起时只留下工具窗头部');
+  check('真实浮窗渲染：平板短页按内容收拢、长页同上限滚动，手机固定原高，折叠不保留正文');
 }
 console.log('PASS ' + passed + ' layout editor panel production groups');
 

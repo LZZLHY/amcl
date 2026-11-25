@@ -136,7 +136,7 @@ check('wheel单指本体保持原位，滚轮与按键协作同样冻结', () =>
   const before = geometry(f.model.frame(300, 200, 800, 600));
   f.model.beginContact(1, 'wheel', 400, 300, 1);
   f.model.moveContact(1, 400, 324, 1);
-  assert.deepEqual(f.wheels, [2]);
+  assert.deepEqual(f.wheels, [-2]);
   assert.deepEqual(geometry(f.model.frame(799, 599, 800, 600)), before);
   f.model.beginContact(2, 'left', 350, 250, 2);
   f.model.endContact(1, 1);

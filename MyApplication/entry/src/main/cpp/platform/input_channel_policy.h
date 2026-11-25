@@ -11,10 +11,9 @@ extern "C" {
 /**
  * 同一个物理输入端内的通道仲裁，不仲裁触控/手柄/键鼠三个并列输入端。
  *
- * 鼠标全部按钮按已观测通道的固定优先级选择：ArkUI > Native > TouchMirror。
- * 能力按按钮记录；持有按(deviceId,nativeButton,DOWN channel)记录，不用静默时长
- * 猜测owner死亡。单通道多个已知设备可以同时持有同键；其它通道不得抢走在途DOWN。
- * Native与Mirror缺少设备身份时保留0桶，不编造与ArkUI设备的映射。
+ * 鼠标持有按(deviceId,nativeButton,DOWN channel)记录。电脑多个已知设备可独立
+ * 持有，匿名来源不能抢走在途边沿、重放时间位于原手势内的 DOWN。移动产品或
+ * 缺少可比较的平台时间时保留 ArkUI > Native > TouchMirror 的保守优先级。
  *
  * 滚轮保持 NativeAxis > ArktsAxis > AxisPan > TouchWheel 的单通道策略。
  * 全局surface gate将策略准入与typed/legacy投递包成事务；模块自己的mutex只保护
@@ -46,10 +45,13 @@ bool amcl_input_policy_wheel_accepts(AmclInputChannel channel);
  * 选择优先级。没有DOWN的UP不得清别的设备或未知桶。
  */
 bool amcl_input_policy_button_begin(AmclInputChannel channel,
-    uint64_t deviceId, uint32_t nativeButton);
+    uint64_t deviceId, uint32_t nativeButton, uint64_t eventTimeNs, bool desktop);
 bool amcl_input_policy_button_end(AmclInputChannel channel,
-    uint64_t deviceId, uint32_t nativeButton);
+    uint64_t deviceId, uint32_t nativeButton, uint64_t eventTimeNs);
 void amcl_input_policy_button_abort(AmclInputChannel channel,
+    uint64_t deviceId, uint32_t nativeButton);
+/** 只读诊断，精确判断本边沿所属来源是否已持有该按钮。 */
+bool amcl_input_policy_button_held(AmclInputChannel channel,
     uint64_t deviceId, uint32_t nativeButton);
 
 /**

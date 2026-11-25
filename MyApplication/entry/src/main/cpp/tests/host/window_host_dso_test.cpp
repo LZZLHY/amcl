@@ -1,6 +1,7 @@
 #include "../../platform/window_host.h"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <future>
 #include <iostream>
 #include <map>
@@ -72,6 +73,9 @@ struct Api {
     decltype(&amclWindowHostSetReferenceDriver) driver;
     decltype(&amclWindowHostTestOverridePid) pid;
     decltype(&amclWindowHostSetInputForeground) foreground;
+    decltype(&amclWindowHostSetTextInputWake) textWake;
+    decltype(&amclWindowHostTextInputDemandIdentity) textIdentity;
+    decltype(&amclWindowHostRunTextInputCommand) textCommand;
     explicit Api(Image& image) {
 #define RESOLVE(member, name) member = image.symbol<decltype(member)>(#name)
         RESOLVE(publish, amclWindowHostPublish); RESOLVE(update, amclWindowHostUpdateSize);
@@ -81,9 +85,76 @@ struct Api {
         RESOLVE(stats, amclWindowHostGetStats); RESOLVE(snapshot, amclWindowHostReadSnapshot);
         RESOLVE(driver, amclWindowHostSetReferenceDriver); RESOLVE(pid, amclWindowHostTestOverridePid);
         RESOLVE(foreground, amclWindowHostSetInputForeground);
+        RESOLVE(textWake, amclWindowHostSetTextInputWake); RESOLVE(textIdentity, amclWindowHostTextInputDemandIdentity);
+        RESOLVE(textCommand, amclWindowHostRunTextInputCommand);
 #undef RESOLVE
     }
 };
+// 只用来拷贝真实owner导出的测试描述符；窗口行为仍由实际DSO的账本执行。
+struct OwnerDescriptorFixture {
+    uint32_t version;
+    uint32_t size;
+    uint64_t pid;
+    decltype(&amclWindowHostPublish) publish;
+    decltype(&amclWindowHostUpdateSize) update;
+    decltype(&amclWindowHostClear) clear;
+    decltype(&amclWindowHostReadSnapshot) read;
+    decltype(&amclWindowHostGetStats) stats;
+    decltype(&amclWindowHostRetryRetiredReferences) retry;
+    decltype(&amclWindowHostGetBroker) broker;
+    decltype(&amclWindowHostSetInputForeground) foreground;
+    decltype(&amclWindowHostRegisterGeometryClient) geometry;
+    decltype(&amclWindowHostSetReferenceDriver) driver;
+    void (*textWake)(AmclWindowTextInputWakeFn);
+    decltype(&amclWindowHostTextInputDemandIdentity) textIdentity;
+    decltype(&amclWindowHostRunTextInputCommand) textCommand;
+};
+
+void checkOptionalTextTail(const std::string& encoded, uint64_t fakePid, Api& owner, Api& reader, void* window) {
+    unsigned long long pid = 0;
+    void* address = nullptr;
+    int consumed = 0;
+    if (std::sscanf(encoded.c_str(), "%llu:%p%n", &pid, &address, &consumed) != 2 ||
+        !address || encoded[static_cast<size_t>(consumed)] != '\0') {
+        check(false, "read real owner descriptor");
+        return;
+    }
+    OwnerDescriptorFixture descriptor{};
+    // 先按真实wire size验证复制范围；测试不能把错位字段误认成历史前缀。
+    uint32_t actualSize = 0;
+    std::memcpy(&actualSize, static_cast<const char*>(address) + offsetof(OwnerDescriptorFixture, size), sizeof(actualSize));
+    if (actualSize != sizeof(descriptor)) {
+        check(false, "real owner descriptor and test wire layout match");
+        return;
+    }
+    std::memcpy(&descriptor, address, sizeof(descriptor));
+    const auto* currentBroker = owner.broker();
+    check(currentBroker->setTextInputDemand(window, 5, 8, 1) == 1 && owner.textIdentity() != 0,
+          "live owner has a real text demand to distinguish safe short-prefix reads");
+    for (bool isShort : { true, false }) {
+        descriptor.pid = fakePid++;
+        descriptor.size = isShort ? offsetof(OwnerDescriptorFixture, textWake) : sizeof(descriptor);
+        if (!isShort) {
+            descriptor.textWake = nullptr;
+            descriptor.textIdentity = nullptr;
+            descriptor.textCommand = nullptr;
+        }
+        char wire[96]{};
+        std::snprintf(wire, sizeof(wire), "%llu:%p", static_cast<unsigned long long>(descriptor.pid), static_cast<void*>(&descriptor));
+        environment("AMCL_WINDOW_HOST_OWNER", wire);
+        reader.pid(descriptor.pid);
+        AmclWindowHostSnapshot snapshot{};
+        check(reader.snapshot(&snapshot) == 1 && snapshot.nativeWindow == window && snapshot.generation == 5,
+              isShort ? "old required prefix still forwards live window snapshot" : "null optional tail leaves live window snapshot intact");
+        check(reader.foreground(0) == 1 && owner.broker()->peekInputForeground() == 0,
+              "both older and empty-tail owners keep their original window service");
+        check(reader.textWake(+[] {}) == 0 && reader.textIdentity() == 0 &&
+              reader.textCommand(owner.textIdentity(), +[](void*) -> int { return 1; }, nullptr) == 0,
+              isShort ? "short owner refuses to read text fields" : "null text wake and identity are safely unavailable");
+    }
+    currentBroker->setTextInputDemand(window, 5, 8, 0);
+}
+
 // 输入前台尾部的读取方式与 SDL 0022 相同：先按 structSize 与指针判定能力，再调用 peek。
 // 返回 -1 表示描述符缺少该尾部（能力缺失与“后台”必须区分）。
 int peekForeground(const AmclNativeWindowLeaseBrokerV2* broker) {
@@ -188,6 +259,7 @@ int main(int argc, char** argv) {
     check(stats.generation == 5 && driver.references[wa] == 1 && childDriver.references[wb] == 1,
         "changed PID never releases or reuses the original image's live native object");
     check(b.clear(wb, 1) == 2 && childDriver.references[wb] == 0, "child-like publication cleans only its own reference");
+    checkOptionalTextTail(parentOwner, childPid + 1, a, b, wa);
     environment("AMCL_WINDOW_HOST_OWNER", parentOwner.c_str());
     environment(AMCL_NATIVE_WINDOW_LEASE_BROKER_ENV, encodedBroker.c_str());
     b.pid(0);

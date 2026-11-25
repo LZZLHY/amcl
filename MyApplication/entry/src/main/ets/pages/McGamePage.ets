@@ -1,10 +1,12 @@
 import { DesktopGameResults } from '../runtime/DesktopGameResults'
 import { GameRunAdmission } from '../runtime/GameRunAdmission'
 import { SharedProcessGameLease } from 'feature_core'
-import { GameSessionHost, GameFrontendLease, getGameSessionHost } from '../runtime/GameSessionHost'
+import { GameSessionHost, GameFrontendLease, getGameSessionHost, phoneGameRestartApi } from '../runtime/GameSessionHost'
+import { ProductQaGame } from 'entry/ProductQaGame'
 import { GameDialogRuntime } from '../runtime/GameDialogRuntime'
-import { NativeGamepadRouteDecision, nativeGamepadRouteStatusMessage } from '../runtime/NativeGamepadRoutePolicy'
+import { GamepadOutputRoute, NativeGamepadRouteDecision, nativeGamepadRouteNotice } from '../runtime/NativeGamepadRoutePolicy'
 import { reconcileEntryInputSession } from '../components/EntryInputSessionCoordinator'
+import { isEntrySoftTextInputRequested } from '../components/EntryTextInputSession'
 import { ProcessPreferences } from 'commons'
 import { ThemeColors, ThemeMode, resolveTheme } from 'commons'
 import { ConfigurationConstant } from '@kit.AbilityKit'
@@ -32,18 +34,20 @@ import { ProductGameControlSurface } from 'entry/ProductGameControlSurface';
 import { ProductGameWindowCoordinator, ProductGameWindowSnapshot } from 'entry/ProductGameWindowCoordinator';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
-import { GLFW_KEY_ESCAPE, GLFW_PRESS, GLFW_RELEASE, OHOS_ALT_RIGHT } from 'gamecontrol';
+import { GLFW_KEY_ESCAPE, GLFW_KEY_TAB, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_SPACE,
+  GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_DOWN, GLFW_PRESS, GLFW_RELEASE, OHOS_ALT_RIGHT } from 'gamecontrol';
 import { getLayoutStore } from 'gamecontrol';
 import { glfwKeyFromOhos, resolvePhysicalKeyCodepoint } from 'gamecontrol';
 import { composeGlfwMods, composeOhosLockState } from 'gamecontrol';
-import { PhysicalHeldKeyTracker, HeldKeyDownKind } from 'gamecontrol';
+import { PhysicalHeldKeyTracker, HeldKeyDownKind, PhysicalKeyOwner } from 'gamecontrol';
 import { decidePhysicalKeyEdge, PhysicalKeyEdgeActions, SHADOW_KEY_UP } from 'gamecontrol';
 import { shouldSuppressBackPressAfterEsc, shouldRefillChar } from 'gamecontrol';
 import { normalizeDeviceId } from 'gamecontrol';
 import { WheelStepAccumulator, wheelDirectionFromAxisVertical } from 'gamecontrol';
 import { WHEEL_PAN_TAG, judgeWheelPanGesture, WheelPanJudgement } from 'gamecontrol';
 import { normalizeRelativeMouseDelta, RelativeMouseDelta } from 'gamecontrol';
-import { GamepadManager, GameInputRuntime, routeKeyToGamepad } from 'gamecontrol';
+import { GamepadManager, GameInputRuntime, routeKeyToGamepad, isGamepadKey,
+  OHOS_DPAD_CENTER, OHOS_ENTER, OHOS_NUMPAD_ENTER, OHOS_SPACE, OHOS_TAB } from 'gamecontrol';
 import { getInputDeviceMonitor, DeviceCapability } from 'gamecontrol';
 import { getPhysicalPointerEcho, getImeActivationGate } from 'gamecontrol';
 import {
@@ -65,6 +69,7 @@ import {
 import inputDevice from '@ohos.multimodalInput.inputDevice';
 import { getPointerVisibility } from 'gamecontrol';
 import { common } from '@kit.AbilityKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { GraphicsProfileInput, GraphicsGameApi, LaunchProfileBuilder, LaunchProfile } from 'launch';
 import { MinecraftGraphicsPreferenceInput, MinecraftGraphicsRequest, resolveMinecraftGraphicsRequest,
@@ -137,8 +142,14 @@ const INPUT_PRODUCT_UNCHANGED: number = 1
 // 已有 owner，ArkTS 缓存也应继续视为 held；其余失败在 Down 时回滚页面缓存。
 const PHYSICAL_KEY_EMITTED: number = 0
 const PHYSICAL_KEY_HANDLED_NO_FINAL_EDGE: number = 1
+const PHYSICAL_KEY_OWNERLESS_REPEAT: number = 4
+const PHYSICAL_KEY_OWNERLESS_UP: number = 5
 const PHYSICAL_KEY_DUPLICATE_DOWN: number = 6
+const DESKTOP_KEY_RETIREMENT_ATTEMPTS: number = 4
 const PHYSICAL_KEY_TYPED_ROUTE_HANDLED: number = 11
+
+// 同一局可能重建前端。仅记录这局已发出过通知的路线，不延长宿主寿命或修改路由决议。
+const notifiedGamepadRoutes = new WeakMap<GameSessionHost, GamepadOutputRoute>()
 
 // 已撤销的方案：用 `responseRegionList` 把鼠标从 XComponent 的命中链剔除。
 // 真机否证记录见 build() 里 XComponent 上那段注释——属性生效了（合成包消失），
@@ -155,8 +166,6 @@ struct McGamePage {
   // 稳定会话拥有来源、配置与时钟；页面实例仅持可撤销的前端资格。
   private sessionHost: GameSessionHost = getGameSessionHost()
   private frontendLease: GameFrontendLease | undefined = undefined
-  /** 原会话前端的只读路由提示；保存偏好和实际游戏使用不能替代此Applied/Pending事实。 */
-  @State private nativeGamepadRouteMessage: string = ''
   @State statusText: string = '正在初始化渲染面...'
   @State mcStarted: boolean = false
   @State mcLog: string = ''
@@ -169,7 +178,11 @@ struct McGamePage {
   @State private resolutionFailed: boolean = false
   private pageVisible: boolean = true
   private surfaceFocused: boolean = true
+  /** 桌面实体键盘有独立于工具控件的焦点；移动端继续沿用页面键盘入口。 */
+  private readonly desktopKeyboardFocus_: boolean = ProductInputProfile.selection().desktopWindow
   private gameWindowReady: boolean = false
+  /** 只用于声明 Surface 是否不透明；不接管任何 surface 生命周期回调。 */
+  private mcSurfaceController: XComponentController = new XComponentController()
   private mcDir: string = ''
   /** 完成实例隔离校验后发布，只供触控专用动作读取当前游戏改键。 */
   @State touchGameDirectory: string = ''
@@ -183,6 +196,8 @@ struct McGamePage {
   // 游戏窗口 id，用于 OH_WindowManager_LockCursor。0 表示尚未取到。
   private gameWindowId: number = 0
   private gameDisplayId: number = -1
+  private requestedFixedRefreshRate: number = 0
+  private supportedFixedRefreshRate: number = 0
   private nativeSurfaceContextGeneration: number = 0
   /** 已被Native接受的显示元数据签名；只含输入代次、Hz与Hz有效位，不创建新的触控身份。 */
   private nativeSurfaceContextMetadata: string = ''
@@ -223,6 +238,12 @@ struct McGamePage {
   // Down 误判成 Repeat，并让先抬起的那把提前释放聚合键（计划 §10.1 / P0-2）。
   // 修饰键仍取跨设备聚合快照，锁存键不参与聚合（见 composeGlfwMods 注释）。
   private heldKeys: PhysicalHeldKeyTracker = new PhysicalHeldKeyTracker()
+  /** 只冻结本次失焦时的原持有。后续真实同键Down必须等原松键收口。 */
+  private desktopKeyRetirements_: PhysicalKeyOwner[] = []
+  private desktopKeyRetirementLease_: GameFrontendLease | undefined = undefined
+  private desktopKeyRetirementAttempts_: number = 0
+  // 本次离开渲染区只登记一次重新获焦后的恢复机会；父/子获焦和工具关闭共享。
+  private desktopKeyRetirementOnRefocus_: boolean = false
   // Phase 3.2：native 是 held/reset 的权威所有者；页面缓存只服务修饰键和 repeat 分类。
   // blur/overflow/surface reset 可在页面不 hide 时清 native 状态，因此每个实体键事件先比较
   // 完整 cancel 后发布的单调 epoch。变化时丢弃缓存，禁止恢复后的首个 Down 被误标 Repeat。
@@ -333,10 +354,10 @@ struct McGamePage {
     reason: string
   ): void {
     this.surfaceContextGeneration = context.generation
-    if (context.has(INPUT_SURFACE_FIELD_DISPLAY)) {
-      this.gameDisplayId = context.displayId
-    } else {
-      this.gameDisplayId = -1
+    const previousDisplayId: number = this.gameDisplayId
+    this.gameDisplayId = context.has(INPUT_SURFACE_FIELD_DISPLAY) ? context.displayId : -1
+    if (this.gameDisplayId !== previousDisplayId || reason === 'display-change') {
+      this.supportedFixedRefreshRate = this.resolveFixedRefreshRate()
     }
 
     // generation标识窗口/坐标解释，单独Hz变化保持同代；Native镜像仍须接收最新显示元数据。
@@ -369,8 +390,14 @@ struct McGamePage {
       this.gate0TelemetryEnabled = testNapi.gate0InputTelemetryEnabled()
       this.gate0DisplayDensity = this.gate0TelemetryEnabled ? densityPixels : 0
       const hasRefresh: boolean = context.has(INPUT_SURFACE_FIELD_REFRESH_RATE)
-      const frameHintApplied: boolean = hasRefresh
-        ? testNapi.refreshOhosFrameRateHint(context.refreshRateHz) : false
+      let frameHintApplied: boolean = false
+      // 只有当前前端可以更新固定档位；已退役的页面仍可走原有调度提示路径。
+      if (this.sessionHost.accepts(this.frontendLease) && (hasRefresh || this.requestedFixedRefreshRate > 0)) {
+        frameHintApplied = testNapi.refreshOhosFrameRateHint(hasRefresh ? context.refreshRateHz : 0,
+          context.provisional ? 0 : this.supportedFixedRefreshRate)
+      } else if (hasRefresh) {
+        frameHintApplied = testNapi.refreshOhosFrameRateHint(context.refreshRateHz)
+      }
       // Native refresh、密度与能力维护已经按原入口执行，诊断去重不能提前结束它们。
       // 指纹只含本次真实值，不引入生产计时器；输入trace关闭仍保非心跳事实变化日志。
       if (reason !== 'window-heartbeat' || DiagnosticPolicy.inputTraceEnabled()) {
@@ -398,18 +425,42 @@ struct McGamePage {
     }
   }
 
+  /** 当前窗口的显示设备必须明确报告该档位，屏幕挪动或能力变化时重新核对。 */
+  private resolveFixedRefreshRate(): number {
+    const rate: number = this.requestedFixedRefreshRate
+    if (rate === 0 || this.gameDisplayId < 0 || deviceInfo.sdkApiVersion < 20) return 0
+    let gameDisplay: display.Display
+    try {
+      gameDisplay = display.getDisplayByIdSync(this.gameDisplayId)
+    } catch (_) {
+      // 旧系统的手机可能无法按 ID 查找；默认屏只有在 ID 一致时才代表当前游戏屏。
+      try { gameDisplay = display.getDefaultDisplaySync() } catch (_) { return 0 }
+    }
+    if (gameDisplay.id !== this.gameDisplayId) return 0
+    try {
+      const rates: number[] | undefined = gameDisplay.supportedRefreshRates
+      return rates !== undefined && rates.indexOf(rate) >= 0 ? rate : 0
+    } catch (_) {
+      return 0
+    }
+  }
+
   private applyOhosFrameRatePreference(): void {
     let fpsCap: number = 0
+    this.requestedFixedRefreshRate = 0
     try {
-      fpsCap = new PreferenceManager(this.context).ohosFrameRateCap
+      const preferences: PreferenceManager = new PreferenceManager(this.context)
+      fpsCap = preferences.ohosFrameRateCap
+      this.requestedFixedRefreshRate = preferences.ohosFixedRefreshRate
     } catch (e) {
       this.launchLogger_().warn(TAG, 'OHOS frame-rate preference read failed; using Auto', e, LOG_DOMAIN_LAUNCH)
     }
 
+    this.supportedFixedRefreshRate = this.resolveFixedRefreshRate()
     try {
       const accepted: boolean = testNapi.setOhosFrameRateCap(fpsCap)
       this.launchLogger_().info(TAG,
-        `OHOS scheduler cap injected: ${fpsCap === 0 ? 'auto' : fpsCap + ' Hz'} accepted=${accepted}`,
+        `OHOS scheduler cap injected: ${fpsCap === 0 ? 'auto' : fpsCap + ' Hz'} fixedRequested=${this.requestedFixedRefreshRate} accepted=${accepted}`,
         LOG_DOMAIN_LAUNCH)
     } catch (e) {
       this.launchLogger_().warn(TAG, 'OHOS frame-rate cap injection failed', e, LOG_DOMAIN_LAUNCH)
@@ -460,7 +511,27 @@ struct McGamePage {
     }
   }
 
+  /**
+   * 把 MC 的 Surface 声明为"渲染时不透明"：RS 会按无需与下层混合处理该自渲染图层。
+   * 官方开关是 API 22 起的 `setXComponentSurfaceConfig`，配置挂在 controller 上，
+   * 组件重建时会自行补发，所以只需在这里声明一次。
+   * 只作用于 MC 全屏自绘（内容整帧覆盖），不会给带透明区域的 Surface 用。
+   */
+  private applyOpaqueSurfaceConfig_(): void {
+    // compatibleSdkVersion 是 20，运行期低于 22 时接口不存在，保持原默认行为。
+    if (deviceInfo.sdkApiVersion < 22) return
+    try {
+      this.mcSurfaceController.setXComponentSurfaceConfig({ isOpaque: true })
+      this.launchLogger_().info(TAG,
+        `MC surface declared opaque (api=${deviceInfo.sdkApiVersion})`, LOG_DOMAIN_LAUNCH)
+    } catch (e) {
+      this.launchLogger_().warn(TAG, 'XComponent opaque surface config unavailable', e, LOG_DOMAIN_LAUNCH)
+    }
+  }
+
   async aboutToAppear(): Promise<void> {
+    // 必须在 XComponent 创建前声明：配置随 controller 带到 Surface，晚设会先按混合走一轮。
+    this.applyOpaqueSurfaceConfig_()
     this.applyToolTheme_()
     let activityId: number = AppStorage.get<number>('mcLaunchActivityId') ?? 0
     try { activityId = (this.getUIContext().getRouter().getParams() as McGameRouteParams).activityId ?? activityId }
@@ -470,7 +541,6 @@ struct McGamePage {
     const routeHost: GameSessionHost = this.sessionHost
     const routeEpoch: number = this.inputLifecycleEpoch
     let routeFrontend: GameFrontendLease | undefined = undefined
-    this.nativeGamepadRouteMessage = ''
     try {
       // 页面已有真实UIContent后、任何await及JVM启动前装配；窗口级生命周期由
       // GameAbility/Host退休，页面重建不取消正在等待用户选择的原请求。
@@ -482,6 +552,7 @@ struct McGamePage {
         this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
       },
       onMaintenance: (): void => {
+        this.flushDesktopKeyRetirements()
         this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
         // 几何由当前前端资源绑定提供，图形观测沿现有边界；输入核心维护已由宿主独立执行。
         try {
@@ -490,7 +561,11 @@ struct McGamePage {
         try { this.pollGraphicsFailure_() } catch (e) { this.notePageStepFault_('frontend', 'graphics-failure', e) }
         try { this.collectGraphicsMetrics_() } catch (e) { this.notePageStepFault_('frontend', 'graphics-metrics', e) }
       },
-      onLog: (): void => { if (this.showLog) this.refreshLog() }
+      onLog: (): void => {
+        // 复用本局运行时心跳；仅本次开发会话已绑定的私有游戏读取自己的观测请求。
+        ProductQaGame.pulsePrivate(this.sessionHost)
+        if (this.showLog) this.refreshLog()
+      }
       })
       routeFrontend = this.frontendLease
       this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
@@ -584,20 +659,24 @@ struct McGamePage {
   }
 
   /**
-   * 读取只报告原lease拥有的本局路由，不调用reconcile或读取设置。任何原scope失权都
-   * 不写当前显示；getter异常只让本次仍有效页面显示待确认，不影响Host必要维护。
-   * 读回后再核原host/lease/页面代，防止边缘同步回入换页后旧结果覆盖新前端提示。
+   * 只在可见游戏页读本局实际路线。读取可能同步换页，须再次核实资格才消费通知。
+   * 先记已尝试的路线再调用 Toast，避免重入、恢复前台或通知服务失败后每个维护周期重弹。
    */
   private refreshNativeGamepadRouteStatus_(host: GameSessionHost, frontend: GameFrontendLease | undefined,
     epoch: number): void {
     if (this.sessionHost!==host || this.frontendLease!==frontend || this.inputLifecycleEpoch!==epoch || !host.accepts(frontend)) return
-    let message: string = ''
+    if (!this.mcStarted || !this.pageVisible || !this.pageInputActive || this.navigatedAway) return
+    let route: NativeGamepadRouteDecision | undefined
     try {
-      const route: NativeGamepadRouteDecision | undefined = host.nativeGamepadRouteForFrontend(frontend)
-      message = nativeGamepadRouteStatusMessage(route)
-    } catch (_) { message = '本局手柄路线状态暂不可用，等待确认。' }
+      route = host.nativeGamepadRouteForFrontend(frontend, true, notifiedGamepadRoutes.get(host))
+    } catch (error) { this.notePageStepFault_('gamepad', 'route-read', error); return }
     if (this.sessionHost!==host || this.frontendLease!==frontend || this.inputLifecycleEpoch!==epoch || !host.accepts(frontend)) return
-    this.nativeGamepadRouteMessage = message
+    if (!this.mcStarted || !this.pageVisible || !this.pageInputActive || this.navigatedAway || route === undefined) return
+    const message: string = nativeGamepadRouteNotice(route, notifiedGamepadRoutes.get(host))
+    if (message.length === 0) return
+    notifiedGamepadRoutes.set(host, route.applied)
+    try { this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 }) }
+    catch (error) { this.notePageStepFault_('gamepad', 'route-toast', error) }
   }
 
   /**
@@ -1026,58 +1105,79 @@ struct McGamePage {
 
   build() {
     Stack() {
-      // MC 渲染区域
-      XComponent({
-        id: 'mc_game_surface',
-        type: XComponentType.SURFACE,
-        libraryname: 'entry'
+      // 桌面在渲染面接收键盘导航，工具按钮、编辑器和无障碍控件保留自己的焦点。
+      Stack() {
+        // MC 渲染区域
+        XComponent({
+          id: 'mc_game_surface',
+          type: XComponentType.SURFACE,
+          libraryname: 'entry',
+          controller: this.mcSurfaceController
+        })
+          .width('100%')
+          .height('100%')
+          // 显式钉住不透光纯黑底色：SURFACE 类型默认就是它，但底色一旦变成半透明，RS 会
+          // 直接禁用该层的硬件合成（官方《高效利用HWC的低功耗设计》"避免自渲染图层设置
+          // 透明度"）。MC 整屏自绘、画面全不透明，与底色没有叠加需求。
+          .backgroundColor('#FF000000')
+          // ⚠️ 这里曾用 `responseRegionList` 把鼠标从本组件的命中链剔除（FINGER/PEN 全区、
+          // MOUSE 推到组件外），想借 `xcomponentAndWebOnly` 那条"按组件类型判定转换"的能力
+          // 让左键回到 onMouse。**真机已否证，不要再加回来。**
+          //
+          // 证据（2026-08-19，`59JYD25815201311`）：属性确实生效了 —— `mirrorMove` 全程为 0
+          // （普查的 mirrorMove 打点在分类阶段、早于任何视角产出，归零意味着合成触摸包真的
+          // 不再抵达 XComponent），`AMCL_HITTEST` 在游戏态一次都没回调。但代价是
+          // **左键彻底消失**：`AMCL_MOUSEIN` 每一行的 actions[1]=Press、actions[2]=Release
+          // 全为 0，`btnArkui`/`btnMirror`/`btnNative` 三条通道整段缺席。
+          //
+          // 原因很清楚：本机左键的唯一载体就是那条合成触摸流。把鼠标从命中链剔除之后，
+          // 合成包没有了落点，而 ArkUI 并没有因此改为投递 onMouse ——
+          // ⇒ 左键的转换发生在 ArkUI ingress，与命中链无关；命中链只决定合成包送给谁。
+          // 剔除鼠标 = 既拿不到 onMouse 左键，又丢掉合成流，净损失。
+          // 决定性诊断：onTouchIntercept 运行在**命中测试阶段**，官方原文说它可"根据事件在
+          // 控件上按下时的位置、**输入源**等事件信息决定 HitTestMode"。它是唯一能在 ArkTS 侧
+          // 看清"鼠标左键合成出来的那一包，在命中测试时被框架标成什么来源"的接口。
+          //   · 若这里看到 source=Mouse ⇒ 合成发生在命中测试之后，剔除 MOUSE 能连合成流一起断；
+          //   · 若看到 source=TouchScreen/tool=Finger ⇒ 合成早于命中测试，热区改不了合成侧，
+          //     必须立刻停止在热区方向投入。
+          // 返回 Default 表示不改变行为，纯观测。频率极低（命中测试只在 DOWN 发生），
+          // 但仍然限流，避免异常情况下刷屏。
+          .onTouchIntercept((e: TouchEvent): HitTestMode => {
+            if (DiagnosticPolicy.inputTraceEnabled() && this.surfaceHitTestProbeCount < 40) {
+              this.surfaceHitTestProbeCount++
+              this.launchLogger_().info(TAG,
+                `AMCL_HITTEST xc src=${e.source} tool=${e.sourceTool} ` +
+                `grabbed=${this.isInGame ? 1 : 0}`,
+                LOG_DOMAIN_LAUNCH)
+            }
+            return HitTestMode.Default
+          })
+          .allowDrop(['general.file-uri', 'general.file'])
+          .onDrop((event: DragEvent): void => { this.receiveDesktopDrop(event) })
+          .onLoad(() => {
+            this.launchLogger_().info(TAG, 'XComponent onLoad', LOG_DOMAIN_LAUNCH)
+            this.statusText = '渲染面就绪，正在启动 MC...'
+            this.sessionHost.scheduleStart(this.frontendLease, (): Promise<void> => this.startMC())
+          })
+          .onDestroy(() => {
+            this.launchLogger_().info(TAG, 'XComponent destroyed', LOG_DOMAIN_LAUNCH)
+            // Native Surface回调立即退休真实目标；本UI回调撤销尚未触发的启动租约。
+            if (!this.mcStarted && this.frontendLease !== undefined) this.sessionHost.detach(this.frontendLease)
+          })
+      }
+      .id('mc-game-keyboard-surface')
+      .width('100%').height('100%')
+      .focusable(this.desktopKeyboardFocus_)
+      .defaultFocus(this.desktopKeyboardFocus_)
+      .focusOnTouch(this.desktopKeyboardFocus_)
+      .onFocus((): void => { this.rearmDesktopKeyRetirements() })
+      .onBlur((): void => { this.retireDesktopHeldKeys() })
+      .onKeyEvent((e: KeyEvent): boolean => {
+        if (!this.desktopKeyboardFocus_) return false
+        const acceptedNavigation: boolean = this.handleKeyEvent(e)
+        if (acceptedNavigation) e.stopPropagation()
+        return acceptedNavigation
       })
-        .width('100%')
-        .height('100%')
-        // ⚠️ 这里曾用 `responseRegionList` 把鼠标从本组件的命中链剔除（FINGER/PEN 全区、
-        // MOUSE 推到组件外），想借 `xcomponentAndWebOnly` 那条"按组件类型判定转换"的能力
-        // 让左键回到 onMouse。**真机已否证，不要再加回来。**
-        //
-        // 证据（2026-08-19，`59JYD25815201311`）：属性确实生效了 —— `mirrorMove` 全程为 0
-        // （普查的 mirrorMove 打点在分类阶段、早于任何视角产出，归零意味着合成触摸包真的
-        // 不再抵达 XComponent），`AMCL_HITTEST` 在游戏态一次都没回调。但代价是
-        // **左键彻底消失**：`AMCL_MOUSEIN` 每一行的 actions[1]=Press、actions[2]=Release
-        // 全为 0，`btnArkui`/`btnMirror`/`btnNative` 三条通道整段缺席。
-        //
-        // 原因很清楚：本机左键的唯一载体就是那条合成触摸流。把鼠标从命中链剔除之后，
-        // 合成包没有了落点，而 ArkUI 并没有因此改为投递 onMouse ——
-        // ⇒ 左键的转换发生在 ArkUI ingress，与命中链无关；命中链只决定合成包送给谁。
-        // 剔除鼠标 = 既拿不到 onMouse 左键，又丢掉合成流，净损失。
-        // 决定性诊断：onTouchIntercept 运行在**命中测试阶段**，官方原文说它可"根据事件在
-        // 控件上按下时的位置、**输入源**等事件信息决定 HitTestMode"。它是唯一能在 ArkTS 侧
-        // 看清"鼠标左键合成出来的那一包，在命中测试时被框架标成什么来源"的接口。
-        //   · 若这里看到 source=Mouse ⇒ 合成发生在命中测试之后，剔除 MOUSE 能连合成流一起断；
-        //   · 若看到 source=TouchScreen/tool=Finger ⇒ 合成早于命中测试，热区改不了合成侧，
-        //     必须立刻停止在热区方向投入。
-        // 返回 Default 表示不改变行为，纯观测。频率极低（命中测试只在 DOWN 发生），
-        // 但仍然限流，避免异常情况下刷屏。
-        .onTouchIntercept((e: TouchEvent): HitTestMode => {
-          if (DiagnosticPolicy.inputTraceEnabled() && this.surfaceHitTestProbeCount < 40) {
-            this.surfaceHitTestProbeCount++
-            this.launchLogger_().info(TAG,
-              `AMCL_HITTEST xc src=${e.source} tool=${e.sourceTool} ` +
-              `grabbed=${this.isInGame ? 1 : 0}`,
-              LOG_DOMAIN_LAUNCH)
-          }
-          return HitTestMode.Default
-        })
-        .allowDrop(['general.file-uri', 'general.file'])
-        .onDrop((event: DragEvent): void => { this.receiveDesktopDrop(event) })
-        .onLoad(() => {
-          this.launchLogger_().info(TAG, 'XComponent onLoad', LOG_DOMAIN_LAUNCH)
-          this.statusText = '渲染面就绪，正在启动 MC...'
-          this.sessionHost.scheduleStart(this.frontendLease, (): Promise<void> => this.startMC())
-        })
-        .onDestroy(() => {
-          this.launchLogger_().info(TAG, 'XComponent destroyed', LOG_DOMAIN_LAUNCH)
-          // Native Surface回调立即退休真实目标；本UI回调撤销尚未触发的启动租约。
-          if (!this.mcStarted && this.frontendLease !== undefined) this.sessionHost.detach(this.frontendLease)
-        })
 
       // 触摸事件主路径：XComponent native DispatchTouchEvent 回调 (render.cpp)
       // 备用路径：ArkTS onTouch 直接绑在 XComponent 上（文档说 libraryname 存在时不生效，
@@ -1115,17 +1215,18 @@ struct McGamePage {
           surfaceContextGeneration: this.surfaceContextGeneration,
           pageActive: this.pageInputActive,
           onInputPause: (paused: boolean): void => {
+            const returningFromTool: boolean = this.inputOverlayPaused && !paused
             this.inputOverlayPaused = paused
+            if (paused) this.retireDesktopHeldKeys()
             this.updatePageInputActive()
+            if (returningFromTool) this.rearmDesktopKeyRetirements()
+            if (this.desktopKeyboardFocus_ && returningFromTool && this.pageVisible && this.gameWindowReady &&
+                !this.resolutionFailed && !getImeActivationGate().isActive()) {
+              try { this.getUIContext().getFocusController().requestFocus('mc-game-keyboard-surface') }
+              catch (error) { this.launchLogger_().warn(TAG, '游戏工具关闭后恢复键盘焦点失败', error, LOG_DOMAIN_LAUNCH) }
+            }
           }
         })
-      }
-      // 路由提示只绘制原会话事实，不接管触摸/焦点；关闭前端观察仍不停止Host路由维护。
-      if (this.mcStarted && this.pageInputActive && this.nativeGamepadRouteMessage.length > 0) {
-        Text(this.nativeGamepadRouteMessage)
-          .fontSize(13).fontColor('#FFFFFF').padding(8).borderRadius(8)
-          .backgroundColor('#AA000000').constraintSize({maxWidth:420})
-          .align(Alignment.TopEnd).margin({right:12,top:12}).hitTestBehavior(HitTestMode.None)
       }
       if (this.mcStarted) {
         GameResolutionGuard({ toolTheme: this.toolTheme, onFailure: (): void => {
@@ -1147,23 +1248,25 @@ struct McGamePage {
     // （详见下方滚轮那段）。挂着的理由是它只是四条滚轮候选通道之一，谁赢由运行期仲裁决定。
     // 全部 try/catch 兜底，不影响触摸主路径。
     .focusable(true)
-    .defaultFocus(true)
+    .defaultFocus(!this.desktopKeyboardFocus_)
     .onFocus(() => {
       this.inputRuntime.resumeAfterLifecycle()
       this.surfaceFocused = true
       this.updatePageInputActive()
+      this.rearmDesktopKeyRetirements()
     })
     .onBlur(() => {
       // Window/page focus loss must close the formal desktop IME session; the
       // zero-sized DesktopPhysicalTextInput itself never requests ArkUI focus.
       this.surfaceFocused = false
+      this.retireDesktopHeldKeys()
       this.updatePageInputActive()
     })
-    // v3 手柄：focusScopeId(arrowStepOut=false) 屏蔽方向键 / 左摇杆走焦，
-    // 让方向输入只用于游戏内操作而不是在 UI 控件间跳焦点。
+    // 焦点组只防止走出游戏页，组内仍可走焦。原生手柄的窗口副本须在默认导航前消费。
     .focusScopeId('mc_game_focus', true, false)
+    .onKeyPreIme((e: KeyEvent): boolean => this.consumeNativeGamepadKey_(e))
     .onKeyEvent((e: KeyEvent) => {
-      this.handleKeyEvent(e)
+      if (!this.desktopKeyboardFocus_) this.handleKeyEvent(e)
     })
     .onMouse((e: MouseEvent) => {
       this.handleMouseEvent(e)
@@ -1465,11 +1568,147 @@ struct McGamePage {
     })
   }
 
-  private handleKeyEvent(e: KeyEvent): void {
+  /** 工具接管、走焦时只退休本页已经持有的实体键，不依赖后续真实UP。 */
+  private retireDesktopHeldKeys(): void {
+    if (!this.desktopKeyboardFocus_ || !this.mcStarted || this.heldKeys.ownerCount() === 0) return
+    const frontend: GameFrontendLease | undefined = this.frontendLease
+    if (!this.sessionHost.accepts(frontend)) return
+    this.reconcileNativeResetEpoch()
+    if (!this.sessionHost.accepts(frontend)) return
+    const owners = this.heldKeys.keyOwners()
+    let added: boolean = false
+    for (let i = 0; i < owners.length; i++) {
+      if (this.queueDesktopKeyRetirement(owners[i], frontend)) added = true
+    }
+    this.desktopKeyRetirementOnRefocus_ = this.desktopKeyRetirements_.length > 0
+    if (added) this.flushDesktopKeyRetirements()
+  }
+
+  /** 工具里可能已经松开原键，恢复本前端输入资格时补一次有界维护。 */
+  private rearmDesktopKeyRetirements(): void {
+    const frontend: GameFrontendLease | undefined = this.frontendLease
+    if (!this.desktopKeyRetirementOnRefocus_ || this.desktopKeyRetirementLease_ !== frontend ||
+        !this.sessionHost.accepts(frontend) || !this.pageInputActive || this.inputOverlayPaused) return
+    this.desktopKeyRetirementOnRefocus_ = false
+    if (this.desktopKeyRetirements_.length === 0 || this.desktopKeyRetirementAttempts_ > 0) return
+    this.desktopKeyRetirementAttempts_ = DESKTOP_KEY_RETIREMENT_ATTEMPTS
+    this.flushDesktopKeyRetirements()
+  }
+
+  /** 真UP失败和走焦共用同一原owner队列；重复失败不得给旧请求续维护预算。 */
+  private queueDesktopKeyRetirement(owner: PhysicalKeyOwner, frontend: GameFrontendLease | undefined): boolean {
+    if (!this.sessionHost.accepts(frontend) || !this.heldKeys.hasOwner(owner.deviceId, owner.keyCode)) return false
+    if (this.desktopKeyRetirementLease_ !== frontend) {
+      this.desktopKeyRetirementLease_ = frontend
+      this.desktopKeyRetirements_ = []
+      this.desktopKeyRetirementOnRefocus_ = false
+    }
+    if (this.desktopRetirementIndex(owner.deviceId, owner.keyCode) >= 0) return false
+    this.desktopKeyRetirements_.push(owner)
+    this.desktopKeyRetirementAttempts_ = DESKTOP_KEY_RETIREMENT_ATTEMPTS
+    return true
+  }
+
+  private desktopRetirementIndex(deviceId: number, keyCode: number): number {
+    return this.desktopKeyRetirements_.findIndex((owner: PhysicalKeyOwner): boolean =>
+      owner.deviceId === deviceId && owner.keyCode === keyCode)
+  }
+
+  /** 复用会话维护时钟有界重试。耗尽仍保留未确认的原持有，由真实UP继续收口。 */
+  private flushDesktopKeyRetirements(): void {
+    const frontend: GameFrontendLease | undefined = this.desktopKeyRetirementLease_
+    if (this.desktopKeyRetirements_.length === 0 || this.desktopKeyRetirementAttempts_ === 0 ||
+        !this.sessionHost.accepts(frontend)) return
+    this.reconcileNativeResetEpoch()
+    this.desktopKeyRetirementAttempts_--
+    for (let i = this.desktopKeyRetirements_.length - 1; i >= 0; i--) {
+      if (!this.sessionHost.accepts(frontend)) return
+      this.tryRetireDesktopKey(i, frontend)
+    }
+    if (this.desktopKeyRetirements_.length > 0 && this.desktopKeyRetirementAttempts_ === 0) {
+      this.launchLogger_().warn(TAG, '桌面松键暂未确认，等待原实体键边沿', undefined, LOG_DOMAIN_LAUNCH)
+    }
+  }
+
+  private desktopUpConfirmed(outcome: number): boolean {
+    return outcome === PHYSICAL_KEY_EMITTED || outcome === PHYSICAL_KEY_HANDLED_NO_FINAL_EDGE ||
+      outcome === PHYSICAL_KEY_OWNERLESS_UP || outcome === PHYSICAL_KEY_TYPED_ROUTE_HANDLED
+  }
+
+  /** 只有接纳或确认无owner可清页缓存。错误/拒绝保留原键等待回读或重试。 */
+  private tryRetireDesktopKey(index: number, frontend: GameFrontendLease | undefined, lockState: number = 0): boolean {
+    if (frontend !== this.desktopKeyRetirementLease_ || !this.sessionHost.accepts(frontend)) return false
+    const owner = this.desktopKeyRetirements_[index]
+    if (!this.heldKeys.hasOwner(owner.deviceId, owner.keyCode)) {
+      this.desktopKeyRetirements_.splice(index, 1)
+      return true
+    }
+    // 只扣本次释放，其他设备仍持有同修饰键时保留其位；维护没有平台锁存快照。
+    const remaining: Set<number> = this.heldKeys.heldKeysAfterRelease(owner.deviceId, owner.keyCode)
+    let outcome: number
+    try {
+      outcome = testNapi.physicalKeyTransaction(owner.keyCode, 0, 0, SHADOW_KEY_UP,
+        composeGlfwMods(remaining, lockState), lockState, owner.deviceId, glfwKeyFromOhos(owner.keyCode),
+        GLFW_RELEASE, true)
+    } catch (_) {
+      return false
+    }
+    if (!this.sessionHost.accepts(frontend) || this.desktopKeyRetirements_[index] !== owner) return false
+    if (!this.desktopUpConfirmed(outcome)) return false
+    this.heldKeys.noteSyntheticRelease(owner.deviceId, owner.keyCode)
+    this.desktopKeyRetirements_.splice(index, 1)
+    return true
+  }
+
+  /** 新Down必须先收口旧同键和会污染修饰态的旧持有。其它真实UP不经过这里。 */
+  private resolveDesktopRetirementsBeforeDown(deviceId: number, keyCode: number, lockState: number,
+    frontend: GameFrontendLease | undefined): boolean {
+    let resolved: boolean = true
+    const held: Set<number> = new Set<number>()
+    const lockedMods: number = composeGlfwMods(held, lockState)
+    for (let i = this.desktopKeyRetirements_.length - 1; i >= 0; i--) {
+      if (!this.sessionHost.accepts(frontend)) return false
+      const owner = this.desktopKeyRetirements_[i]
+      // 只算held贡献，排除lockState本身携带的真实锁存位。
+      held.add(owner.keyCode)
+      const modifier: boolean = composeGlfwMods(held, lockState) !== lockedMods
+      held.clear()
+      if ((modifier || (owner.deviceId === deviceId && owner.keyCode === keyCode)) &&
+          !this.tryRetireDesktopKey(i, frontend, lockState)) resolved = false
+    }
+    return resolved && this.sessionHost.accepts(frontend)
+  }
+
+  /** Game Controller Kit 已直接接收原生手柄输入。这里只消费发回 ArkUI 的同一按键，
+   * 不转发给游戏，避免方向键移动虚拟键焦点或确认键激活其 onClick。普通键盘、读屏点击、
+   * 启动器编辑器及映射模式继续使用原分发。取实际映射开关，切换尚未完成时不截断旧路线。 */
+  private consumeNativeGamepadKey_(event: KeyEvent): boolean {
+    // 聊天和文本输入条只申请软输入，不经过编辑器的 onInputPause；显示期间让方向键到达输入条。
+    if (!this.mcStarted || !this.pageInputActive || this.inputOverlayPaused || isEntrySoftTextInputRequested() ||
+        !this.sessionHost.accepts(this.frontendLease) || this.gamepad.isMappedOutputEnabled() ||
+        !ProductInputProfile.current().acceptDirectTouchInGame) return false
+    // 部分手柄将导航/确认报告成键盘口令。音量、媒体等系统键始终沿原窗口分发。
+    const code = event.keyCode as number
+    if (!isGamepadKey(code) && code !== OHOS_DPAD_CENTER && code !== OHOS_ENTER &&
+        code !== OHOS_NUMPAD_ENTER && code !== OHOS_SPACE && code !== OHOS_TAB) return false
+    if (event.keySource !== KeySource.JOYSTICK) {
+      // 方向键与键盘共码。仅用本次事件的有效连接补证纯手柄；组合设备和未知 ID 继续交给 ArkUI。
+      if (!(event.deviceId > 0)) return false
+      const monitor = getInputDeviceMonitor()
+      const connection = monitor.captureConnection(event.deviceId, true, false).connection
+      const sources = connection === undefined ? undefined : monitor.sourcesForConnection(connection)
+      if (sources === undefined || sources.includes('keyboard') ||
+          (!sources.includes('joystick') && !sources.includes('gamepad'))) return false
+    }
+    event.stopPropagation()
+    return true
+  }
+
+  private handleKeyEvent(e: KeyEvent): boolean {
     // 旧前端的晚到事件不得借同局仍活跃的来源/新窗口产生输入。
     const originalFrontend: GameFrontendLease | undefined = this.frontendLease
-    if (!this.sessionHost.accepts(originalFrontend)) return
-    if (!this.mcStarted || !this.pageInputActive) return
+    if (!this.sessionHost.accepts(originalFrontend)) return false
+    if (!this.mcStarted || !this.pageInputActive) return false
     try {
       // 平台键事实先冻结，随后复位/详情探针的同步回入不能把原事件解释成新连接输入。
       const ohosKey = (e.keyCode as number) ?? 0
@@ -1486,7 +1725,7 @@ struct McGamePage {
       const originalUnicode: number | undefined = e.unicode
       // 手柄按键也必须先对账；不能在分流早退后让旧映射持有活到250ms心跳。
       this.reconcileNativeResetEpoch()
-      if (!this.sessionHost.accepts(originalFrontend)) return
+      if (!this.sessionHost.accepts(originalFrontend)) return false
 
       // v3 手柄：先看是不是手柄按键，是就交给 GamepadManager 归一化。
       //
@@ -1497,10 +1736,10 @@ struct McGamePage {
       if (isMappedKey) {
         if (isDown || isUp) {
           this.probeGamepadDeviceIdentity(e)
-          if (!this.sessionHost.accepts(originalFrontend) || mappedCapture?.connection === undefined) return
+          if (!this.sessionHost.accepts(originalFrontend) || mappedCapture?.connection === undefined) return false
           this.gamepad.handleButtonForConnection(mappedCapture.connection, ohosKey, isDown)
         }
-        return
+        return false
       }
 
       // Native blur/overflow may have reset authoritative held state without
@@ -1511,19 +1750,29 @@ struct McGamePage {
       // 同一个键会各自持有 owner，先抬起的那把不会提前释放聚合键；拔掉某把键盘时也只
       // 释放它自己的 owner。归一化到非负整数，拿不到时落 0，native trace 计 missing。
       const deviceId = normalizeDeviceId(rawDeviceId)
+      if (this.desktopKeyboardFocus_ && this.desktopKeyRetirementLease_ === originalFrontend &&
+          this.desktopKeyRetirements_.length > 0) {
+        if (isUp) {
+          const prior = this.desktopRetirementIndex(deviceId, ohosKey)
+          if (prior >= 0) {
+            this.tryRetireDesktopKey(prior, originalFrontend, originalLockState)
+            return false
+          }
+        } else if (isDown &&
+            !this.resolveDesktopRetirementsBeforeDown(deviceId, ohosKey, originalLockState, originalFrontend)) {
+          return false
+        }
+      }
       // 锁存状态只能来自平台。三个字段都缺失时 composeOhosLockState 返回 0（未知），
       // native 计 MissingField::LockState，GLFW mods 才退回"按住即锁定"的显式降级。
       const lockState = originalLockState
+      const desktopOwnedUp: boolean = isUp && this.desktopKeyboardFocus_ && this.heldKeys.hasOwner(deviceId, ohosKey)
 
       // repeat 分类必须与 core 的 owner 维度一致：同一 (device,key) 的第二次 Down 是
       // 平台自动重复，不新增 owner；不同设备的同键 Down 是独立的首次按下。
       //
-      // 为什么先记账再发 native（顺序有意）：mods 快照必须包含本次边沿的效果，
-      // 否则按下 Shift 的那一帧自身不带 SHIFT 位。代价是 native 侧若拒收
-      // （surface gate 关闭、physicalKeyTransaction 抛异常被下面 catch 吞掉），
-      // 页面会比 core 多持有一个 held。恢复路径唯一：core 的 reset epoch 变化时
-      // reconcileNativeResetEpoch() 清空缓存；页面 hide/dispose 也会清。期间该键的
-      // 下一个 Down 会被判 Repeat，core 按 ownerless REPEAT 记诊断并丢弃，不会卡键。
+      // Down先记账，让本次Shift Down自己带修饰位；桌面UP在真实事务确认前保留原owner，
+      // 只用扣除本owner后的快照发布mods。若失败，沿同一前端的松键队列继续收口。
       //
       // 未持有的 UP 仍然照常上报：native core 与 legacy edge router 各自记录
       // ownerless 诊断（§11 发布门禁第 1 条：不允许 silent drop），页面状态不变。
@@ -1545,16 +1794,19 @@ struct McGamePage {
             LOG_DOMAIN_LAUNCH)
         }
       } else if (isUp) {
-        this.heldKeys.noteUp(deviceId, ohosKey)
+        if (this.desktopKeyboardFocus_ && this.heldKeys.wasSyntheticallyReleased(deviceId, ohosKey)) return false
+        if (!desktopOwnedUp) this.heldKeys.noteUp(deviceId, ohosKey)
       }
-      // 修饰键取跨设备聚合的 held 快照 + 平台锁存位。锁存位不从 held 推断。
-      const mods = composeGlfwMods(this.heldKeys.heldKeys(), lockState)
+      // 修饰键取跨设备聚合的held快照+平台锁存位；桌面已持有UP先算松开效果，再等真实回执。
+      const heldForMods: Set<number> = desktopOwnedUp
+        ? this.heldKeys.heldKeysAfterRelease(deviceId, ohosKey) : this.heldKeys.heldKeys()
+      const mods = composeGlfwMods(heldForMods, lockState)
       // 两个输出平面的动作码由同一次判定产出，**必须同分类**：typed 判 REPEAT 而 legacy
       // 判 PRESS 会让 legacy edge router 多拿一个 owner 而 typed 不会，两侧从此永久不等，
       // 且不变量自检抓不到（各自都自洽）。契约与穷举见
       // `gamecontrol/PhysicalKeyEdge.ets` 与 `PhysicalKeyEdge.test.ets`。
       const edge: PhysicalKeyEdgeActions = decidePhysicalKeyEdge(isDown, isUp, downKind)
-      if (!edge.shouldPublish) return
+      if (!edge.shouldPublish) return false
 
       const glfwKey = glfwKeyFromOhos(ohosKey)
       const shadowAction = edge.shadowAction
@@ -1563,16 +1815,28 @@ struct McGamePage {
       // routing. Unknown GLFW mappings still publish raw typed identity and
       // are finalized as unmapped rather than disappearing.
       // hardwareScan / hidUsage 保持 0：ArkUI KeyEvent 不暴露这两项，属于 P0-7 未解部分。
-      const physicalOutcome: number = testNapi.physicalKeyTransaction(
-        ohosKey, 0, 0, shadowAction, mods, lockState, deviceId, glfwKey, glfwAction)
+      let physicalOutcome: number
+      try {
+        // 真UP首次仍须走正常surface准入；只有未确认后续重试可以穿越几何暂挂释放原键。
+        physicalOutcome = testNapi.physicalKeyTransaction(
+          ohosKey, 0, 0, shadowAction, mods, lockState, deviceId, glfwKey, glfwAction)
+      } catch (error) {
+        if (desktopOwnedUp) this.queueDesktopKeyRetirement(new PhysicalKeyOwner(deviceId, ohosKey), originalFrontend)
+        throw error as Error
+      }
+      if (desktopOwnedUp) {
+        if (!this.sessionHost.accepts(originalFrontend)) return false
+        if (this.desktopUpConfirmed(physicalOutcome)) this.heldKeys.noteUp(deviceId, ohosKey)
+        else this.queueDesktopKeyRetirement(new PhysicalKeyOwner(deviceId, ohosKey), originalFrontend)
+      }
       const nativeOwnsDown: boolean =
         physicalOutcome === PHYSICAL_KEY_EMITTED ||
         physicalOutcome === PHYSICAL_KEY_HANDLED_NO_FINAL_EDGE ||
         physicalOutcome === PHYSICAL_KEY_DUPLICATE_DOWN ||
         physicalOutcome === PHYSICAL_KEY_TYPED_ROUTE_HANDLED
-      if (isDown && !nativeOwnsDown) {
-        // 页面先记账是为了让 Shift 本次 Down 自身带 mods；native 明确拒收后必须撤销，
-        // 否则后续平台 repeat 会永久被误分成 ownerless REPEAT。
+      if (isDown && !nativeOwnsDown && (!this.desktopKeyboardFocus_ ||
+          downKind === HeldKeyDownKind.FirstDown || physicalOutcome === PHYSICAL_KEY_OWNERLESS_REPEAT)) {
+        // 桌面只回滚这次新建的owner，或Native证实没有owner的重复；已有持有不能随拒收丢失。
         this.heldKeys.noteUp(deviceId, ohosKey)
       }
       if (!nativeOwnsDown && physicalOutcome !== PHYSICAL_KEY_EMITTED &&
@@ -1603,8 +1867,13 @@ struct McGamePage {
         try { testNapi.sendCharEvent(cp) } catch (e2) { /* ignore */ }
       }
 
+      // 只有本次已由游戏接管的导航键才阻止 ArkUI 默认走焦或激活；拒收保留系统行为。
+      return nativeOwnsDown && (glfwKey === GLFW_KEY_TAB || glfwKey === GLFW_KEY_ENTER ||
+        glfwKey === GLFW_KEY_KP_ENTER || glfwKey === GLFW_KEY_SPACE || glfwKey === GLFW_KEY_LEFT ||
+        glfwKey === GLFW_KEY_RIGHT || glfwKey === GLFW_KEY_UP || glfwKey === GLFW_KEY_DOWN)
     } catch (err) {
       this.launchLogger_().warn(TAG, 'handleKeyEvent failed', err, LOG_DOMAIN_LAUNCH)
+      return false
     }
   }
 
@@ -1735,7 +2004,7 @@ struct McGamePage {
           // 合法性判定（含 None 与未知新位）由 native 统一 fail-closed，避免两侧各写一份。
           testNapi.physicalMouseButtonTransaction(
             deviceId, buttonMask, action, 0, deviceClass as number,
-            monotonicTimeNs)
+            monotonicTimeNs, e.x, e.y)
         } catch (e2) {
           // 物理按钮不能回退到普通 sendMouseEvent；那会绕过 source 仲裁并可能双发。
         }
@@ -2050,7 +2319,9 @@ struct McGamePage {
   private handleFocusAxisEvent(e: FocusAxisEvent): void {
     const originalFrontend: GameFrontendLease | undefined = this.frontendLease
     if (!this.sessionHost.accepts(originalFrontend)) return
-    if (!this.mcStarted) return
+    // 原生路线直接从 Game Controller Kit 采轴，跳过同一事件的窗口副本。
+    // 等到旧映射按键实际释放后才停收，避免切换尚未完成时丢失映射输入。
+    if (!this.mcStarted || !this.gamepad.isMappedOutputEnabled()) return
     try {
       // BaseEvent.deviceId可缺席且默认0，不能据inventory有0猜原hardware身份。
       // 当前新端口将缺身份/歧义0保持Pending；不自动借旧compat0绕过连接围栏。
@@ -2724,10 +2995,12 @@ struct McGamePage {
       if (!ProductInputProfile.selection().isolatedGameProcess && processLaunch === undefined) {
         throw new Error('共享游戏进程缺少启动预约，请从启动器重新发起')
       }
+      // 只有本机手机共享会话授权Native正常退出交接，其余产品继续使用原进程路线。
       if (processLaunch !== undefined) processLaunch.commitNativeDispatch()
       let rc = testNapi.mcLaunchWithProfileV2(
         profile.filesDir, profile.gameDir, profile.jdkVersion, profile.xmxMb,
-        profile.mainClass, profile.classpath, profile.mcArgs, profile.extraJvmArgs
+        profile.mainClass, profile.classpath, profile.mcArgs, profile.extraJvmArgs,
+        processLaunch !== undefined && phoneGameRestartApi() > 0
       )
       if (rc !== 0) {
         if (this.runtimeSlotLease_.length > 0) {
@@ -2769,9 +3042,8 @@ struct McGamePage {
       this.statusText = 'MC 运行中'
       this.launchLogger_().info(TAG, 'MC launched successfully', LOG_DOMAIN_LAUNCH)
 
-      // 写 SessionMarker：MC 一旦因 System.exit 触发 SIGABRT 杀掉整个 app，
-      // 这个标记会在下次冷启动时被 EntryAbility 读出来，给 Index 显示
-      // 错误 Sheet（v6 起从简单 toast 升级为带 stack trace 的结构化 Sheet）。
+      // 写 SessionMarker：冷启动通过它将上一局与正常退出回执或真正的故障证据配对，
+      // 由恢复流程决定是否需要显示诊断。
       // mcDir 用于冷启动后定位 mc_output.log；版本隔离场景下必传。
       // 详见 SessionMarker.ets 文件头注释 + docs/archive/jdk21-awt-headless-journey-202605.md §5.2。
       // 传入上面开账本用的同一个 sessionStartedAt（活动账本 · L3）：

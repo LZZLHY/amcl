@@ -32,7 +32,6 @@ import { getInputSourceRegistry } from 'gamecontrol';
 import { setSystemNativeBridge, SystemNativeBridge } from 'feature_system';
 import { GameStorage, PreferenceManager } from 'feature_system';
 import { ModAudioRuntime } from './ModAudioRuntime';
-import { NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, NATIVE_GAMEPAD_CAPTURE_READY_KEY } from './NativeGamepadRoutePolicy';
 
 class EntryRelayNativeBridge implements RelayNativeBridge {
   configure(base: string, ticket: string, key: string, proof: boolean, expires: number): void {
@@ -247,6 +246,10 @@ class EntrySystemNativeBridge implements SystemNativeBridge {
     if (!DiagnosticPolicy.hasTestHooks()) return 'ERR: developer test hooks unavailable';
     return testNapi.probeNativePath(probeDir);
   }
+  /** 存储目录确认属于所有产品，直接使用独占临时文件探针。 */
+  verifyGameDirectoryWritable(directory: string): boolean {
+    return testNapi.verifyGameDirectoryWritable(directory);
+  }
 }
 
 /**
@@ -365,12 +368,5 @@ export async function initializeGameProcess(context: common.UIAbilityContext,
   DownloadManager.instance().initializeCaBundle(context);
   const preferences: PreferenceManager = new PreferenceManager(context);
   GameStorage.setPhoneExternalDir(preferences.phoneExternalDir);
-  const nativePad: boolean = preferences.desktopNativeGamepad;
-  const padReady: boolean = testNapi.desktopSetGamepadNativeMode(nativePad);
-  // 只公布本局冻结的请求和平台采集事实。SetNativeMode(false)的true只证明关闭成功，
-  // 不能算采集Ready；后续来源政策还须核独立输入ABI，不能在此提前关闭键鼠映射。
-  AppStorage.setOrCreate<boolean>(NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, nativePad);
-  AppStorage.setOrCreate<boolean>(NATIVE_GAMEPAD_CAPTURE_READY_KEY, nativePad && padReady);
-  if (nativePad && !padReady) AppLogger.warn('DesktopGamepad', 'Native gamepad unavailable; launcher mapping retained', undefined, LOG_DOMAIN_LAUNCH);
   getInputDeviceMonitor().ensureStarted();
 }

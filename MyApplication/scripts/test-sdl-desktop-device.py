@@ -17,7 +17,8 @@ spec.loader.exec_module(extract)
 patched = extract.patch_sources()['SDL_amcldesktop.c']
 signature = 'static const AmclDesktopHostV1 *DesktopHost(void)'
 assert patched.count(signature) == 1
-production = extract.block(patched, patched.index(signature))
+# 设备判定也由全屏和桌面光标共用。把真实 helper 一并编入，继续验证固定设备和晚发布宿主。
+production = extract.function(patched, 'OPENHARMONY_IsDesktopDevice') + '\n' + extract.block(patched, patched.index(signature))
 fixture = r'''
 #include "@ROOT@/entry/src/main/cpp/platform/desktop_host_api.h"
 #include <atomic>
@@ -75,7 +76,7 @@ with temporary_directory(prefix='sdl-desktop-device-') as temporary:
     for device in ('tablet','phone','default','null','2in1'):
         subprocess.run([str(binary),device],check=True,timeout=10)
     for old,new,device,expected in [
-        ('if (kind != 1) return NULL;','/* compiled negative: omitted device gate */','tablet','non-desktop caused library load'),
+        ('if (!OPENHARMONY_IsDesktopDevice()) return NULL;','/* compiled negative: omitted device gate */','tablet','non-desktop caused library load'),
         ('const AmclDesktopHostV1 *api = resolve ? resolve() : NULL;',
          'static const AmclDesktopHostV1 *api = resolve ? resolve() : NULL;','2in1','late published host lost')]:
         assert production.count(old)==1

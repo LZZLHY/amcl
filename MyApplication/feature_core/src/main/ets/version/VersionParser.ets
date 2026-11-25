@@ -172,6 +172,11 @@ export class VersionParser {
       return null
     }
 
+    return VersionParser.vanillaVersionFromMetadata(obj);
+  }
+
+  /** 调用方已持有同一份清单时直接解析；要求确证基础版本可禁用实例 id 兜底。 */
+  static vanillaVersionFromMetadata(obj: Record<string, Object>, allowInstanceId: boolean = true): string | null {
     // 1. clientVersion
     let cv = obj['clientVersion']
     if (typeof cv === 'string' && cv.length > 0) return cv
@@ -209,7 +214,7 @@ export class VersionParser {
 
     // 5. id（json 内容里的 id，下载时写入；改文件夹名一般不改 json 内容）
     let id = obj['id']
-    if (typeof id === 'string' && id.length > 0) return id
+    if (allowInstanceId && typeof id === 'string' && id.length > 0) return id
 
     return null
   }

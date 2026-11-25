@@ -103,7 +103,17 @@ diff --git a/src/java/org/lwjgl/input/Mouse.java b/src/java/org/lwjgl/input/Mous
 index 9c32bc6..d6fae61 100644
 --- a/src/java/org/lwjgl/input/Mouse.java
 +++ b/src/java/org/lwjgl/input/Mouse.java
-@@ -249,6 +249,8 @@ public class Mouse {
+@@ -225,6 +225,9 @@ public class Mouse {
+ 				implementation.setCursorPosition(x, y);
+ 			}
+ 			else {
++				// AMCL 的菜单虚拟指针可设位；自定义系统光标的能力位继续按平台真实能力返回。
++				if (!isGrabbed())
++					Display.amclSetMenuCursor(implementation, new_x, new_y);
+ 				grab_x = new_x;
+ 				grab_y = new_y;
+ 			}
+@@ -249,6 +252,8 @@ public class Mouse {
  
  	private static void resetMouse() {
  		dx = dy = dwheel = 0;
@@ -112,7 +122,7 @@ index 9c32bc6..d6fae61 100644
  		readBuffer.position(readBuffer.limit());
  	}
  
-@@ -349,10 +351,14 @@ public class Mouse {
+@@ -349,10 +354,14 @@ public class Mouse {
  		synchronized (OpenGLPackageAccess.global_lock) {
  			if (!created) throw new IllegalStateException("Mouse must be created before you can poll it");
  			implementation.pollMouse(coord_buffer, buttons);
@@ -127,7 +137,7 @@ index 9c32bc6..d6fae61 100644
  			/* The wheel is always relative */
  			int poll_dwheel = coord_buffer.get(2);
  
-@@ -397,8 +403,12 @@ public class Mouse {
+@@ -397,8 +406,12 @@ public class Mouse {
  			if (!created) throw new IllegalStateException("Mouse must be created before you can poll the button state");
  			if (button >= buttonCount || button < 0)
  				return false;
@@ -142,7 +152,7 @@ index 9c32bc6..d6fae61 100644
  		}
  	}
  
-@@ -442,6 +452,11 @@ public class Mouse {
+@@ -442,6 +455,11 @@ public class Mouse {
  	public static boolean next() {
  		synchronized (OpenGLPackageAccess.global_lock) {
  			if (!created) throw new IllegalStateException("Mouse must be created before you can read events");
@@ -154,7 +164,7 @@ index 9c32bc6..d6fae61 100644
  			if (readBuffer.hasRemaining()) {
  				eventButton = readBuffer.get();
  				eventState = readBuffer.get() != 0;
-@@ -468,6 +483,8 @@ public class Mouse {
+@@ -468,6 +486,8 @@ public class Mouse {
  				}
  				event_dwheel = readBuffer.getInt();
  				event_nanos = readBuffer.getLong();
@@ -176,10 +186,15 @@ index 8b0a55f..05365c8 100644
  			case LWJGLUtil.PLATFORM_WINDOWS:
  				return new WindowsDisplay();
  			case LWJGLUtil.PLATFORM_MACOSX:
-@@ -1036,6 +1036,76 @@ public final class Display {
+@@ -1036,6 +1036,81 @@ public final class Display {
  		update();
  	}
  
++	/** 只向当前 AMCL 鼠标实现转交菜单设位；调用方已持有真实 Mouse 的 GlobalLock。 */
++	public static void amclSetMenuCursor(InputImplementation source, int x, int y) {
++		if (source instanceof AMCLDisplay) source.setCursorPosition(x, y);
++	}
++
 +	/** 只识别本适配器；第三方/AWT等实现保留其原上游创建和失败语义。 */
 +	public static boolean amclKeyboardManaged(InputImplementation source) {
 +		synchronized ( GlobalLock.lock ) {

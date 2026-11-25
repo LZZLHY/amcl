@@ -1,4 +1,4 @@
-import { DistributionPolicy, DiagnosticPolicy } from 'commons';
+import { DistributionPolicy } from 'commons';
 import { SideloadDelivery } from './SideloadUpdateModels';
 import { GitHubUpdateAssetResolver } from './GitHubUpdateAssetResolver';
 import { AppUpdatePolicy } from './AppUpdatePolicy';
@@ -70,6 +70,14 @@ export interface UpdateCheckResult {
 }
 
 export class UpdateChecker {
+  /** 一次 BMS 读取同时绑定版本名及版本码；失败、缺字段与异常版本均不作为 Skill 安装身份。 */
+  static installedIdentity(): InstalledUpdateIdentity | undefined {
+    try {
+      const info=bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+      if (typeof info.versionName !== 'string' || !info.versionName.trim() || !Number.isSafeInteger(info.versionCode) || info.versionCode<=0) return undefined;
+      return {name:info.versionName,code:info.versionCode};
+    } catch (_) { return undefined; }
+  }
   /** 红点延后绑定资产身份，镜像健康变化不制造新版本提示。 */
   static targetKey(manifest: UpdateManifest, product: string): string {
     const name=GitHubUpdateAssetResolver.assetProduct(product);
@@ -124,8 +132,8 @@ export class UpdateChecker {
   }
 
   /** 页面、自动检查和手动包预检共享准入，防止 UI 仍只按数字过滤掉预览版。 */
-  static canInstall(manifest: UpdateManifest, channel: string = 'stable'): boolean {
-    return AppUpdatePolicy.canInstall(UpdateChecker.currentVersionCode(),UpdateChecker.currentVersionName(),
+  static canInstall(manifest: UpdateManifest, channel: string = 'stable', identity?: InstalledUpdateIdentity): boolean {
+    return AppUpdatePolicy.canInstall(identity?.code ?? UpdateChecker.currentVersionCode(),identity?.name ?? UpdateChecker.currentVersionName(),
       manifest.versionCode,manifest.versionName,channel);
   }
 
@@ -295,7 +303,6 @@ export class UpdateChecker {
     const candidates: string[] = production ? [officialUrl].concat(AppUpdatePolicy.urls(product,channel)) : urls.slice();
     // 老 update.json 只作稳定通道的末级兼容入口，预览检查不能退回稳定推荐。
     if (production && channel === 'stable') for (const url of UPDATE_MANIFEST_URLS) candidates.push(url);
-    const fixture = DiagnosticPolicy.hasTestHooks() && urls[0].startsWith('https://amcl.lovedhy.cn/uploads/self-update-tests/');
     let m: UpdateManifest | null = null;
     let lastError = '';
     for (const source of candidates) {
@@ -306,13 +313,13 @@ export class UpdateChecker {
         const body = await DownloadManager.instance().fetchText(source, [], 15, 8191);
         const parsed = UpdateChecker.parseManifest(body);
         if (parsed === null || !AppUpdatePolicy.validVersion(parsed.versionName) || parsed.tag !== 'v' + parsed.versionName ||
-          (!fixture && !AppUpdatePolicy.accepts(parsed.tag,parsed.updateChannel,parsed.prerelease,channel))) {
+          !AppUpdatePolicy.accepts(parsed.tag,parsed.updateChannel,parsed.prerelease,channel)) {
           lastError = '更新信息解析失败';
           continue;
         }
         // 当前头明确“没有更新”时不去静态源挑更高版本，兼容旧稳定清单尚无收据。
         // 静态快照则无论是否可更新都要求完整收据，缺收据的旧版不能再截断后源。
-        if (!fixture && (!currentHead || UpdateChecker.canInstall(parsed,channel))) {
+        if (!currentHead || UpdateChecker.canInstall(parsed,channel)) {
           try { GitHubUpdateAssetResolver.fromDelivery(parsed, product); }
           catch (_) {
             lastError = '新版本资源正在同步，准备完成后会提示更新';
@@ -363,3 +370,4 @@ export class UpdateChecker {
     return manifest;
   }
 }
+export interface InstalledUpdateIdentity { name:string; code:number; }

@@ -77,6 +77,7 @@ struct State {
     uint64_t publishedSurfaceContextGeneration = 0;
     bool surfaceContextMetadataPending = false; // 同input generation的Hz需提交，不能被generation缓存吞掉
     uint64_t textSessionId = 0;
+    uint64_t textDemandIdentity = 0; // 仅与非零且匹配的textSessionId一起读取。
     bool resetLatched = false;
     uint64_t resetAuthorityEpoch = 0u;
 };
@@ -516,12 +517,13 @@ bool ShouldLogPowerOfTwo(uint64_t count) {
 }
 
 AmclInputEvent TextSessionEvent(uint64_t textSessionId, uint32_t change,
-                                uint32_t reason) {
+                                uint32_t reason, uint64_t demandIdentity = 0) {
     AmclInputEvent event = Event(
         AMCL_INPUT_EVENT_TEXT_SESSION_CHANGED, AMCL_INPUT_SOURCE_IME);
     event.payload.textSession.textSessionId = textSessionId;
     event.payload.textSession.change = change;
     event.payload.textSession.reason = reason;
+    event.payload.textSession.textDemandIdentity = demandIdentity;
     return event;
 }
 
@@ -537,7 +539,7 @@ OrphanTextAbort AbortOrphanTextSessionLocked() {
     }
     const AmclInputEvent abort = TextSessionEvent(
         orphan, AMCL_INPUT_TEXT_SESSION_ABORTED,
-        AMCL_INPUT_TEXT_SESSION_REASON_RESET);
+        AMCL_INPUT_TEXT_SESSION_REASON_RESET, g.textDemandIdentity);
     const int32_t result = g.api->submitEvent(&abort);
     const shadow::DrainResult drained = RecordAndDrainLocked(result);
     if (IsEpochFailure(result) || drained.staleConsumer) {
@@ -1365,19 +1367,19 @@ void PlatformInputRequestReset(uint32_t reason) {
     if (IsAccepted(result)) g.textSessionId = 0u;
 }
 
-bool PlatformInputTextSessionBegin(uint64_t textSessionId) {
+bool PlatformInputTextSessionBegin(uint64_t textSessionId, uint64_t textDemandIdentity) {
     if (textSessionId == 0u || !PlatformInputTextSessionSupported()) {
         return false;
     }
     std::lock_guard<std::mutex> lock(g.mutex);
     if (!g.api || !g.sessionActive || !g.focused || !g.surfaceActive ||
-        (g.textSessionId != 0u && g.textSessionId != textSessionId)) {
+        (g.textSessionId != 0u && (g.textSessionId != textSessionId || g.textDemandIdentity != textDemandIdentity))) {
         return false;
     }
     TextRejection rejection = TextRejection::kNone;
     int32_t result = SubmitTextCommandLocked(
         TextSessionEvent(textSessionId, AMCL_INPUT_TEXT_SESSION_STARTED,
-                         AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT),
+                         AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT, textDemandIdentity),
         textSessionId, nullptr, 0u, false, &rejection);
     // epoch 未变却得到 SESSION：core 残留着另一个无人持有的会话。中止它后在本次调用内
     // 只重试一次 BEGIN（有界，不循环），不推进前端 epoch —— ArkTS 此刻本就在建立会话。
@@ -1387,11 +1389,12 @@ bool PlatformInputTextSessionBegin(uint64_t textSessionId) {
         g.sessionActive) {
         result = SubmitTextCommandLocked(
             TextSessionEvent(textSessionId, AMCL_INPUT_TEXT_SESSION_STARTED,
-                             AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT),
+                             AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT, textDemandIdentity),
             textSessionId, nullptr, 0u, false);
     }
     if (result != AMCL_INPUT_OK) return false;
     g.textSessionId = textSessionId;
+    g.textDemandIdentity = textDemandIdentity;
     // 活动会话是 core 在上次 RESET 之后的新状态：清掉复位锁存，下一次取消必须真正
     // 调 core 复位并丢弃会话，而不是只清镜像（见 PlatformInputRequestReset）。
     g.resetLatched = false;
@@ -1406,11 +1409,17 @@ bool PlatformInputTextSessionEnd(uint64_t textSessionId) {
     }
     const int32_t result = SubmitTextCommandLocked(
         TextSessionEvent(textSessionId, AMCL_INPUT_TEXT_SESSION_ENDED,
-                         AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT),
+                         AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT, g.textDemandIdentity),
         textSessionId, nullptr, 0u, false);
     if (result != AMCL_INPUT_OK) return false;
     g.textSessionId = 0u;
     return true;
+}
+
+uint64_t PlatformInputTextSessionDemand(uint64_t textSessionId) {
+    if (!textSessionId) return 0;
+    std::lock_guard<std::mutex> lock(g.mutex);
+    return g.textSessionId == textSessionId ? g.textDemandIdentity : 0;
 }
 
 bool PlatformInputOwnedTextSessionMatches(uint64_t textSessionId) {
@@ -1427,7 +1436,7 @@ bool PlatformInputTextSessionAbort(uint64_t textSessionId) {
     }
     const int32_t result = SubmitTextCommandLocked(
         TextSessionEvent(textSessionId, AMCL_INPUT_TEXT_SESSION_ABORTED,
-                         AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT),
+                         AMCL_INPUT_TEXT_SESSION_REASON_EXPLICIT, g.textDemandIdentity),
         textSessionId, nullptr, 0u, false);
     if (result != AMCL_INPUT_OK) return false;
     g.textSessionId = 0u;
@@ -1449,6 +1458,7 @@ bool PlatformInputTextCommit(uint64_t textSessionId,
     AmclInputEvent event = Event(
         AMCL_INPUT_EVENT_TEXT_COMMIT, AMCL_INPUT_SOURCE_IME);
     event.payload.textCommit.textSessionId = textSessionId;
+    event.payload.textCommit.textDemandIdentity = g.textDemandIdentity;
     return SubmitTextCommandLocked(event, textSessionId, utf8, byteCount,
                                    true) == AMCL_INPUT_OK;
 }
@@ -1465,6 +1475,7 @@ bool PlatformInputTextEditing(uint64_t textSessionId,
     AmclInputEvent event = Event(
         AMCL_INPUT_EVENT_TEXT_EDITING, AMCL_INPUT_SOURCE_IME);
     event.payload.textEditing.textSessionId = textSessionId;
+    event.payload.textEditing.textDemandIdentity = g.textDemandIdentity;
     event.payload.textEditing.selectionStart = selectionStart;
     event.payload.textEditing.selectionLength = selectionLength;
     return SubmitTextCommandLocked(event, textSessionId, utf8, byteCount,
@@ -1640,6 +1651,7 @@ PlatformInputTextKeyTapResult PlatformInputTextSessionKeyTap(
     // GLFW 端按自身键表现算修饰键，SDL/LWJGL2 的键事件不读这两项。
     for (AmclInputEvent& event : events) {
         event.payload.physicalKey.physicalKey = ohosKeyCode;
+        event.payload.physicalKey.textDemandIdentity = g.textDemandIdentity;
     }
     events[0].payload.physicalKey.action = AMCL_INPUT_ACTION_DOWN;
     events[1].payload.physicalKey.action = AMCL_INPUT_ACTION_UP;

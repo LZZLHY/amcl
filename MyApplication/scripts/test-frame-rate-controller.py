@@ -54,12 +54,23 @@ def main():
         print(result.stdout+result.stderr,flush=True); return result
     try:
         # SDK接缝只声明此controller实际使用的两个接口；完整算法直接编译生产TU，不能复制纯模型代证。
-        stubs=project/'stubs'; (stubs/'ace/xcomponent').mkdir(parents=True); (stubs/'window_manager').mkdir(); (stubs/'hilog').mkdir()
+        stubs=project/'stubs'; (stubs/'ace/xcomponent').mkdir(parents=True); (stubs/'window_manager').mkdir(); (stubs/'hilog').mkdir(); (stubs/'native_vsync').mkdir()
         (stubs/'ace/xcomponent/native_interface_xcomponent.h').write_text('''#pragma once
 #include <stdint.h>
 struct OH_NativeXComponent { int identity; };
 struct OH_NativeXComponent_ExpectedRateRange { int32_t min,max,expected; };
 extern "C" int32_t OH_NativeXComponent_SetExpectedFrameRateRange(OH_NativeXComponent*,OH_NativeXComponent_ExpectedRateRange*);
+''',encoding='utf-8')
+        (stubs/'native_vsync/native_vsync.h').write_text('''#pragma once
+#include <stdint.h>
+#include <stddef.h>
+struct OH_NativeVSync { int identity; };
+struct OH_NativeVSync_ExpectedRateRange { int32_t min,max,expected; };
+typedef void (*OH_NativeVSync_FrameCallback)(long long, void*);
+extern "C" OH_NativeVSync* OH_NativeVSync_Create(const char*, unsigned int);
+extern "C" void OH_NativeVSync_Destroy(OH_NativeVSync*);
+extern "C" int32_t OH_NativeVSync_SetExpectedFrameRateRange(OH_NativeVSync*, OH_NativeVSync_ExpectedRateRange*);
+extern "C" int32_t OH_NativeVSync_RequestFrame(OH_NativeVSync*, OH_NativeVSync_FrameCallback, void*);
 ''',encoding='utf-8')
         (stubs/'window_manager/oh_display_manager.h').write_text('''#pragma once
 #include <stdint.h>
@@ -77,10 +88,10 @@ template<class... Values> void frameControllerLog(int,const char* text,Values&&.
         if os.name=='nt':
             (stubs/'strings.h').write_text('#pragma once\n#include <cstring>\ninline int strcasecmp(const char* a,const char* b){return _stricmp(a,b);}\n',encoding='utf-8')
         original=sources[0].read_text(encoding='utf-8')
-        anchor='return ApplyControllerLocked(lifecycleStage, false, false, displayRate);'
+        anchor='return ApplyControllerLocked(update, lifecycleStage, false, false, displayRate);'
         if original.count(anchor)!=1:raise ValueError('stable refresh anchor is not unique')
         (project/'positive.cpp').write_text(original,encoding='utf-8')
-        (project/'old-force.cpp').write_text(original.replace(anchor,'return ApplyControllerLocked(lifecycleStage, true, false, displayRate);'),encoding='utf-8')
+        (project/'old-force.cpp').write_text(original.replace(anchor,'return ApplyControllerLocked(update, lifecycleStage, true, false, displayRate);'),encoding='utf-8')
         fixture=project/'fixture.cpp'; fixture.write_bytes(sources[5].read_bytes())
         cmake_text='cmake_minimum_required(VERSION 3.16)\nproject(frame_controller LANGUAGES CXX)\n'
         for name,file in [('positive','positive.cpp'),('old-force','old-force.cpp')]:

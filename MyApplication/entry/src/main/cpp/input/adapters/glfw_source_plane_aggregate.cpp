@@ -20,6 +20,7 @@ struct GlfwSourcePlaneAggregate::Impl {
     mutable const AmclControlDeliveryPortV1* port=nullptr;
     mutable std::atomic<const AmclLookExecutionPortV1*> look{nullptr};
     mutable std::mutex mutex;mutable uint64_t consumer=0;bool explicitTarget=false,targetRejected=false;
+    uint64_t boundConsumer=0, boundTarget=0;
     const uint32_t process=processId();
     // mutex保护连接/句柄资格，不保护游戏cache。首次才解析端口，之后仅核handle仍活着；
     // fork先拒绝，target拒绝态在下一次明确BindTarget重试前不允许Submit越域交付。
@@ -55,7 +56,9 @@ GlfwSourcePlaneAggregate::~GlfwSourcePlaneAggregate(){if(impl_->port&&impl_->con
 void GlfwSourcePlaneAggregate::BindTarget(uint64_t target){const uint64_t handle=impl_->ensure(0,true);if(!handle)return;
     std::lock_guard<std::mutex> lock(impl_->mutex);impl_->explicitTarget=true;
     // 目标身份耗尽/拒绝时暂停本facade；不能忽略失败后把旧target ticket写进新window缓存。
-    impl_->targetRejected=impl_->port->bindTarget(handle,target)<0;}
+    impl_->targetRejected=impl_->port->bindTarget(handle,target)<0;
+    impl_->boundConsumer=handle;
+    impl_->boundTarget=target;}
 // 必须携原receipt报告真实cache/callback层级，不能在回调后重取currentconsumer来改绑旧事实。
 void GlfwSourcePlaneAggregate::Complete(const AmclControlEmissionV1& receipt,uint32_t phase){
     if(receipt.ticket&&impl_->port)(void)impl_->port->complete(&receipt,phase);
@@ -128,6 +131,18 @@ bool GlfwSourcePlaneAggregate::IsKeyPressed(int32_t code)const{const uint64_t h=
 bool GlfwSourcePlaneAggregate::IsButtonPressed(int32_t code)const{const uint64_t h=impl_->ensure();return h&&impl_->port->query(h,2,code)>0;}
 // actual getter合法读完窗口cache后才调用；诊断反馈、ring取走、desired query都不调用此口。
 void GlfwSourcePlaneAggregate::ObservePoll(uint32_t kind,int32_t code,int32_t held){const uint64_t h=impl_->ensure();if(h)(void)impl_->port->observePoll(h,kind,code,held);}
+// 同一窗口、同一 consumer 已绑定时，observePoll 自身会核对 handle 和实际读取。
+// 遇到陈旧 handle 或换窗再执行完整重绑；普通 getter 不为读一个键重复复制两份统计。
+void GlfwSourcePlaneAggregate::ObserveTargetPoll(uint64_t target,uint32_t kind,int32_t code,int32_t held){
+    if(impl_->process!=processId())return;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if(impl_->consumer && impl_->consumer==impl_->boundConsumer && impl_->boundTarget==target &&
+           !impl_->targetRejected && impl_->port->observePoll(impl_->consumer,kind,code,held)!=AMCL_CONTROL_STALE)return;
+    }
+    BindTarget(target);
+    ObservePoll(kind,code,held);
+}
 // 只读原consumer的统计；无Ready/旧handle返回false，不把UI反馈订阅当输入运行维护。
 bool GlfwSourcePlaneAggregate::Snapshot(AmclControlSnapshotV1& out)const{const uint64_t h=impl_->ensure();out.size=sizeof(out);return h&&impl_->port->snapshot(h,&out)==0;}
 /**

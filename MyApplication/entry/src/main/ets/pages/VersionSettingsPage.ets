@@ -18,7 +18,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ThemeColors, ThemeMode, resolveTheme } from 'commons';
 import { PreferenceManager } from 'feature_system';
-import { GameStorage, parseStorageLocation } from 'feature_system';
+import { GameStorage, StorageLocation } from 'feature_system';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { removeDirRecursive } from 'commons';
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
@@ -70,9 +70,10 @@ struct VersionSettingsPage {
     this.prefManager.mcVersion = this.currentVersion
   }
 
-  /** 当前激活的 .minecraft 根（沙箱或外部，按存储位置偏好解析） */
+  /** 首页发布实际可用的根；已选外部临时回退时，管理操作与首页使用同一份版本列表。 */
+  @StorageProp('amclActiveGameStorage') private storageLocation: StorageLocation = StorageLocation.SANDBOX;
   private mcRoot(): string {
-    return GameStorage.resolveMcDir(this.context, parseStorageLocation(this.prefManager.mcStorageLocation))
+    return GameStorage.resolveMcDir(this.context, this.storageLocation)
   }
 
   private scanVersions() {

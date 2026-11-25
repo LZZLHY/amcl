@@ -26,6 +26,20 @@ function sample(callback,base) {
   callback({x:0,y:1,z:0,timestamp:base});
   callback({x:0,y:1,z:0,timestamp:base+20000000});
 }
+{
+  const f=fixture(), submit=f.native.submitTouchGyroLease;
+  assert.equal(f.gyro.configure(true,f.options,0,9),true);
+  f.native.submitTouchGyroLease=()=>{throw Error('submission failed');};
+  sample(f.subscriptions[0],1e9);
+  assert.equal(f.gyro.configure(true,f.options,0,9),false,'相同失败状态不盲重订');
+  assert.equal(f.gyro.configure(false,f.options,0,9),true);
+  f.native.submitTouchGyroLease=submit;
+  assert.equal(f.gyro.configure(true,f.options,0,9),true,'关闭后同一资源可以再次启用');
+  sample(f.subscriptions[1],2e9);
+  assert.equal(f.submits.length,1);
+  f.gyro.stop();
+  console.log('PASS original context resubscribes after a failed sample followed by a real off/on edge');
+}
 // 两个横屏方向逐轴验证；翻转必须退休旧流，新流首样本只建基线，用户反向设置仍各自只应用一次。
 for (const rotation of [1,3]) for (const [invertX,invertY] of [[false,false],[true,false],[false,true]]) {
   const f=fixture();f.options.gyroscopeInvertX=invertX;f.options.gyroscopeInvertY=invertY;

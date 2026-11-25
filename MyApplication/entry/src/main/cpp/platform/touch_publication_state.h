@@ -63,15 +63,14 @@ class TouchPublicationState final {
 public:
     /** 查询同时观察失效：surface或策略已换代时保持关门，迟到确认不能复活旧几何。 */
     TouchPublicationReceipt Query(const TouchPublicationContext& current) {
-        // abort后仍有旧applied可恢复；它也必须绑定原上下文，不能因清了在途operation
-        // 就让旧token在新的touch会话、density或surface上重新取得输出。
-        const bool stale = !operation_.empty() ? !context_.SameIdentity(current)
-            : appliedToken_ != 0 && !appliedContext_.SameIdentity(current);
-        if (stale) {
-            fenced_ = true;
-            status_ = TouchPublicationStatus::Stale;
-        }
+        ObserveContext(current);
         return Receipt(current);
+    }
+
+    /** 稳定轮询只读取上次已呈现 token，仍须应用与完整 Query 相同的上下文失效。 */
+    bool MatchesUnfenced(const TouchPublicationContext& current, uint64_t token) {
+        ObserveContext(current);
+        return token && !fenced_ && token_ == token;
     }
 
     /** 新操作必须绑定完整旧身份。相同操作重试仅返回原状态，不能再次分配token。 */
@@ -182,6 +181,16 @@ public:
     }
 
 private:
+    void ObserveContext(const TouchPublicationContext& current) {
+        // abort 后的旧 applied 仍绑定原上下文；完整和增量读取均在身份变化时关门。
+        const bool stale = !operation_.empty() ? !context_.SameIdentity(current)
+            : appliedToken_ != 0 && !appliedContext_.SameIdentity(current);
+        if (stale) {
+            fenced_ = true;
+            status_ = TouchPublicationStatus::Stale;
+        }
+    }
+
     static bool ValidName(const std::string& name) {
         return !name.empty() && name.size() <= 192 && name.find('\0') == std::string::npos;
     }

@@ -11,7 +11,8 @@ recipe = runpy.run_path(str(ROOT / 'scripts/test-touch-production.py'), init_glo
 prefix = recipe['prefix'].replace('void amcl_fire_button_pressed(const char*,int){}',
     'std::map<std::string,int> buttonFeedback;void amcl_fire_button_pressed(const char* id,int pressed){buttonFeedback[id]=pressed;}')
 assert 'buttonFeedback[id]=pressed' in prefix
-extra='\n'.join(recipe['definition'](name) for name in ['static std::set<OwnerToken> schemaCaptureHeldOwnersLocked(',
+extra='\n'.join(recipe['definition'](name) for name in ['static void schemaCaptureCarriedMenuDragLocked(',
+    'static std::set<OwnerToken> schemaCaptureHeldOwnersLocked(',
     'static bool schemaCollectCarriedUpLocked(', 'static void schemaResetTransientStateLocked('])
 main = r'''
 void touch(int phase,int id,float x,float y,int64_t advance=10000000){

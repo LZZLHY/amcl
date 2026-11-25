@@ -1,6 +1,8 @@
 extern "C" void amclDesktopNotifyHostEvent();
 #include "desktop_gamepad.h"
 #include "desktop_gamepad_mapping.h"
+#include "gamepad_topology.h"
+#include "gamepad_change_query.h"
 #include <GameControllerKit/game_device.h>
 #include <GameControllerKit/game_pad.h>
 #include <deviceinfo.h>
@@ -11,6 +13,7 @@ extern "C" void amclDesktopNotifyHostEvent();
 #define LOG_DOMAIN 0xD003
 #define LOG_TAG "AMCL_GAMEPAD"
 #include <array>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <string>
@@ -92,7 +95,7 @@ struct ControllerApi {
     bool ready = false;
     ControllerApi() {
         const char* type = OH_GetDeviceType();
-        if (!type || strcmp(type, "2in1") != 0 || OH_GetSdkApiVersion() < 21) return;
+        if (!SupportsGamepadCapture(type, OH_GetSdkApiVersion())) return;
         void* library = dlopen("libohgame_controller.z.so", RTLD_NOW | RTLD_LOCAL);
         if (!library) { AMCL_LOG_W(LOG_TAG, "GameControllerKit load failed: %{public}s", dlerror()); return; }
         OH_GameDevice_GetAllDeviceInfos = reinterpret_cast<decltype(OH_GameDevice_GetAllDeviceInfos)>(dlsym(library, "OH_GameDevice_GetAllDeviceInfos"));
@@ -238,18 +241,72 @@ struct ControllerApi {
 };
 ControllerApi& Api() { static ControllerApi api; return api; }
 std::mutex mutex;
-std::array<AmclDesktopGamepad, 16> pads{};
-std::array<unsigned char, 16> digitalHats{};
+// 启动订阅时平台可能同步投递设备事件；序列化两次启用请求而不占用回调需要的状态锁。
+std::mutex modeMutex;
+std::array<AmclDesktopGamepad, GamepadSlotCount> pads{};
+std::array<unsigned char, GamepadSlotCount> digitalHats{};
+std::array<unsigned char, GamepadSlotCount> triggerAxisMasks{};
+std::atomic<bool> readable{false};
+// 仅在手柄锁内发布拓扑边沿；稳定帧读取 revision 即可，轴/键和单纯失焦不动此代次。
+std::atomic<uint64_t> topologyRevision{1};
+// 各 SDL 消费者分别持游标。只在已有手柄锁内发布实际变化，静止样本和非原生路线没有写入。
+std::atomic<uint64_t> stateRevision{1};
+std::array<uint64_t, GamepadSlotCount> slotRevision{};
 std::map<std::string, uint64_t> changed;
 uint64_t deviceEpoch = 0;
-bool nativeMode = false, focused = false, started = false;
-int Find(const std::string& id) {
-    for (size_t i = 0; i < pads.size(); ++i) if (pads[i].connected && id == pads[i].id) return static_cast<int>(i);
+bool nativeMode = false, started = false;
+std::atomic<bool> focused{false};
+int Find(const char* id) {
+    for (size_t i = 0; i < pads.size(); ++i) if (pads[i].connected && strcmp(id, pads[i].id) == 0) return static_cast<int>(i);
     return -1;
+}
+// 写方由 mutex 串行，版本以普通 load/store 发布，无需额外原子 RMW 或唤醒。
+void PublishGamepadChange(int slot) {
+    const uint64_t revision = stateRevision.load(std::memory_order_relaxed) + 1;
+    if (slot >= 0) slotRevision[slot] = revision;
+    else {
+        // 整条路线开关、失焦归中：仅需让消费者重读本轮已连接的槽。
+        for (size_t i = 0; i < pads.size(); ++i) if (pads[i].connected) slotRevision[i] = revision;
+    }
+    stateRevision.store(revision, std::memory_order_release);
 }
 void Neutral(AmclDesktopGamepad& pad) {
     memset(pad.buttons, 0, sizeof(pad.buttons)); memset(pad.axes, 0, sizeof(pad.axes));
     pad.axes[4] = pad.axes[5] = -1; pad.hats[0] = 0;
+}
+// 枚举与热插拔共用连接账本；重复通知和过时枚举均不触发 GLFW 重扫或唤醒。
+bool UpdateGamepadConnection(const std::string& id, const char* name, bool gamepad, bool online,
+                             bool inventory, uint64_t baseline) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (inventory && changed[id] > baseline) return false;
+    if (!inventory) changed[id] = ++deviceEpoch;
+    int slot = Find(id.c_str());
+    if (!online) {
+        if (slot < 0) return false;
+        pads[slot].connected = 0;
+        Neutral(pads[slot]);
+        ++pads[slot].generation;
+    } else {
+        if (!gamepad || slot >= 0) return false;
+        for (size_t i = 0; i < pads.size(); ++i) {
+            if (!pads[i].connected) { slot = static_cast<int>(i); break; }
+        }
+        if (slot < 0) return false;
+        const uint64_t generation = pads[slot].generation + 1;
+        auto& pad = pads[slot];
+        pad = {};
+        pad.generation = generation;
+        Neutral(pad);
+        pad.connected = 1;
+        snprintf(pad.id, sizeof(pad.id), "%s", id.c_str());
+        snprintf(pad.name, sizeof(pad.name), "%s", name ? name : "Game Controller");
+        digitalHats[slot] = 0;
+        triggerAxisMasks[slot] = 0;
+    }
+    if (!readable.load(std::memory_order_relaxed)) return false;
+    PublishGamepadChange(slot);
+    topologyRevision.fetch_add(1, std::memory_order_release);
+    return true;
 }
 void DeviceInfo(GameDevice_DeviceInfo* info, bool online, bool inventory, uint64_t baseline) {
     char* rawId = nullptr; char* name = nullptr;
@@ -260,26 +317,9 @@ void DeviceInfo(GameDevice_DeviceInfo* info, bool online, bool inventory, uint64
     api.OH_GameDevice_DeviceInfo_GetName(info, &name);
     GameDevice_DeviceType type = UNKNOWN;
     api.OH_GameDevice_DeviceInfo_GetDeviceType(info, &type);
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (inventory && changed[id] > baseline) { free(name); return; }
-        if (!inventory) changed[id] = ++deviceEpoch;
-        int slot = Find(id);
-        if (!online) { if (slot >= 0) { pads[slot].connected = 0; Neutral(pads[slot]); ++pads[slot].generation; } }
-        else if (type == GAME_PAD) {
-            if (slot < 0) for (size_t i = 0; i < pads.size(); ++i) if (!pads[i].connected) { slot = static_cast<int>(i); break; }
-            if (slot >= 0 && !pads[slot].connected) {
-                const uint64_t generation = pads[slot].generation + 1;
-                pads[slot] = {}; pads[slot].generation = generation; Neutral(pads[slot]);
-                pads[slot].connected = 1;
-                snprintf(pads[slot].id, sizeof(pads[slot].id), "%s", id.c_str());
-                snprintf(pads[slot].name, sizeof(pads[slot].name), "%s", name ? name : "Game Controller");
-                digitalHats[slot] = 0;
-            }
-        }
-    }
+    const bool notify = UpdateGamepadConnection(id, name, type == GAME_PAD, online, inventory, baseline);
     free(name);
-    amclDesktopNotifyHostEvent();
+    if (notify) amclDesktopNotifyHostEvent();
 }
 void OnDevice(const GameDevice_DeviceEvent* event) {
     auto& api = Api(); GameDevice_StatusChangedType type; GameDevice_DeviceInfo* info = nullptr;
@@ -288,42 +328,88 @@ void OnDevice(const GameDevice_DeviceEvent* event) {
         DeviceInfo(info, type == ONLINE, false, 0);
     if (info) api.OH_GameDevice_DestroyDeviceInfo(&info);
 }
+// 只为游戏可见的变化发布事件。模拟及数字十字键分别记账，共同持有时不制造额外边沿。
+void ApplyGamepadButton(const char* id, int button, bool down) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!focused.load(std::memory_order_relaxed)) return;
+        const int slot = Find(id);
+        if (slot < 0) return;
+        auto& pad = pads[slot];
+        if ((pad.buttons[button] != 0) == down) return;
+        pad.buttons[button] = down;
+        if (button >= 11 && button <= 14) {
+            const unsigned char bit = static_cast<unsigned char>(1u << (button - 11));
+            if (down) digitalHats[slot] |= bit; else digitalHats[slot] &= ~bit;
+            if (pad.hats[0] & bit) return;
+        }
+        ++pad.events;
+        PublishGamepadChange(slot);
+    }
+    amclDesktopNotifyHostEvent();
+}
 void OnButton(const GamePad_ButtonEvent* event) {
-    auto& api = Api(); char* rawId = nullptr; int32_t code = 0; GamePad_Button_ActionType action;
-    if (api.OH_GamePad_ButtonEvent_GetDeviceId(event, &rawId) != GAME_CONTROLLER_SUCCESS || !rawId) { free(rawId); return; }
-    const std::string id(rawId); free(rawId);
+    if (!focused.load(std::memory_order_acquire)) return;
+    auto& api = Api(); int32_t code = 0; GamePad_Button_ActionType action;
     if (api.OH_GamePad_ButtonEvent_GetButtonCode(event, &code) != GAME_CONTROLLER_SUCCESS ||
         api.OH_GamePad_ButtonEvent_GetButtonAction(event, &action) != GAME_CONTROLLER_SUCCESS) return;
     const int button = StandardGamepadButton(code); if (button < 0) return;
-    std::lock_guard<std::mutex> lock(mutex);
-    const int slot = Find(id); if (slot < 0 || !nativeMode || !focused) return;
-    pads[slot].buttons[button] = action == DOWN ? 1 : 0; ++pads[slot].events; amclDesktopNotifyHostEvent();
-    if (button >= 11 && button <= 14) {
-        const unsigned char bit = static_cast<unsigned char>(1 << (button - 11));
-        if (action == DOWN) digitalHats[slot] |= bit; else digitalHats[slot] &= ~bit;
+    char* rawId = nullptr;
+    if (api.OH_GamePad_ButtonEvent_GetDeviceId(event, &rawId) == GAME_CONTROLLER_SUCCESS && rawId)
+        ApplyGamepadButton(rawId, button, action == DOWN);
+    free(rawId);
+}
+// first 为首个标准轴；负值代表十字帽。扳机一旦出现模拟输入要保留这项事实，即使本次
+// 与数字回退的输出同值。比较标准 float，保留 GLFW 层的完整精度。
+void ApplyGamepadAxis(const char* id, int first, double x, double y) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!focused.load(std::memory_order_relaxed)) return;
+        const int slot = Find(id);
+        if (slot < 0) return;
+        auto& pad = pads[slot];
+        if (first < 0) {
+            const auto oldHat = pad.hats[0] | digitalHats[slot];
+            pad.hats[0] = GamepadHat(x, y);
+            if ((pad.hats[0] | digitalHats[slot]) == oldHat) return;
+        } else if (first < 4) {
+            const float nextX = GamepadAxis(x), nextY = GamepadAxis(y);
+            if (pad.axes[first] == nextX && pad.axes[first+1] == nextY) return;
+            pad.axes[first] = nextX;
+            pad.axes[first+1] = nextY;
+        } else {
+            const int trigger = first - 4;
+            const unsigned char bit = static_cast<unsigned char>(1u << trigger);
+            const float previous = StandardTrigger(pad.axes[first], triggerAxisMasks[slot] & bit,
+                                                  pad.buttons[16 + trigger]);
+            pad.axes[first] = GamepadTriggerAxis(x);
+            triggerAxisMasks[slot] |= bit;
+            if (pad.axes[first] == previous) return;
+        }
+        ++pad.events;
+        PublishGamepadChange(slot);
     }
+    amclDesktopNotifyHostEvent();
 }
 void OnAxis(const GamePad_AxisEvent* event) {
-    auto& api = Api(); char* rawId = nullptr; GamePad_AxisSourceType source;
-    if (api.OH_GamePad_AxisEvent_GetDeviceId(event, &rawId) != GAME_CONTROLLER_SUCCESS || !rawId) { free(rawId); return; }
-    const std::string id(rawId); free(rawId);
+    if (!focused.load(std::memory_order_acquire)) return;
+    auto& api = Api(); GamePad_AxisSourceType source;
     if (api.OH_GamePad_AxisEvent_GetAxisSourceType(event, &source) != GAME_CONTROLLER_SUCCESS) return;
-    double x = 0, y = 0; int first = -1; bool hat = false;
+    double x = 0, y = 0; int first = -1;
     int error = 0;
     switch (source) {
         case LEFT_THUMBSTICK: first=0; error=api.OH_GamePad_AxisEvent_GetXAxisValue(event,&x); error|=api.OH_GamePad_AxisEvent_GetYAxisValue(event,&y); break;
         case RIGHT_THUMBSTICK: first=2; error=api.OH_GamePad_AxisEvent_GetZAxisValue(event,&x); error|=api.OH_GamePad_AxisEvent_GetRZAxisValue(event,&y); break;
         case LEFT_TRIGGER: first=4; error=api.OH_GamePad_AxisEvent_GetBrakeAxisValue(event,&x); break;
         case RIGHT_TRIGGER: first=5; error=api.OH_GamePad_AxisEvent_GetGasAxisValue(event,&x); break;
-        case DPAD: hat=true; error=api.OH_GamePad_AxisEvent_GetHatXAxisValue(event,&x); error|=api.OH_GamePad_AxisEvent_GetHatYAxisValue(event,&y); break;
+        case DPAD: error=api.OH_GamePad_AxisEvent_GetHatXAxisValue(event,&x); error|=api.OH_GamePad_AxisEvent_GetHatYAxisValue(event,&y); break;
         default: return;
     }
     if (error || !std::isfinite(x) || !std::isfinite(y)) return;
-    std::lock_guard<std::mutex> lock(mutex);
-    const int slot=Find(id); if(slot<0 || !nativeMode || !focused) return;
-    if(hat) pads[slot].hats[0]=GamepadHat(x,y);
-    else { pads[slot].axes[first]=GamepadAxis(x); if(first<4) pads[slot].axes[first+1]=GamepadAxis(y); }
-    ++pads[slot].events; amclDesktopNotifyHostEvent();
+    char* rawId = nullptr;
+    if (api.OH_GamePad_AxisEvent_GetDeviceId(event, &rawId) == GAME_CONTROLLER_SUCCESS && rawId)
+        ApplyGamepadAxis(rawId, first, x, y);
+    free(rawId);
 }
 bool ControllerResult(int error, const char* stage) {
     if (error == GAME_CONTROLLER_SUCCESS) return true;
@@ -408,24 +494,121 @@ bool Start() {
 bool SetNativeGamepadMode(bool enabled) {
     // 原UI owner的明确启用边界才尝试启动。Api()缓存真实符号能力；Start会撤销本次
     // 部分注册，运行时失败不再被“曾经尝试”永久封死。已成功订阅不重复注册，无重试时钟。
-    if (enabled && !started) started = Start();
-    std::lock_guard<std::mutex> lock(mutex);
-    nativeMode=enabled && started;
-    for(auto& pad:pads) Neutral(pad);
-    digitalHats.fill(0);
-    return !enabled || nativeMode;
+    bool notify = false;
+    bool available;
+    {
+        std::lock_guard<std::mutex> modeLock(modeMutex);
+        if (enabled && !started) started = Start();
+        available = started;
+        std::lock_guard<std::mutex> lock(mutex);
+        nativeMode = enabled && started;
+        if (!nativeMode) {
+            notify = readable.exchange(false, std::memory_order_acq_rel);
+            focused.store(false, std::memory_order_release);
+            for (auto& pad : pads) Neutral(pad);
+            digitalHats.fill(0);
+            if (notify) {
+                PublishGamepadChange(-1);
+                topologyRevision.fetch_add(1, std::memory_order_release);
+            }
+        }
+    }
+    if (notify) amclDesktopNotifyHostEvent();
+    return !enabled || available;
 }
-void SetGamepadFocus(bool value) {
-    std::lock_guard<std::mutex> lock(mutex); focused=value;
-    if(!value) { for(auto& pad:pads) Neutral(pad); digitalHats.fill(0); }
+void SetGamepadFocus(bool value, std::optional<bool> routed) {
+    // 只有宿主确认映射贡献已收口才公布设备。临时失焦仍报告原连接，归零计数供 SDL 刷新状态。
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const bool previous = readable.load(std::memory_order_relaxed);
+        const bool hadFocus = focused.load(std::memory_order_relaxed);
+        const bool nextReadable = nativeMode && routed.value_or(previous);
+        const bool nextFocus = nextReadable && value;
+        if (nextReadable == previous && nextFocus == hadFocus) return;
+        for (auto& pad : pads) {
+            if (!pad.connected) continue;
+            if (nextReadable && !previous) ++pad.generation;
+            if (hadFocus && !nextFocus) {
+                Neutral(pad);
+                // SDL 允许消费者主动写虚拟设备。失焦提升高 32 位，要求它连同未变字段
+                // 全量归中。普通样本仍逐次递增；自然进位至多额外触发一次安全的全量写回。
+                pad.events += UINT64_C(1) << 32;
+            }
+        }
+        if (!nextFocus) digitalHats.fill(0);
+        focused.store(nextFocus, std::memory_order_release);
+        readable.store(nextReadable, std::memory_order_release);
+        if (nextReadable != previous || (hadFocus && !nextFocus)) PublishGamepadChange(-1);
+        if (nextReadable != previous) topologyRevision.fetch_add(1, std::memory_order_release);
+    }
     amclDesktopNotifyHostEvent();
 }
-int ReadGamepad(int slot, AmclDesktopGamepad* output) {
-    if(!output || slot<0 || slot>=static_cast<int>(pads.size())) return 0;
-    std::lock_guard<std::mutex> lock(mutex); *output=pads[slot];
-    if(!nativeMode) output->connected=0;
+// 稳定帧只读原子 revision。发生插拔/重新路由后从同一临界区取得位图与连接代次，
+// 即使同槽在两次轮询之间拔出又插回，也能让 GLFW 投递完整的断开/连接。
+int ReadGamepadTopology(AmclDesktopGamepad& query) {
+    if (query.generation == topologyRevision.load(std::memory_order_acquire))
+        return GamepadTopologyUnchanged;
+    std::lock_guard<std::mutex> lock(mutex);
+    GamepadGenerations generations{};
+    int mask = 0;
+    if (readable.load(std::memory_order_relaxed)) {
+        for (size_t i = 0; i < pads.size(); ++i) {
+            if (pads[i].connected) {
+                mask |= 1 << i;
+                generations[i] = pads[i].generation;
+            }
+        }
+    }
+    query.generation = topologyRevision.load(std::memory_order_relaxed);
+    query.connected = mask;
+    memcpy(query.id, generations, sizeof(generations));
+    return GamepadTopologyChanged;
+}
+// 进程级只读端口。映射或已退休时快速拒绝整批扫描；普通失焦只归零，不伪造设备拔出。
+// 稳定帧一次 acquire 即可返回；有变更时连同槽位图在同一锁内取游标。查询之后到达的变化留给下一帧。
+int ReadGamepadChanges(AmclDesktopGamepad& query) {
+    query.connected = 0;
+    if (query.generation == stateRevision.load(std::memory_order_acquire)) return AMCL_GAMEPAD_CHANGES_SUPPORTED;
+    std::lock_guard<std::mutex> lock(mutex);
+    const uint64_t latest = stateRevision.load(std::memory_order_relaxed);
+    if (!readable.load(std::memory_order_relaxed)) query.connected = -1;
+    else {
+        for (size_t i = 0; i < pads.size(); ++i) {
+            if (!query.generation ? pads[i].connected : (query.generation > latest || slotRevision[i] > query.generation))
+                query.connected |= 1 << i;
+        }
+    }
+    query.generation = latest;
+    return AMCL_GAMEPAD_CHANGES_SUPPORTED;
+}
+extern "C" __attribute__((visibility("default"))) int32_t amclGamepadRead(int32_t slot, AmclDesktopGamepad* output) {
+    if (slot == AMCL_GAMEPAD_QUERY_CHANGES && output) return ReadGamepadChanges(*output);
+    if (slot == GamepadTopologyQuery && output) return ReadGamepadTopology(*output);
+    if (!readable.load(std::memory_order_acquire)) return -1;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!readable.load(std::memory_order_relaxed)) return -1;
+    // 只扫描连接位；没有手柄的常见场景只拿一次锁，枚举与随后热插拔可由每槽代次区分。
+    if (slot == -1 && !output) {
+        int32_t mask = 0;
+        for (size_t i = 0; i < pads.size(); ++i) {
+            if (pads[i].connected) mask |= (1 << i);
+        }
+        return mask;
+    }
+    if (!output || slot < 0 || slot >= static_cast<int>(pads.size())) return 0;
+    if (!pads[slot].connected) return 0;
+    *output = pads[slot];
     output->hats[0] |= digitalHats[slot];
     for(int i=0;i<4;++i) output->buttons[11+i] |= (output->hats[0] & (1<<i)) ? 1 : 0;
-    return output->connected;
+    for (int i = 0; i < 2; ++i) {
+        output->axes[4+i] = StandardTrigger(output->axes[4+i], triggerAxisMasks[slot] & (1u << i), output->buttons[16+i]);
+    }
+    return 1;
+}
+int ReadGamepad(int slot, AmclDesktopGamepad* output) {
+    // 已发布的桌面 ABI 使用布尔返回；保持旧 SDL 等调用方的 !=0 契约。
+    if (slot >= -1 && amclGamepadRead(slot, output) > 0) return 1;
+    if (output) *output = {};
+    return 0;
 }
 }

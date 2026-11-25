@@ -19,6 +19,13 @@ const load = makePureEtsLoader({
   './LwjglSlotIntegrity': { verifyLwjglRuntimeSlot: async path => { checked.push(path); return integrity; } },
 });
 const { PreLaunchValidator } = load('launch/src/main/ets/PreLaunchValidator.ets');
+// 随包正例取自真实预检首项开始后的快照；校验项改名、增删、状态或动作偏离时需要同步。
+const {readFileSync} = await import('node:fs');
+const precheckContract = JSON.parse(readFileSync(new URL('../config/launcher-skill/instances.json',import.meta.url),'utf8'))
+  .find(m=>m.name==='getLaunchChecks').examples.ready;
+const atStart=PreLaunchValidator.pendingChecks().map((c,i)=>({check:c.id,title:c.title,status:i===0?'running':c.status,fix:c.fixActionKey}));
+assert.equal(precheckContract.stage,'running');assert.deepEqual(precheckContract.actions,['cancel']);
+assert.deepEqual(precheckContract.checks,atStart);
 const { lwjglGenerationDirectory } = load('launch/src/main/ets/RuntimeSlotGenerations.ets');
 const input = { mcDir: '/fixture/mc', version: 'renamed-instance', jdkVersion: '17' };
 for (const [library, directory] of [

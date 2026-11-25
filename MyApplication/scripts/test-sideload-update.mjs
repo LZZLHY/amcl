@@ -33,8 +33,8 @@ const { SideloadFiles: files } = load('entry/src/main/ets/sideload/SideloadFiles
 files.ensureDirectory('/private/update'); files.ensureDirectory('/private/update');
 assert.equal(directoryCreates, 1);
 // 正式产品由SDK源集覆盖别名；相对main的导入会让store误用default渠道，产物审核亦会拒绝它。
-for (const file of ['SideloadUpdateCoordinator.ets', 'SideloadUpdateTestWant.ets']) {
-  const code = readFileSync(resolve(root, 'entry/src/main/ets/sideload', file), 'utf8');
+{
+  const code = readFileSync(resolve(root, 'entry/src/main/ets/sideload/SideloadUpdateCoordinator.ets'), 'utf8');
   assert.match(code, /from 'entry\/ProductBuildProfile'/);
   assert.doesNotMatch(code, /from '[.][.].*ProductBuildProfile'/);
 }
@@ -95,24 +95,6 @@ assert.equal(await new Provider().isAvailable(), true);
 assert.equal(await new Provider('amcl_sideload_signing_v1').isAvailable(), true);
 assert.deepEqual(aliases, ['amcl_account_master_v1', 'amcl_sideload_signing_v1']);
 assert.throws(() => new Provider('../unknown'));
-// 真机入口的构造失败也必须形成结果：不能在try外抛出后只留下“启动成功”。
-const evidence = new Map();
-const fixture = { schema: 1, id: 'test-init-failure', asset: transaction.asset };
-const hook = load('entry/src/main/ets/sideload/SideloadUpdateTestWant.ets', {
-  '@kit.CoreFileKit': { fileIo: { accessSync: () => true, statSync: () => ({ size: 100, isFile: () => true }), readTextSync: () => JSON.stringify(fixture) } },
-  '@kit.ArkUI': { window: { getLastWindow: async () => ({ setWindowKeepScreenOn() {} }) } },
-  update: models,
-  commons: { DiagnosticPolicy: { hasTestHooks: () => true } },
-  'entry/ProductBuildProfile': { ProductBuildProfile: { product: 'default' } },
-  './SideloadUpdateService': { SideloadUpdateService: { get: () => { throw new Error('test initialization failure'); } } },
-  './SideloadFiles': { SideloadFiles: { write: (path, body) => evidence.set(path, JSON.parse(body)) } }
-  , './SideloadFixtureHttp': { SideloadFixtureHttp: class {} }
-  , './SideloadUpdateTestSession': { SideloadUpdateTestSession: { clear() {} } }
-});
-hook.runSideloadUpdateTestWant({ filesDir: '/private/main' }, { parameters: { amclSideloadUpdateTest: 'prepare' } });
-await new Promise(resolve => setTimeout(resolve, 0));
-assert.equal(evidence.get('/private/main/sideload-update-test-ack.json').fixtureExists, true);
-assert.equal(evidence.get('/private/main/sideload-update-test-result.json').error, 'test initialization failure');
 console.log('sideload-update: asset identity, wrong-product/digest/source rejection, transaction replay/path/version rejection, account HUKS identity passed');
 
 /** 唯一协调器已承接原VM推进逻辑；原并行/取消/后台场景迁入真实Coordinator回归，避免假Service继续验证已删除执行链。 */
@@ -126,12 +108,6 @@ function deferred() {
   return { promise, resolve, reject };
 }
 const settle = async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); };
-const testProduct = { product: 'default' };
-const testSession = load('entry/src/main/ets/sideload/SideloadUpdateTestSession.ets', {
-  commons: { DiagnosticPolicy: { hasTestHooks: () => true }, UPDATE_MANIFEST_URLS: ['https://production.example/update.json'] },
-  'entry/ProductBuildProfile': { ProductBuildProfile: testProduct }, update: models,
-});
-
 /** 执行真实登录服务，HTTP与HUKS存储只提供固定响应；不会把本地JWT存在当作服务端认证。 */
 function authSession(saved, responses) {
   const data = { saved, writes: 0, calls: [], delays: [] };
@@ -224,22 +200,6 @@ console.log('sideload-update: official login refresh, empty/rejected credentials
   assert.equal(signing.find([], 'id', 'absent'), undefined);
 }
 console.log('sideload-update: expired authorization blocks signing mutations; duplicate material records rejected');
-
-// 测试源只能进入default，本域外URL、跨任务资产和清单身份不匹配均失败；清理恢复正式源。
-{
-  const session = testSession.SideloadUpdateTestSession;
-  const prefix = 'https://amcl.lovedhy.cn/uploads/self-update-tests/' + 'a'.repeat(32) + '/';
-  const fixtureAsset = { ...transaction.asset, url: prefix + 'target-unsigned.hap' };
-  assert.throws(() => session.configure('https://example.com/manifest.json', fixtureAsset, false));
-  assert.throws(() => session.configure(prefix + 'manifest.json', { ...fixtureAsset, url: prefix.replace('a'.repeat(32), 'b'.repeat(32)) + 'target-unsigned.hap' }, false));
-  testProduct.product = 'store'; assert.throws(() => session.configure(prefix + 'manifest.json', fixtureAsset, false));
-  testProduct.product = 'default'; session.configure(prefix + 'manifest.json', fixtureAsset, true);
-  const match = { ok: true, hasUpdate: false, current: fixtureAsset.versionCode, error: '', manifest: { ...manifest, sizeBytes: fixtureAsset.sizeBytes, url: fixtureAsset.url } };
-  session.validateResult(match); assert.equal(match.hasUpdate, true);
-  const wrong = structuredClone(match); wrong.manifest.tag = 'wrong'; session.validateResult(wrong); assert.equal(wrong.ok, false);
-  session.clear(); assert.equal(session.urls()[0], 'https://production.example/update.json');
-}
-console.log('sideload-update: HTTPS fixture scope, production exclusion and manifest identity binding passed');
 
 // 真实设备曾只返回33字节挑战行；不能把它当成UDID，也不能与有标识的返回混淆。
 {

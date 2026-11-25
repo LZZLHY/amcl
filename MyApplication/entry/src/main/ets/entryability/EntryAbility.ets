@@ -1,6 +1,5 @@
-import { forwardInputObservationTestWant, isInputObservationTestWant } from '../components/InputObservationTestWant';
+import { ProductQa } from 'entry/ProductQa';
 import { GameLayoutJournal, GameLayoutImportReport } from '../runtime/GameLayoutJournal';
-import { runLogShareConnectivityWant } from '../components/LogShareConnectivityProbe';
 import { runJdkQualificationWant } from '../devtools/JdkQualificationWant';
 import { installRuntimeDownloadValidation } from '../devtools/RuntimeDownloadValidation';
 import { EntryDownloadEngine, EntryNativeLogSink, EntryLedgerScopeSink, installProcessNativeBridges } from '../runtime/ProcessRuntime';
@@ -12,8 +11,6 @@ import { PlatformDfxWatcher } from '../runtime/PlatformDfxWatcher';
 import { SessionRecoveryRuntime } from '../runtime/SessionRecoveryRuntime';
 import { SideloadUpdateService } from '../sideload/SideloadUpdateService';
 import { InstallFence } from '../sideload/InstallFence';
-import { runSideloadUpdateTestWant } from '../sideload/SideloadUpdateTestWant';
-import { isModpackDownloadTestWant, runModpackDownloadTestWant } from '../components/ModpackDownloadTestWant';
 import { setRelayNativeBridge, RelayStatsNative, RelayNativeBridge } from 'feature_core';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
@@ -60,17 +57,8 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics, testNapi.getDiagnosticCapabilities());
-    // 冷QA请求单独保存，普通初始化只看空Want；不得让同一个外部请求同时触发导入、
-    // 桌面、通知、自更新或其他诊断动作。这里只隔离参数，仍完整初始化Native/CA/存储。
-    const modpackQaWant: Want | undefined = isModpackDownloadTestWant(want) ? want : undefined;
-    if (modpackQaWant !== undefined) want = {};
-    // 外部自动化只使用exported的启动器入口，受控操作内部转发到已存在的私有游戏Ability。
-    // 独立固定参数通道不复用任意导入URL、日志分享或安装事务参数。
-    if (isInputObservationTestWant(want)) {
-      forwardInputObservationTestWant(this.context,want);
-      // 冷启动仍完成启动器正常初始化，但诊断参数不能旁路触发文件导入、通知或安装事务。
-      want={};
-    }
+    // 冷启动仅恢复沙箱中已经批准的开发会话，专用唤醒参数独立于正常业务 Want。
+    if (ProductQa.activate(this.context, want, true)) want = {};
     DistributionPolicy.configure(ProductBuildProfile.storeChannel ? DistributionChannel.Store : DistributionChannel.Sideload);
     // 私有准入初始化失败仅关闭运行，版本和文件管理仍可用；旧票据不靠偏好缓存续期。
     try { GameRunAdmission.initialize(this.context); }
@@ -202,11 +190,7 @@ export default class EntryAbility extends UIAbility {
     LauncherStartupRuntime.install(async (): Promise<void> => {
       await this.cleanupOrphanSandboxes();
       this.completeDeferredStartup_();
-      // QA 入口必须在真实 Native bridge/CA/存储初始化后调用，避免测试自行补装业务环境。
-      if (modpackQaWant !== undefined) { runModpackDownloadTestWant(this.context, modpackQaWant); return; }
-      runLogShareConnectivityWant(this.context, want);
       runJdkQualificationWant(this.context, want);
-      runSideloadUpdateTestWant(this.context, want);
     });
     AppLogger.info(TAG, 'Ability onCreate; optional boot work awaits splash first frame', LOG_DOMAIN_LAUNCH);
   }
@@ -239,9 +223,8 @@ export default class EntryAbility extends UIAbility {
 
   /** 「打开方式」热启动：app 已在运行时点击 .json 文件会走这里，暂存 uri 触发导入。 */
   onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
-    if (isInputObservationTestWant(want)) { forwardInputObservationTestWant(this.context,want); return; }
-    // 专用 Want 只转发固定夹具，不再消费任意导入 URI、桌面或安装事务附加参数。
-    if (runModpackDownloadTestWant(this.context, want)) return;
+    // 会话开场之后的查询和操作不再触发 Ability 的前台切换。
+    if (ProductQa.activate(this.context, want, false)) return;
     // 自动重启也可能抵达用户已打开的新实例，热启动与冷启动使用同一身份核验。
     if (!ProductBuildProfile.storeChannel) {
       const id = want.parameters?.['amclSideloadUpdateTransaction'];
@@ -258,9 +241,7 @@ export default class EntryAbility extends UIAbility {
       // 信号不授权重试；Index 还须匹配私有票据、旧 PID、游戏锁、用户当前实例与偏好。
       AppStorage.setOrCreate<number>('graphicsRecoverySignal', returnedActivity);
     }
-    runLogShareConnectivityWant(this.context, want);
     runJdkQualificationWant(this.context, want);
-    runSideloadUpdateTestWant(this.context, want);
     const uri = this.extractImportUri(want);
     if (uri.length > 0) {
       AppStorage.setOrCreate<string>('pendingLayoutImportUri', uri);
@@ -343,6 +324,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    ProductQa.detach(this.context);
     getTaskActivityOwner().setForeground(false);
     ModAudioRuntime.detach();
     LauncherStartupRuntime.detach();
@@ -484,6 +466,10 @@ export default class EntryAbility extends UIAbility {
     // 三端平级：先经注册表对每个已注册端各说一次，再 native 兜底。
     // 启动器进程通常没有端注册（游戏页面不在这里），此时 releaseAllEnds 是空转 ——
     // 但同一个进程里也可能存在已注册的端（单进程形态），所以这个边界必须一致处理。
+    // 共享进程的手柄采集也经过后台边界。只清焦点，保留本局已发布给游戏的设备连接。
+    try { testNapi.desktopGamepadFocus(false); } catch (error) {
+      AppLogger.warn(TAG, 'Gamepad background reset failed', error as Error, LOG_DOMAIN_LAUNCH);
+    }
     getInputSourceRegistry().releaseAllEnds('entry-ability-background');
     try { testNapi.cancelAllInput(2); } catch (e) { /* 老 native 兼容 */ }
     try {

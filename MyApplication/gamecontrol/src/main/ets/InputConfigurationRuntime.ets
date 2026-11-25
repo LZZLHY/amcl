@@ -73,7 +73,8 @@ export class InputConfigurationRuntime {
       return this.apply(profile, store, generation, revision)
     }
     this.listener = listener
-    store.addInputConfigurationListener(listener, 'native-look', (): InputConfigurationProgress => this.progressSnapshot())
+    store.addInputConfigurationListener(listener, 'native-look',
+      (scratch?: InputConfigurationProgress): InputConfigurationProgress => this.progressSnapshot(scratch))
   }
 
   /**
@@ -136,7 +137,7 @@ export class InputConfigurationRuntime {
    * 复用会话现有维护时钟；平台端口替换只失效本域回执，随后重试最新已保存定义。
    * 平台暂不可用保留 pending，不额外开高频时钟，也不回退成配置保存失败。
    */
-  reconcile(): void {
+  reconcile(): LayoutStore | undefined {
     const store: LayoutStore | undefined = this.store
     if (store === undefined) return
     const generation: number = this.generation
@@ -167,6 +168,8 @@ export class InputConfigurationRuntime {
       return
     }
     store.reconcileInputConfiguration()
+    // 原仓库确实完成本轮投递；上游短路、异常、切仓均不能替后来仓库确认维护。
+    return store
   }
 
   /** 只读原运行代快照；读取不调用Native、不reconcile、不从后来会话补operation身份。 */
@@ -188,8 +191,12 @@ export class InputConfigurationRuntime {
   }
 
   /** 原 Native look 回执的深拷贝；不取得端口/资源，也不在读路径重新应用政策。 */
-  private progressSnapshot(): InputConfigurationProgress {
-    return JSON.parse(JSON.stringify(this.progress)) as InputConfigurationProgress
+  private progressSnapshot(scratch: InputConfigurationProgress = new InputConfigurationProgress()): InputConfigurationProgress {
+    // 本域只发布这些字段；scratch 始终由同一订阅者私有。
+    scratch.stage = this.progress.stage; scratch.reason = this.progress.reason
+    scratch.operationId = this.progress.operationId; scratch.targetProfileId = this.progress.targetProfileId
+    scratch.targetProfileRevision = this.progress.targetProfileRevision
+    return scratch
   }
 
   /** 新确认定义才分配本代操作；保存ID/revision与内存delivery revision分别保存。 */

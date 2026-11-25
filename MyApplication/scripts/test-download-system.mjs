@@ -56,6 +56,15 @@ const Registry=load('feature_core/src/main/ets/download/DownloadTaskRegistry.ets
 const McTask=load('feature_core/src/main/ets/version/McVersionTask.ets').McVersionTask;
 const Lease=load('feature_core/src/main/ets/version/VersionInstallLease.ets');
 const Sessions=load('feature_core/src/main/ets/version/McInstallSession.ets');
+
+// 安装计划已确定的加载器在任何文件落盘前就应正确进入卡片与阶段名。
+for (const [loader, label] of [['fabric','Fabric'],['forge','Forge'],['neoforge','NeoForge'],['quilt','Quilt']]) {
+  const task = new McTask('26.2', loader, 'test-loader-version', '自定义显示名', mcRoot, filesRoot);
+  assert.equal(task.view.activityLoaderType, loader);
+  assert.equal(task.view.subtitle, label + ' test-loader-version');
+  assert.equal(task.getTask().phaseDetails.find(detail => detail.phase === 'modloader').label, label + ' 安装');
+}
+pass('实例名称不影响四类加载器任务的副标题与安装阶段');
 function adapter(id,gate){const view=new U.UnifiedTaskView();view.id=id;view.title=id;view.canCancel=true;
   return {view,async start(){await gate.promise;view.state=U.UnifiedTaskState.DONE;},async cancel(){},purgeNativeOwner:()=>true,dispose(){}};}
 
@@ -64,7 +73,16 @@ let reg=new Registry();Registry._instance=reg;reg.maxConcurrent=1;let gate=defer
 let blocked=reg.enqueue(adapter('blocker',gate));
 const queued=new McTask('1.20.1',null,'','queued',mcRoot,filesRoot);
 const waiting=reg.enqueue(queued).catch(e=>e);await reg.cancel(queued.view.id,false);await waiting;
-assert.equal(queued.getTask().phase,'aborted');gate.resolve();await blocked;await turn();
+assert.equal(queued.getTask().phase,'aborted');
+const parentActivity=queued.view.startedAtMs;
+const queuedRetry=reg.retry(queued.view.id);
+assert.equal(queued.view.state,U.UnifiedTaskState.WAITING);
+assert.equal(queued.view.startedAtMs,parentActivity);
+let cancelledOwner, cancelledActivity;
+await reg.cancel(queued.view.id,false,owner=>{cancelledOwner=owner;cancelledActivity=owner.view.startedAtMs;});
+await queuedRetry;
+assert.equal(cancelledOwner,queued);assert.ok(cancelledActivity>parentActivity);assert.equal(cancelledActivity,queued.view.startedAtMs);
+gate.resolve();await blocked;await turn();
 await reg.retry(queued.view.id);await turn();
 assert.equal(starts,1);assert.equal(queued.view.state,U.UnifiedTaskState.DONE);assert.equal(reg.runningIds_.length,0);
 pass('排队取消后重试真正执行并完成，无准备中空任务');
@@ -134,15 +152,39 @@ index.scanVersions=()=>{throw new Error('导出准备不得扫描安装结果');
 index.syncStatusFromRegistry_();assert.equal(repairs,2);index.registry.listAll=originalList;
 pass('导出准备DONE不冒充游戏下载历史或版本安装');
 // 执行统一面板真实恢复方法：导出只携固定源/任务身份，不能从旧卡片重用Picker目标URI。
-const TaskSheet=methodClass('entry/src/main/ets/components/DownloadTasksSheet.ets',['recoverTask_','recoverAppUpdate_'],{...U});
-const sheet=new TaskSheet();let recoveryRoute,closed=0,updated=0;
-Object.assign(sheet,{onClose(){closed++;},onAppUpdateRecovery(){updated++;},getUIContext:()=>({getRouter:()=>({pushUrl(value){recoveryRoute=value;return Promise.resolve();}})})});
-Object.assign(exportPrepare,{exportTaskId:'export-owner',exportMcRoot:'/mc',exportVersionId:'source-ver',exportVersionIsolation:false});
-sheet.recoverTask_(exportPrepare);assert.equal(closed,1);assert.equal(updated,0);assert.equal(recoveryRoute.url,'pages/GameExportPage');
+let recoveryRoute,closed=0,store=false,restore=true,routeStatus='ok',taskOwner;
+const appView=new U.UnifiedTaskView();
+Object.assign(appView,{id:'app-update:'+'a'.repeat(64),category:U.TaskCategory.APP_UPDATE,parentActivityId:207,startedAtMs:208,canRecoverExternally:true});
+const sourceExport={id:'103-export-owner',request:{mcRoot:'/mc',versionId:'source-ver'}};
+const exchange={...U,isQueuedRetry:load('entry/src/main/ets/launcherskill/LibraryResult.ets').isQueuedRetry,DistributionPolicy:{isStore:()=>store},getDownloadTaskRegistry:()=>({getAdapter:id=>taskOwner?.view.id===id?taskOwner:null}),
+  getGameExportCoordinator:()=>({restoreTask:async()=>restore,getTask:()=>sourceExport})};
+const TaskSheet=methodClass('entry/src/main/ets/components/DownloadTasksSheet.ets',['recoverTask_'],exchange);
+const sheet=new TaskSheet();const nav={
+  async pushUrl(value){if(routeStatus==='reject') throw Error('navigation rejected');recoveryRoute=value;},
+  getState(){return {name:routeStatus==='changed'?'Index':recoveryRoute.url};},
+  getParams(){return routeStatus==='wrongSource'?{}:recoveryRoute.params;}
+};
+Object.assign(sheet,{skillAlive_:true,registry_:exchange.getDownloadTaskRegistry(),onClose(){closed++;},getUIContext:()=>({getRouter:()=>nav})});
+Object.assign(exportPrepare,{id:'export-prepare:'+sourceExport.id,exportTaskId:sourceExport.id,exportMcRoot:'/mc',exportVersionId:'source-ver',exportVersionIsolation:false,canRecoverExternally:true});
+taskOwner={view:exportPrepare};
+exportPrepare.exportMcRoot='';assert.equal((await sheet.recoverTask_(exportPrepare)).reason,'missingExportIdentity');assert.equal(closed,0);
+exportPrepare.exportMcRoot='/mc';restore=false;assert.equal((await sheet.recoverTask_(exportPrepare)).reason,'originalExportUnavailable');assert.equal(closed,0);
+restore=true;assert.equal((await sheet.recoverTask_(exportPrepare)).destinationReached,true);assert.equal(closed,1);assert.equal(recoveryRoute.url,'pages/GameExportPage');
 assert.deepEqual(Object.keys(recoveryRoute.params).sort(),['mcRoot','taskId','versionId','versionIsolation']);
-assert.equal(recoveryRoute.params.taskId,'export-owner');assert.equal(recoveryRoute.params.mcRoot,'/mc');
-sheet.recoverTask_({...exportPrepare,category:U.TaskCategory.APP_UPDATE});assert.equal(updated,1);
-pass('导出恢复回原活动重新检查/另存，应用更新恢复保持原入口');
+assert.equal(recoveryRoute.params.taskId,sourceExport.id);assert.equal(recoveryRoute.params.mcRoot,'/mc');
+routeStatus='reject';assert.equal((await sheet.recoverTask_(exportPrepare)).state,'unknown');
+taskOwner={view:appView};assert.equal((await sheet.recoverTask_(exportPrepare)).reason,'taskChanged');
+assert.equal((await sheet.recoverTask_(appView)).state,'unknown');
+routeStatus='changed';assert.equal((await sheet.recoverTask_(appView)).state,'unknown');
+routeStatus='wrongSource';assert.equal((await sheet.recoverTask_(appView)).state,'unknown');
+routeStatus='ok';assert.equal((await sheet.recoverTask_(appView)).destinationReached,true);assert.equal(recoveryRoute.url,'pages/SoftwareUpdatePage');
+const RecoveryPage=methodClass('entry/src/main/ets/pages/SoftwareUpdatePage.ets',['bindRecoverySource_'],exchange);
+const recoveryPage=new RecoveryPage();recoveryPage.bindRecoverySource_({...recoveryRoute.params,recoveryActivityId:999});
+assert.equal(recoveryPage.checkRecoveryOnShow_,undefined);
+recoveryPage.bindRecoverySource_(recoveryRoute.params);
+assert.equal(recoveryPage.recoveryTaskId_,appView.id);assert.equal(recoveryPage.recoveryParent_,207);assert.equal(recoveryPage.checkRecoveryOnShow_,true);
+store=true;assert.equal((await sheet.recoverTask_(appView)).state,'failed');store=false;
+pass('导出恢复和更新重查仅认原对象、活动与实际到达的目标页，残缺/拒绝/换代不签收');
 // 标题抽取同时带上真实模组另存判据；只注入活动类别常量，仍执行生产分支。
 const ExportHero=methodClass('entry/src/main/ets/components/TaskDetailView.ets',
   ['heroTitleText_','isHeroError_','isModFileSave_','exportPreparedCount_'],{...U,ActivityCategory:{RESOURCE_MANAGE:'resource_manage'}});

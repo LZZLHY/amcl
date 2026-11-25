@@ -1,8 +1,7 @@
 /**
  * ProbeRegistryModel.ets — native 探针注册表的**纯模型层**（批次 D4）
  *
- * 文档：docs/refactor/测试自动化方案.md §三.4（D4）
- *       docs/guides/test-automation-contract.md §3.10（探针面大于 DevTools 工具列表）
+ * 注册表为开发工具页面提供可执行的原生探针。
  *                                               §8.3.1（判定逻辑必须能单独喂样本）
  *
  * 起因：`DevToolsPage.runTool` 的 switch 把"选哪个工具"与"怎么跑"混在一个函数里，

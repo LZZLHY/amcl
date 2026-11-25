@@ -3,6 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+import { verifySkillCases } from './lib/skill-business-check.mjs';
+// 无系统调用的生命周期仍装载实际分派器，绑定和解绑沿用生产语义。
+const { LauncherSkillBus } = makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets');
+const { settingKeys,settingFailure } = makePureEtsLoader()('entry/src/main/ets/launcherskill/SettingsSkillValues.ets');
+const sliderMode = {Moving:0,End:1,Click:2};
 const source = fs.readFileSync(new URL('../entry/src/main/ets/components/LogRetentionSettings.ets', import.meta.url), 'utf8');
 const ast = compiler.createSourceFile('LogRetentionSettings.ets', source, compiler.ScriptTarget.Latest, true);
 const component = ast.statements.find(node => node.name?.text === 'LogRetentionSettings');
@@ -31,11 +37,11 @@ function fixture() {
   const victimSets = [];
   const module = { exports: {} };
   new Function('module', 'ledgerSessionRetentionAsync', 'ledgerListAsync', 'ledgerRetentionVictimsAsync',
-    'ledgerSetSessionRetentionAsync', 'LedgerState', 'formatLogBytes', code)(module,
+    'ledgerSetSessionRetentionAsync', 'LedgerState', 'formatLogBytes', 'LauncherSkillBus','SliderChangeMode','settingKeys','settingFailure',code)(module,
     async () => { calls.reads++; return retained; }, async (_root, cancelled) => { calls.lists++; return entriesHook ? entriesHook(cancelled) : entries; },
     async () => { calls.victims++; return victimSets.shift() ?? []; }, async (_root, value) => {
       calls.saves.push(value); await saveHook?.(); retained = value; calls.maintenance++;
-    }, { RUNNING: 0 }, value => String(value));
+    }, { RUNNING: 0 }, value => String(value), LauncherSkillBus, sliderMode,settingKeys,settingFailure);
   const subject = new module.exports();
   Object.assign(subject, { context: { filesDir: '/sandbox' }, active_: false, settingsVisible_: true, hostVisible_: true,
     foreground_: true, readGeneration_: 0, saveGeneration_: 0, saving: false, loading_: false, retained: 5,
@@ -79,4 +85,32 @@ test('真实持久Promise完成前维持saving、不重复派发；失败回读�
   await f.subject.save(100); assert.deepEqual(f.calls.saves, [37]); gate.reject(new Error('disk unavailable')); await pending;
   assert.equal(f.subject.saving, false); assert.equal(f.subject.retained, 5); assert.match(f.subject.errorText, /disk unavailable/);
   assert.equal(f.calls.maintenance, 0);
+});
+
+test('正在拖动只改变界面草稿；两路保存均等待确认，写失败时保留原持久值', async () => {
+  const f=fixture(), page=f.subject;
+  page.aboutToAppear(); await turn();
+  const read=()=>page.skillAction_('getGameLogRetention',{});
+  const write=count=>page.skillAction_('setGameLogRetention',{count});
+  // 从真实 Slider.onChange 进入，验证组件使用两份状态。
+  let onChange;
+  function walk(node){
+    if(node.expression?.name?.getText(ast)==='onChange' && node.expression.getText(ast).includes('log-retention-slider')) onChange=node.arguments[0].getText(ast);
+    compiler.forEachChild(node,walk);
+  }
+  walk(component.members.find(node=>node.name?.text==='build'));assert.ok(onChange);
+  const emitted=compiler.transpileModule('class UI { bind(){return '+onChange+';} }',{compilerOptions:{target:compiler.ScriptTarget.ES2020}}).outputText;
+  const slide=new Function(emitted+';return UI.prototype.bind;')().call(page);
+  slide(37,sliderMode.Moving);
+  const observed=await read(),busy=await write(37);
+  assert.equal(observed.count,5);assert.equal(page.sliderDraft_,37);assert.equal(busy.reason,'sliderBeingEdited');assert.deepEqual(f.calls.saves,[]);
+  const gate=deferred();f.saveHook(()=>gate.promise);slide(37,sliderMode.End);await turn();
+  assert.deepEqual(f.calls.saves,[37]);const during=await read();assert.notEqual(during.state,'ready');
+  gate.resolve();await turn();assert.equal((await read()).count,37);
+  f.saveHook(async()=>{throw new Error('disk unavailable');});
+  const refused=await write(12);assert.equal(refused.reason,'changeNotCommitted');assert.equal((await read()).count,37);
+  f.saveHook(undefined);const saved=await write(12);assert.equal(saved.count,12);
+  verifySkillCases('getGameLogRetention',observed,during,'L072');
+  verifySkillCases('setGameLogRetention',saved,refused,'L072');
+  slide(29,sliderMode.Moving);page.foreground_=false;page.visibilityChanged_();assert.equal(page.sliderDraft_,undefined);
 });

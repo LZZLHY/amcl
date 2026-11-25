@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
 import { environment } from './lib/ets-runtime-fixture.mjs';
 import { fixture as gameLayoutFixture } from './lib/game-layout-fixture.mjs';
+import { actionUiReceiver, loadActionComponent } from './lib/unified-actions-fixture.mjs';
 
 /** 每例隔离进程HAR缓存，真实保存事务与定义投递均照生产运行。 */
 function fixture() {
@@ -80,29 +81,59 @@ async function acceptedWriteThenLostConfirmation(kind) {
 }
 
 {
-  // 运行完整生产编辑器的全部非Builder方法和原字段；仅真正UI子组件/Kit呈现边缘不装载。
-  // 这里没有复制拆分/改值/撤销/组装算法，负控可直接替换生产函数再执行同一轨迹。
-  const gc={},env=environment({imports:{gamecontrol:gc,'./KeyPickerSheet':{},'./AppIcon':{},'./TouchOptionsEditor':{}}});
+  const modes = {Begin: 0, Moving: 1, End: 2, Click: 3};
+  const gc={},env=environment({globals:{SliderChangeMode:modes},imports:{gamecontrol:gc,'./KeyPickerSheet':{},'./AppIcon':{},'./TouchOptionsEditor':{}}});
   for(const name of ['GlfwKeys','ControlLayout','LookPreferences','TouchPreferences','GameGuiGeometry','LayoutEditSession','TouchActionBindings'])
     Object.assign(gc,env.load('gamecontrol/src/main/ets/'+name+'.ets'));
   gc.getLayoutStore=()=>({});
-  const {InputSettingsEditor}=env.load('entry/src/main/ets/components/InputSettingsEditor.ets',true);
+  const file='entry/src/main/ets/components/InputSettingsEditor.ets';
+  const {InputSettingsEditor}=env.load(file,true);
   const editor=new InputSettingsEditor(),old=gc.getDefaultLayout();old.isPreset=false;old.profileId='editor-look';old.profileRevision=1;
+  // 在同一个生产编辑器上运行视角面板，读取每次构建传给滑条的百分比，并投递它实际绑定的回调。
+  const ui = actionUiReceiver(), sliders = [];
+  const panel = loadActionComponent(file, 'InputSettingsEditor', {
+    methods: ['GlobalTabContent'], render: true, globals: ui.globals,
+    dependencies: {'./TouchOptionsEditor': {TouchOptionSlider: props => sliders.push(props), TouchOptionToggle() {}}}
+  });
+  function sensitivitySlider() {
+    ui.clear();
+    sliders.length = 0;
+    panel.prototype.GlobalTabContent.call(editor);
+    const matches = sliders.filter(slider => slider.label === '视角灵敏度');
+    assert.equal(matches.length, 1, '视角面板应有一个灵敏度滑条');
+    assert.equal(matches[0].suffix, '%');
+    return matches[0];
+  }
   old.lookSensitivity=2;old.lookSmoothing=.3;old.lookAccel=.4;editor.original=gc.cloneLayout(old);editor.session.open(old);editor.load_(old);
   assert.equal(editor.buildProfile().version,3);
   editor.setIndependentLook(true);assert.equal(editor.buildProfile().version,4);
-  editor.selectLookSource('gamepad');assert.equal(editor.sensVal,200);
-  editor.pushUndo();const parameters=editor.editorLookParameters();parameters.sensitivity=1.5;editor.updateEditorLook(parameters);
+  editor.selectLookSource('gamepad');
+  const initialGamepad = sensitivitySlider();
+  assert.equal(initialGamepad.value, 200);
+  initialGamepad.onChange(150, modes.Click);
   const draft=editor.buildProfile();assert.equal(draft.lookPolicies.gamepad.sensitivity,1.5);
-  assert.equal(draft.lookPolicies.touch.sensitivity,2);assert.equal(draft.lookPolicies.legacy.sensitivity,2);
+  for (const source of ['touch', 'physical', 'external', 'legacy']) assert.equal(draft.lookPolicies[source].sensitivity, 2, source);
+  editor.selectLookSource('touch');
+  assert.equal(sensitivitySlider().value, 200, '触控仍显示原来的倍率');
+  editor.selectLookSource('gamepad');
+  assert.equal(sensitivitySlider().value, 150, '切回手柄应显示手柄自己的倍率');
   editor.undo_();assert.equal(editor.buildProfile().lookPolicies.gamepad.sensitivity,2);
   editor.setIndependentLook(false);assert.equal(editor.buildProfile().lookPolicies.mode,'legacy-global');
   editor.undo_();assert.equal(editor.buildProfile().lookPolicies.mode,'independent');
-  // 两来源同一个滑条名也必须有独立撤销边界；撤销手柄不能顺带撤回先前触控修改。
-  editor.selectLookSource('touch');editor.beginSliderUndo('lookSensitivity');
-  let value=editor.editorLookParameters();value.sensitivity=1.5;editor.updateEditorLook(value);
-  editor.selectLookSource('gamepad');editor.beginSliderUndo('lookSensitivity');
-  value=editor.editorLookParameters();value.sensitivity=3;editor.updateEditorLook(value);editor.undo_();
+  // 拖动中切源时，迟到的触控事件不能改手柄；新手势的撤销也必须保留之前的触控编辑。
+  editor.selectLookSource('touch');
+  const touch = sensitivitySlider();
+  touch.onChange(200, modes.Begin);
+  touch.onChange(150, modes.Moving);
+  editor.selectLookSource('gamepad');
+  touch.onChange(250, modes.Moving);
+  const gamepad = sensitivitySlider();
+  assert.equal(gamepad.value, 200, '迟到的触控拖动不得写入手柄');
+  gamepad.onChange(200, modes.Begin);
+  gamepad.onChange(300, modes.Moving);
+  gamepad.onChange(300, modes.End);
+  assert.equal(sensitivitySlider().value, 300);
+  editor.undo_();
   assert.equal(editor.buildProfile().lookPolicies.touch.sensitivity,1.5);
   assert.equal(editor.buildProfile().lookPolicies.gamepad.sensitivity,2);
   console.log('PASS full production editor old load/explicit split/source selection/save assembly/undo/compat restore');

@@ -1,3 +1,5 @@
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingFailure, settingKeys } from '../launcherskill/SettingsSkillValues';
 import { applyNativeTheme } from '../components/AppTheme';
 import { pasteboard, deviceInfo } from '@kit.BasicServicesKit'
 import { fileIo as fs } from '@kit.CoreFileKit'
@@ -203,7 +205,15 @@ struct DesktopDeveloperToolsPage {
     }
   }
   /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
-  onPageShow(): void { this.applyTheme_(); }
+  /** 保留设备探针的人机交互面，仅为当前前台页提供有界摘要，绝不回报完整控制台。 */
+  onPageShow(): void {
+    this.applyTheme_();
+    LauncherSkillBus.bind('diagnosticObservation',this,async (method: string,args: SettingsSkillData): Promise<SettingsSkillData> => {
+      if (method !== 'readDiagnosticObservation' || !settingKeys(args,['tool']) || args['tool'] !== 'desktop') return settingFailure('toolChanged');
+      return {'state':'ready','page':'desktop','running':this.busy,'verdict':this.verdict.slice(0,120),'saved':this.savedLabel.length>0};
+    },(): boolean => AppStorage.get<boolean>('appInForeground') === true);
+  }
+  onPageHide(): void { LauncherSkillBus.unbind('diagnosticObservation',this); }
 
   /** 操作用途与结果边界放入按需说明；打开说明不运行探针、不保存或分享任何诊断。 */
   private showDiagnosticHelp_(): void {

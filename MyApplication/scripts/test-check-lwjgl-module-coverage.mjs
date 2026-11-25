@@ -32,6 +32,12 @@ assert.deepEqual([...definedFunctionExports(defined + unusable)], ['required']);
 assert.match(verifyRequiredFunctions('fixture', ['undefined'], definedFunctionExports(defined + unusable))[0], /undefined/);
 assert.equal(validateModuleElf('fixture.so', elfHeader + defined).problems.length, 0);
 assert.match(validateModuleElf('fixture.so', elfHeader.replace('AArch64', 'X86-64') + defined).problems[0], /AArch64/);
+// jemalloc 的消息回调是数据指针，全套函数正确也不能以同名函数顶替该变量。
+const mallocMessage = '  2: 00001000 8 OBJECT GLOBAL DEFAULT 6 je_malloc_message\n';
+assert.deepEqual(validateModuleElf('libamcl_lwjgl_jemalloc.so', elfHeader + mallocMessage).problems, []);
+assert.match(validateModuleElf('libamcl_lwjgl_jemalloc.so', elfHeader + mallocMessage.replace('OBJECT', 'FUNC')).problems.join(), /pointer object/);
+assert.match(validateModuleElf('libamcl_lwjgl_jemalloc.so', elfHeader + mallocMessage +
+  defined.replace('required', 'malloc')).problems.join(), /process allocator malloc/);
 const bridgeElf = elfHeader + defined.replace('required', 'eglGetProcAddress') + 'Shared library: [libc.so]\nShared library: [libc++_shared.so]\n';
 assert.deepEqual(validateModuleElf('libamcl_lwjgl_egl.so', bridgeElf).problems, []);
 assert.match(validateModuleElf('libamcl_lwjgl_egl.so', bridgeElf + 'Shared library: [libEGL.so]\n').problems.join(), /forbidden NEEDED/);
@@ -50,7 +56,7 @@ narrowed.modules.find((entry) => entry.module === 'shaderc').requiredSource = ['
 assert.match(validateModulePolicy(narrowed, manifest).join(), /all-generated/);
 // policy 是范围说明而不是降低检查强度的开关：跨 kind、自选少量符号、改提供库和
 // stage 均不能把四个完整 C API 的检查缩成几个锚点或推迟到不存在的 CMake 阶段。
-for (const module of ['shaderc', 'freetype', 'sdl', 'spvc']) {
+for (const module of ['shaderc', 'freetype', 'jemalloc', 'sdl', 'spvc']) {
   const crossKind = structuredClone(policy);
   const reclassified = crossKind.modules.find((entry) => entry.module === module);
   reclassified.kind = 'bridge'; reclassified.requiredSource = ['Shaderc.java'];
@@ -95,7 +101,7 @@ assert.match(validateModulePolicy(policy, missingNative).join(), /JNI provider/)
 // 回归身份，不是规范里永久写死的模块数量。升级时必须审查绑定集合并更新这些断言。
 const real = checkModuleCoverage({ root, policy, manifest });
 assert.equal(real.ok, true, real.problems.join('\n'));
-for (const [module, count] of [['shaderc', 155], ['freetype', 210], ['sdl', 1037], ['spvc', 168]]) {
+for (const [module, count] of [['jemalloc', 21], ['shaderc', 155], ['freetype', 210], ['sdl', 1037], ['spvc', 168]]) {
   assert.equal(real.modules.find((entry) => entry.jar === `lwjgl-${module}.jar`).required, count, module);
 }
 
@@ -151,7 +157,7 @@ const inspect = (name, bytes) => {
   return byArtifact.get(name);
 };
 assert.equal(checkModuleCoverage({ root, policy, manifest, hapBytes: fullHapFixture, inspectExports: inspect }).ok, true);
-for (const missing of ['liblwjgl_opengles.so', 'liblwjgl_nanovg.so', 'libamcl_lwjgl_egl.so', 'libamcl_vulkan_wsi.so', 'libamcl_game_dialog.so']) {
+for (const missing of ['libamcl_lwjgl_jemalloc.so', 'liblwjgl_opengles.so', 'liblwjgl_nanovg.so', 'libamcl_lwjgl_egl.so', 'libamcl_vulkan_wsi.so', 'libamcl_game_dialog.so']) {
   const broken = new Map(entries); broken.delete(`libs/arm64-v8a/${missing}`);
   const report = checkModuleCoverage({ root, policy, manifest, hapBytes: storedZip(broken), inspectExports: inspect });
   assert.equal(report.ok, false, missing);
@@ -160,6 +166,8 @@ for (const missing of ['liblwjgl_opengles.so', 'liblwjgl_nanovg.so', 'libamcl_lw
 // 删除原来 45 个 Shaderc 主函数之外的 GLSLang、resource limits、SPV 入口，均必须拒绝。
 // 同名函数放在另一库也不算满足 Shaderc.getLibrary() 的默认提供方契约。
 for (const [artifact, missing] of [
+  ['libamcl_lwjgl_jemalloc.so', 'je_free_aligned_sized'],
+  ['libamcl_lwjgl_jemalloc.so', 'je_malloc_message'],
   ['libshaderc.so', 'glslang_program_create'],
   ['libshaderc.so', 'glslang_default_resource'],
   ['libshaderc.so', 'spvValidateWithOptions'],

@@ -17,6 +17,18 @@ export enum ModLoaderType {
   QUILT = 'quilt',
 }
 
+/** 安装、任务与历史记录共用加载器名称。未知值保留给调用方按自己的展示语义处理。 */
+export function modLoaderDisplayName(type: string): string {
+  switch (type) {
+    case ModLoaderType.FABRIC: return 'Fabric';
+    case ModLoaderType.FORGE: return 'Forge';
+    case ModLoaderType.NEOFORGE: return 'NeoForge';
+    case ModLoaderType.OPTIFINE: return 'OptiFine';
+    case ModLoaderType.QUILT: return 'Quilt';
+    default: return '';
+  }
+}
+
 // ============================================================
 //  模组加载器版本信息
 // ============================================================

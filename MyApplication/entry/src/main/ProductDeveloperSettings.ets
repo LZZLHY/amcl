@@ -1,5 +1,16 @@
 import { ThemeColors, DiagnosticPolicy, AppLogger } from 'commons'
 
+/** 开发产品的具名探针入口随本产品编译；设置页与系统 Skill 共用同一组目的页。 */
+export function developerToolRoute(tool: string): string {
+  switch (tool) {
+    case 'tools': return 'pages/DevToolsPage';
+    case 'gles': return 'pages/RenderPage';
+    case 'vulkan': return 'pages/VulkanPage';
+    case 'input': return 'pages/InputProbePage';
+    default: return '';
+  }
+}
+
 @Component
 export struct ProductDeveloperSettings {
   @Prop theme: ThemeColors = {} as ThemeColors
@@ -13,7 +24,7 @@ export struct ProductDeveloperSettings {
         }
         .width('100%').height(56).alignItems(VerticalAlign.Center)
         .onClick(() => {
-          this.getUIContext().getRouter().pushUrl({ url: 'pages/DevToolsPage' }).catch((e: Error) => {
+          this.getUIContext().getRouter().pushUrl({ url: developerToolRoute('tools') }).catch((e: Error) => {
             AppLogger.error('DeveloperSettings', '打开开发者工具失败', e)
           })
         })

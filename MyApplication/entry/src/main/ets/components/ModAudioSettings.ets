@@ -1,4 +1,6 @@
 /** 模组录音设置视图；保存和授权由进程协调器完成，组件销毁不取消已经授权的持久提交。 */
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { settingFailure, settingKeys, settingText, SettingsSkillData } from '../launcherskill/SettingsSkillValues';
 import { ThemeColors } from 'commons';
 import { ModAudioRuntime } from '../runtime/ModAudioRuntime';
 import { SettingsHint, SettingsToggleRow } from './SettingsPrimitives';
@@ -14,15 +16,33 @@ export struct ModAudioSettings {
   onLayout: () => void = () => {};
 
   /** 初次呈现仅刷新真实状态，不弹系统权限、不打开麦克风。 */
-  aboutToAppear(): void { this.active = true; ModAudioRuntime.refresh(); }
-  aboutToDisappear(): void { this.active = false; }
+  aboutToAppear(): void {
+    LauncherSkillBus.bind('settingsMic',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.skillAction_(method,args), (): boolean => this.active && AppStorage.get<boolean>('appInForeground') === true && AppStorage.get<boolean>('amclSettingsTabVisible') === true);
+    this.active = true; ModAudioRuntime.refresh();
+  }
+  aboutToDisappear(): void {
+    LauncherSkillBus.unbind('settingsMic',this);
+    this.active = false;
+  }
 
   /** 同一视图的操作串行；异步完成只更新仍挂载的组件，业务提交不依赖视图寿命。 */
-  private async change_(enabled: boolean): Promise<void> {
+  /** 许可、用户开关与正在录音分别处理，Skill 不能启动音频采集。 */
+  private async skillAction_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (!this.active || this.saving) return settingFailure('busy');
+    if (method === 'configureModMicrophone' && settingKeys(args,['enabled']) && typeof args['enabled'] === 'boolean') {
+      await this.change_(args['enabled'] as boolean, (): void => LauncherSkillBus.awaitingUser(method));
+      if (this.errorText) return settingFailure('microphoneChangeFailed');
+    } else if (method !== 'getModMicrophone' || !settingKeys(args,[])) return settingFailure('invalidArguments');
+    ModAudioRuntime.refresh();
+    return ModAudioRuntime.strictAccess();
+  }
+
+  private async change_(enabled: boolean, beforePermission?: () => void): Promise<void> {
     if (this.saving) return;
     this.saving = true;
     this.errorText = '';
-    try { await ModAudioRuntime.setEnabled(enabled); }
+    try { await ModAudioRuntime.setEnabled(enabled,beforePermission); }
     catch (error) { if (this.active) this.errorText = (error as Error).message; }
     finally { if (this.active) this.saving = false; }
   }

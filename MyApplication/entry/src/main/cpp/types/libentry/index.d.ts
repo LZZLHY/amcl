@@ -20,7 +20,7 @@ export const isJvmTestRunning: () => boolean;
 // P6: MC 启动器
 // ⚰️ 2026-08-27：legacy mcLaunch 已退役（绕过 AmclClassLoader 隔离契约），见 napi_mc.cpp 墓碑。
 export const mcLaunchWithProfile: (filesDir: string, gameDir: string, jdkVersion: string, xmxMb: number, mainClass: string, classpath: string, mcArgsStr: string, extraJvmArgs?: string) => number;
-export const mcLaunchWithProfileV2: (filesDir: string, gameDir: string, jdkVersion: string, xmxMb: number, mainClass: string, classpath: string, mcArgs: string[], extraJvmArgs?: string[]) => number;
+export const mcLaunchWithProfileV2: (filesDir: string, gameDir: string, jdkVersion: string, xmxMb: number, mainClass: string, classpath: string, mcArgs: string[], extraJvmArgs?: string[], returnToLauncherOnExit?: boolean) => number;
 export const mcGetStatus: () => string;
 /** 同步启动后的图形失败 JSON（v1）；读取必须与启动调用处于同一线程。 */
 export const mcGetGraphicsLaunchFailure: () => string;
@@ -47,6 +47,12 @@ export const graphicsRecoveryMaintain: (directory: string, keepId: string) => nu
 export const mcCheckFiles: (mcDir: string, mcVersion: string) => string;
 export const mcIsRunning: () => boolean;
 export const mcForceExit: () => void;
+/** 仅正常退出事实已持久化且原生等待尚未到期时有效。 */
+export const mcLauncherRestartPending: () => boolean;
+/** 认领本局唯一的重启请求并封口持久日志。 */
+export const mcPrepareLauncherRestart: () => Promise<boolean>;
+/** 系统拒绝或无法调用时才终止等待；接受后由系统结束旧进程。 */
+export const mcDeclineLauncherRestart: () => void;
 export const mcReadLog: (mcDir: string, maxBytes?: number) => string;
 
 // 设备信息
@@ -56,15 +62,16 @@ export const getRecommendedXmx: () => number;
 // HarmonyOS XComponent scheduler hint. sourceBit must be one caller-owned bit;
 // EntryAbility=1 and GameAbility=2. This does not create a render/VSync loop.
 export const setOhosFrameRateForeground: (sourceBit: number, foreground: boolean) => boolean;
-// Explicit known game FPS cap. 0 clears it; valid positive values are 30..240.
+// HarmonyOS游戏调度帧率上限，0跟随显示屏，30..240保持原硬上限语义。
 export const setOhosFrameRateCap: (fpsCap: number) => boolean;
-// Re-query the current default-display refresh rate and force the XComponent
-// scheduler hint to be recalculated. False means no live surface was available.
-export const refreshOhosFrameRateHint: (displayRefreshRate?: number) => boolean;
+// 按当前游戏窗口的显示刷新率更新调度；第二值仅传当前屏已确认的固定档位，0撤回请求。
+export const refreshOhosFrameRateHint: (displayRefreshRate?: number, supportedFixedRefreshRate?: number) => boolean;
 
 // 沙箱外存储可行性探针（Phase 0）：对传入目录跑裸 POSIX mkdir/open/write/read/unlink，
 // 返回逐步成败 + errno 报告。末行 "RESULT: NATIVE_RW_OK" = JVM 可在该目录运行。
 export const probeNativePath: (dir: string) => string;
+// 正式存储选择：独占临时文件后立即取消链接，读写均使用原 fd。
+export const verifyGameDirectoryWritable: (dir: string) => boolean;
 
 // AMCL 日志系统
 export const amclLogInit: (logDir: string, maxFileSize?: number, maxFiles?: number) => void;
@@ -126,17 +133,19 @@ export const hardwareRawMouseAvailable: () => boolean;
  *   - `hardwareScan` / `hidUsage`: still 0 — ArkUI KeyEvent does not expose
  *     them. This is the unresolved remainder of plan item P0-7.
  */
+/** 当前SDL主窗口文本需求的完整序号；空字符串表示未请求。 */
+export const peekSdlTextInputDemand: () => string;
+/** 注册合并唤醒，回调回读当前事实；无回调则注销本会话。 */
+export const onSdlTextInputDemandChange: (callback?: () => void) => boolean;
 export const physicalKeyTransaction: (ohosKey: number, hardwareScan: number, hidUsage: number,
   typedAction: number, modifiers: number, locks: number, deviceId: number,
-  mappedKey: number, mappedAction: number) => number;
+  mappedKey: number, mappedAction: number, retireKey?: boolean) => number;
 /**
- * One ArkUI physical mouse-button edge. Native and ArkUI callbacks race for a
- * lifecycle-scoped first-valid-source owner so the same hardware edge cannot
- * drive both source planes.
+ * 一次 ArkUI 实体鼠标边沿，由 Native 对账来源和配对。可选落点使用组件局部 vp。
  */
 export const physicalMouseButtonTransaction: (deviceId: number, arkuiButton: number,
   glfwAction: number, modifiers: number, deviceClass?: number,
-  monotonicTimeNs?: number) => void;
+   monotonicTimeNs?: number, localVpX?: number, localVpY?: number) => void;
 /**
  * 游戏内锁定系统鼠标光标（OH_WindowManager_LockCursor，since 22，dlsym 运行时探测）。
  *
@@ -427,7 +436,7 @@ export const inputInvariantTick: () => void;
 export const sendCursorPos: (x: number, y: number) => void;
 /** Additive V1 typed TextInputSession availability. */
 export const textInputSessionSupported: () => boolean;
-export const beginTextInputSession: (generation: number) => boolean;
+export const beginTextInputSession: (generation: number, sdlDemandIdentity?: string) => boolean;
 export const endTextInputSession: (generation: number) => boolean;
 export const abortTextInputSession: (generation: number) => boolean;
 /** Strict UTF-8 commit delivered as one owned native packet. */
@@ -579,6 +588,8 @@ export interface ControlSchemaMsg {
 export const touchInteractionVisual: () => number[];
 /** 显式生产维护grab公告/已交付光标；false表示真实mode端口尚不可用，视觉读取不执行这些动作。 */
 export const maintainTouchInput: () => boolean;
+/** 同一维护轮次返回 2 项几何或 25 项视觉，26 号元素通知变化。 */
+export const maintainTouchFrontend: (frame: ArrayBuffer, full: boolean) => boolean;
 /** 游戏线程采集的GUI快照；状态非2表示当前无可靠能力，禁止把旧值当作生效设置。 */
 export const gameGuiState: (surfaceWidthPx: number, surfaceHeightPx: number, realGameVersion: string, guideActive?: boolean) => number[];
 /** GUI异步观察的本局/来源端口。0表示真实未取得资格；uint32身份不回绕，不能重新绑旧前端。 */
@@ -634,6 +645,8 @@ export interface TouchPublicationReceipt {
 }
 /** 当前唯一active操作的状态，用于丢回执恢复；不保存无限操作历史。 */
 export const touchPublicationState: () => TouchPublicationReceipt;
+/** 本前端上次已呈现 token 和组修订仍相同时返回 null。 */
+export const touchPublicationStateIfChanged: (stamp: ArrayBuffer) => TouchPublicationReceipt | null;
 /** 先关新DOWN，再由回执/nativeTouches及ArkTS触点确认零触点条件。 */
 export const beginTouchPublication: (operationId: string, candidateId: string, expectedSurface: string,
   expectedSession: string, expectedPolicy: string, expectedSchema: string, expectedGrabEpoch: string) => TouchPublicationReceipt;
@@ -975,6 +988,8 @@ export interface RelayStatsNative {
   usable: boolean;
 }
 /** 同目录 no-replace 发布并 fsync 父目录；目标已存在或持久化失败返回 false。 */
+/** 已确认条目通过原 fd 隔离后删除或无覆盖改名。返回值为空表示完成，其余为失败及恢复说明。 */
+export const archiveMutateConfirmedEntry: (parentFd: number, entryFd: number, name: string, newName: string) => string;
 export const downloadPublishNoReplace: (sourcePath: string, destinationPath: string) => boolean;
 
 // ======================================================================
@@ -1203,12 +1218,16 @@ declare const testNapi: {
   mcCheckFiles: typeof mcCheckFiles;
   mcIsRunning: typeof mcIsRunning;
   mcForceExit: typeof mcForceExit;
+  mcLauncherRestartPending: typeof mcLauncherRestartPending;
+  mcPrepareLauncherRestart: typeof mcPrepareLauncherRestart;
+  mcDeclineLauncherRestart: typeof mcDeclineLauncherRestart;
   mcReadLog: typeof mcReadLog;
 
   // 设备信息
   getDeviceMemoryMB: typeof getDeviceMemoryMB;
   getRecommendedXmx: typeof getRecommendedXmx;
   probeNativePath: typeof probeNativePath;
+  verifyGameDirectoryWritable: typeof verifyGameDirectoryWritable;
   setOhosFrameRateForeground: typeof setOhosFrameRateForeground;
   setOhosFrameRateCap: typeof setOhosFrameRateCap;
   refreshOhosFrameRateHint: typeof refreshOhosFrameRateHint;
@@ -1236,6 +1255,8 @@ declare const testNapi: {
   configureInputProduct: typeof configureInputProduct;
   hardwareRawMouseAvailable: typeof hardwareRawMouseAvailable;
   physicalKeyTransaction: typeof physicalKeyTransaction;
+  peekSdlTextInputDemand: typeof peekSdlTextInputDemand;
+  onSdlTextInputDemandChange: typeof onSdlTextInputDemandChange;
   physicalMouseButtonTransaction: typeof physicalMouseButtonTransaction;
   setCursorLocked: typeof setCursorLocked;
   noteCursorLockFocusLost: typeof noteCursorLockFocusLost;
@@ -1312,6 +1333,7 @@ declare const testNapi: {
   setLookAccel: typeof setLookAccel;
   setControlSchema: typeof setControlSchema;
   touchPublicationState: typeof touchPublicationState;
+  touchPublicationStateIfChanged: typeof touchPublicationStateIfChanged;
   readTouchGroups: typeof readTouchGroups;
   confirmTouchGroups: typeof confirmTouchGroups;
   isTouchGroupControlCurrent: typeof isTouchGroupControlCurrent;
@@ -1328,6 +1350,7 @@ declare const testNapi: {
   isTouchPublicationCurrent: typeof isTouchPublicationCurrent;
   touchInteractionVisual: typeof touchInteractionVisual;
   maintainTouchInput: typeof maintainTouchInput;
+  maintainTouchFrontend: typeof maintainTouchFrontend;
   gameGuiState: typeof gameGuiState;
   gameGuiStartSession: typeof gameGuiStartSession;
   gameGuiCaptureSession: typeof gameGuiCaptureSession;
@@ -1397,6 +1420,7 @@ declare const testNapi: {
   downloadShutdown: typeof downloadShutdown;
   downloadSetCaBundle: typeof downloadSetCaBundle;
   downloadComputeFileSha1: typeof downloadComputeFileSha1;
+  archiveMutateConfirmedEntry: typeof archiveMutateConfirmedEntry;
   downloadPublishNoReplace: typeof downloadPublishNoReplace;
   downloadSetRelay: typeof downloadSetRelay;
   downloadClearRelay: typeof downloadClearRelay;
@@ -1510,7 +1534,7 @@ export const nativeGlValidationEnabled: () => boolean;
 export const desktopPublishDrop: (paths: string[]) => boolean;
 
 export const desktopSetGamepadNativeMode: (enabled: boolean) => boolean;
-export const desktopGamepadFocus: (focused: boolean) => void;
+export const desktopGamepadFocus: (focused: boolean, routed?: boolean) => void;
 /** 枫源公开 V2 挑战的后台顺序模平方；输入输出为固定 768 位十六进制，失败返回空串。 */
 export const solveSideloadPow: (modulus: string, base: string, iterations: number) => Promise<string>;
 /** 更新取消或另一来源已完成后，撤销在途公开挑战计算。 */

@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+import { loadActionComponent } from './lib/unified-actions-fixture.mjs';
+import { verifySkillCases } from './lib/skill-business-check.mjs';
 
 const SESSION = '12345678-1234-4234-8234-123456789abc';
 const QUARANTINE = 'profiles_quarantine';
@@ -80,6 +82,23 @@ function fixture(options = {}) {
     } };
 }
 
+test('具名复制回传与存储实际分配的同名副本及新身份一致',async()=>{
+  const f=fixture();await f.store.init({});
+  const Page=loadActionComponent('entry/src/main/ets/pages/LayoutListPage.ets','LayoutListPage',{
+    methods:['catalogSkill_','doRename'],dependencies:{'entry/ProductInputProfile':{ProductInputProfile:{supportsTouchLayouts:()=>true}},
+      '../launcherskill/LayoutDraftAccess':{}}
+  });
+  const page=new Page();
+  Object.assign(page,{store:f.store,importPageMounted:true,importPageGeneration:0,refreshList(){},toast(){}});
+  const origin=await f.store.createProfile('原布局'),args={name:origin.name,newName:' 原布局 ',layoutId:origin.profileId,revision:origin.profileRevision};
+  const first=await page.catalogSkill_('copyControlLayout',args);
+  const second=await page.catalogSkill_('copyControlLayout',args);
+  assert.equal(first.name,'原布局 副本');assert.equal(second.name,'原布局 副本 2');assert.equal(second.revision,1);
+  assert.equal(new Set([first.id,second.id,origin.profileId]).size,3);assert.equal(f.store.getActiveProfile().profileId,second.id);
+  const stale=await page.catalogSkill_('copyControlLayout',{...args,layoutId:second.id});
+  assert.equal(stale.reason,'staleLayout');verifySkillCases('copyControlLayout',second,stale,'L042');
+});
+
 test('收敛编辑：读取预设/非活跃目标和取消没有写盘，也不留下编辑锁',async()=>{
   const f=fixture();await f.store.init({});
   const active=f.store.getActiveProfile().profileId,writes=f.writes.length;
@@ -147,6 +166,39 @@ test('真实编辑lease与普通mutation快照分离，嵌套lease不会重置�
   assert.equal(f.store.getActiveProfile().name, standalone.name, '取消不回滚到旧普通mutation之前');
   f.store.endEditorSession(); assert.equal(f.store.isEditorActive(), true);
   f.store.endEditorSession(); assert.equal(f.store.isEditorActive(), false);
+});
+
+test('宿主持租约换工具后恢复失败，重开仍可回到已确认检查点', async () => {
+  const f = fixture(); await f.store.init({});
+  assert.equal(f.store.beginEditorSession(), true); // 游戏宿主与当前设置页各持一份租约。
+  assert.equal(f.store.beginEditorSession(), true);
+  const confirmed = await f.store.saveEditedProfile(f.store.getActiveProfile());
+  assert.ok(confirmed);
+  f.store.commitEditorTransaction();
+  f.store.endEditorSession();
+  const profiles = f.store.getAllProfiles(), disk = new Map(f.durable());
+  const launch = await f.store.captureLaunchPreferences();
+
+  // 游戏宿主在前一个草稿确认后创建下一工具的检查点，才挂载新子编辑器。
+  f.store.beginEditorTransaction();
+  assert.equal(f.store.beginEditorSession(), true);
+  const transient = await f.store.cloneAsUser(confirmed.name);
+  assert.ok(transient); assert.notEqual(transient.profileId, confirmed.profileId);
+  f.failNextFlush();
+  assert.equal(await f.store.restoreEditorTransaction(), false);
+  f.store.endEditorSession(); f.store.endEditorSession();
+  assert.equal(f.store.isEditorActive(), true, '最后租约释放后，待重试的检查点仍归编辑器');
+  assert.equal(f.store.getActiveProfile().profileId, transient.profileId);
+  const external = await f.store.importGamePreferences(launch, launch, SESSION, 'b'.repeat(64));
+  assert.equal(external.deferred, true, '外部布局回传必须等原工具恢复确认');
+
+  assert.equal(f.store.beginEditorSession(), true);
+  assert.equal(await f.store.restoreEditorTransaction(), true);
+  f.store.endEditorSession();
+  assert.equal(f.store.isEditorActive(), false);
+  assert.equal(f.store.getActiveProfile().profileId, confirmed.profileId);
+  assert.deepEqual(f.store.getAllProfiles(), profiles);
+  assert.deepEqual(f.durable(), disk);
 });
 
 test('保存失败恢复最后确认的布局/活跃方案，真实编辑原始快照保留用于重试', async () => {

@@ -27,6 +27,7 @@ export interface McManifestVersion {
   type: string;
   url: string;
   releaseTime: string;
+  sha1?: string;
 }
 
 export interface McVersionManifest {
@@ -62,8 +63,9 @@ function cacheKey(url: string): string {
   return 'mc-version-manifest:' + url;
 }
 
-/** 明确来源只读新官方键，自动/镜像档仍可离线使用已存在的旧磁盘清单。 */
-function readCached(requiredVersion: string, maxAgeMs: number, stale: boolean): McVersionManifest | null {
+/** 按当前来源读取缓存。页面首显用 -1 忽略 TTL 并验证元数据；旧调用失败时仍可读旧正文。 */
+export function readCachedMcVersionManifest(requiredVersion: string, maxAgeMs: number,
+  offlineFallback: boolean = false): McVersionManifest | null {
   const store = getMetadataCacheStore();
   if (!store.isReady()) return null;
   let keys = [cacheKey(OFFICIAL)];
@@ -73,7 +75,7 @@ function readCached(requiredVersion: string, maxAgeMs: number, stale: boolean): 
       : [cacheKey(OFFICIAL), cacheKey(MIRROR), OFFICIAL, OLD_OFFICIAL, MIRROR];
   }
   for (const key of keys) {
-    const body = stale ? store.getBody(key) : store.get(key, maxAgeMs);
+    const body = offlineFallback ? store.getBody(key) : store.get(key, maxAgeMs);
     if (body === null) continue;
     try { return parseManifest(body, requiredVersion); }
     catch (error) { /* 损坏或缺少所选版本的缓存不能挡住有效候选。 */ }
@@ -96,7 +98,9 @@ async function fetchCandidate(url: string, requiredVersion: string): Promise<McV
   const startedAt = Date.now();
   let response = await manager.fetchTextEx(url, [], FETCH_TIMEOUT_SECONDS, headers, undefined, allowRelay);
   if (response.statusCode === 304) {
-    const cached = store.isReady() ? store.getBody(key) : null;
+    // 无条件请求收到的 304 不能证明旧清单有效。只有发出了校验头才能接受对应来源的缓存。
+    const conditional = headers !== undefined && Object.keys(headers).length > 0;
+    const cached = conditional && store.isReady() ? store.get(key, -1) : null;
     if (cached !== null) {
       try {
         const value = parseManifest(cached, requiredVersion);
@@ -120,25 +124,50 @@ async function fetchCandidate(url: string, requiredVersion: string): Promise<McV
   return value;
 }
 
-/** 保留 TTL、手动刷新与离线缓存，安装调用还要求清单实际含所选版本。 */
-export async function loadMcVersionManifest(maxAgeMs: number, forceRefresh: boolean = false,
-  requiredVersion: string = ''): Promise<McVersionManifest> {
-  if (!forceRefresh) {
-    const cached = readCached(requiredVersion, maxAgeMs, false);
-    if (cached !== null) return cached;
-  }
+/** 在线校验只接受来源候选的有效响应（含同源 304），供页面区分检查失败和没有新版。 */
+export async function refreshMcVersionManifest(requiredVersion: string = ''): Promise<McVersionManifest> {
   try {
     return await fetchMcVersionListSources(
       (): Promise<McVersionManifest> => fetchCandidate(OFFICIAL, requiredVersion),
       (): Promise<McVersionManifest> => fetchCandidate(MIRROR, requiredVersion));
   } catch (error) {
     const message = (error as Error).message;
-    const cached = readCached(requiredVersion, maxAgeMs, true);
-    if (cached !== null) {
-      AppLogger.warn(TAG, 'Using cached Minecraft manifest after request failure: ' + message);
-      return cached;
-    }
     if (message.startsWith(SHAPE_TAG)) throw new Error('版本清单解析失败：' + message.substring(SHAPE_TAG.length).trim());
     throw new Error('无法获取版本列表，请检查网络连接（' + message + '）');
   }
+}
+
+/** 保留 TTL、手动刷新与离线缓存，安装调用还要求清单实际含所选版本。 */
+export async function loadMcVersionManifest(maxAgeMs: number, forceRefresh: boolean = false,
+  requiredVersion: string = ''): Promise<McVersionManifest> {
+  if (!forceRefresh) {
+    const cached = readCachedMcVersionManifest(requiredVersion, maxAgeMs);
+    if (cached !== null) return cached;
+  }
+  try {
+    return await refreshMcVersionManifest(requiredVersion);
+  } catch (error) {
+    const cached = readCachedMcVersionManifest(requiredVersion, maxAgeMs, true);
+    if (cached !== null) {
+      AppLogger.warn(TAG, 'Using cached Minecraft manifest after request failure: ' + (error as Error).message);
+      return cached;
+    }
+    throw error as Error;
+  }
+}
+
+
+/** 旧原版身份核对使用 Mojang 独立来源缓存，历史与镜像混写的旧键不能充当官方内容身份。 */
+export async function officialVersionEntry(id: string): Promise<McManifestVersion | null> {
+  const store = getMetadataCacheStore();
+  const cached = store.isReady() ? store.get(cacheKey(OFFICIAL), -1) : null;
+  if (cached !== null) {
+    try {
+      const manifest = parseManifest(cached, id);
+      const entry = manifest.versions.find((v: McManifestVersion): boolean => v.id === id);
+      if (entry !== undefined && typeof entry.sha1 === 'string' && /^[a-f0-9]{40}$/.test(entry.sha1)) return entry;
+    } catch (_) { /* 当前官方索引中找不到此版本时再复查同一来源。 */ }
+  }
+  const fresh = await fetchCandidate(OFFICIAL, id);
+  return fresh.versions.find((v: McManifestVersion): boolean => v.id === id) ?? null;
 }

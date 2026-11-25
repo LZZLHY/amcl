@@ -1,3 +1,11 @@
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { ProductQa } from 'entry/ProductQa';
+import { ProductQaLibrary } from 'entry/ProductQaLibrary';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { captureFileEntry, FileEntryCheck, SkillFileScope } from '../launcherskill/SkillFileScope';
+import { textArg, result } from '../launcherskill/LibraryResult';
+import { toggleEnabledFilename, updateFileIdentity } from 'mods';
+import { LocalResourceAccess } from '../runtime/LocalResourceAccess';
 /**
  * 呈现颜色遵循父层主题快照：操作文字与焦点独立于按钮填充，状态小字独立于进度填充。
  * 本域不读取主题偏好，不改变原事件、任务或账户生命周期；资源类别与第三方品牌保持独立。
@@ -39,6 +47,7 @@ import { DiagnosticPolicy } from 'commons';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { GameArchiveIO } from './GameArchiveIO';
+import { ArchiveSelectionScope } from './ArchiveSelectionScope';
 import { ThemeColors } from 'commons';
 import { resolveInstanceGameDir } from 'commons';
 import { AppIconName } from 'commons';
@@ -159,6 +168,12 @@ interface ModUpdateMeta {
   installedVersionId: string;
 }
 
+/** 候选绑定检查时的物理文件，避免同路径换了内容后依据旧来源发起更新。 */
+interface OfferedModUpdate {
+  version: RemoteVersion;
+  identity: string;
+}
+
 
 @Component
 export struct InstalledResourcesSheet {
@@ -219,7 +234,7 @@ export struct InstalledResourcesSheet {
    * 更新检查命中后，把"最新可用版本"按 filePath 暂存，供「一键更新」直接取用，
    * 避免点更新时再发一次网络请求。仅 MOD 类写入。
    */
-  private pendingUpdates_: Map<string, RemoteVersion> = new Map<string, RemoteVersion>();
+  private pendingUpdates_: Map<string, OfferedModUpdate> = new Map<string, OfferedModUpdate>();
   /** 每个 mod 的 Modrinth 关联（projectId + 已装版本 id），供单条「检查更新」复用。 */
   private modMeta_: Map<string, ModUpdateMeta> = new Map<string, ModUpdateMeta>();
   /**
@@ -249,7 +264,114 @@ export struct InstalledResourcesSheet {
   /** 协调器监听：进度变化 / 任务完成时驱动行内同步刷新。 */
   private coordListener: () => void = () => { this.onCoordChange() };
 
+  private qaLibrary_: ProductQaLibrary = new ProductQaLibrary();
+  private deleteEpoch_: number = 0;
+  private scanError_: boolean = false;
+  private skillScope_: SkillFileScope = new SkillFileScope();
+  private deleteTarget_: FileEntryCheck | undefined = undefined;
+
+  /** 下游只收到面板扫描的行。尝试写入前重核版本、资源类别、目录及行的磁盘身份。 */
+  private async resourceSkill_(method:string,args:Record<string,Object>):Promise<Record<string,Object>> {
+    const port=this.localResourceAccess_();
+    if (!port.active || port.version!==textArg(args,'instance') || port.kind!==textArg(args,'kind')) return result('needsUser','resourcePanelChanged');
+    if (this.verifying || this.importing || port.pending) return result('needsUser','resourcePanelBusy');
+    if (method==='refreshInstalledResources') { this.refresh(); return result('accepted'); }
+    if (!port.ready) return result('initializing');
+    if (port.error) return result('failed','scanFailed');
+    if (method==='listInstalledResources') {
+      this.applyQuery(textArg(args,'query'));
+      const folder=this.skillScope_.list(this.mcDir,port.directory,port.version,true);
+      // 部分类别的空目录尚未创建，查询不能为了提供引用创建目录。
+      if (!folder && port.rows.length>0) return result('failed','directoryUnavailable');
+      const visible:Record<string,Object>[]=[];
+      for (let i=0;i<this.resourceData_.totalCount();i++) {
+        const row=this.resourceData_.getData(i);
+        visible.push({'ref':this.skillScope_.row(row.filename),'name':row.filename,'enabled':row.enabled,'integrity':row.integrity,
+          'updateState':row.updateState,'availableUpdate':row.latestVersionNumber,'bytes':row.sizeBytes});
+      }
+      return {'state':'ready','folder':folder,'shared':port.shared,'entries':visible};
+    }
+    if (method==='importInstalledResources') {
+      const folder=textArg(args,'folder');
+      if (!this.skillScope_.belongs(this.mcDir,port.directory,port.version,folder)) return result('failed','directoryChanged');
+      return this.doImport(folder);
+    }
+    if (method==='verifyInstalledMods') return this.doFullVerify();
+    const folder=textArg(args,'folder'),ref=textArg(args,'ref');
+    const name=this.skillScope_.resolve(this.mcDir,port.directory,port.version,folder,ref);
+    const row=port.rows.find(item=>item.filename===name && item.filePath===port.directory+'/'+name);
+    if (!name || !row) return result('failed','entryChanged');
+    if (method==='setInstalledResourceEnabled' && typeof args['enabled']!=='boolean') return result('failed','toggleUnavailable');
+    if (method==='checkInstalledModUpdate') {
+      if (row.updateState==='checking') return result('accepted','alreadyChecking');
+      const epoch=this.scanEpoch_;
+      const checked=await this.recheckUpdate(row);
+      return checked && this.isCurrent(epoch)?{'state':'ready','updateState':row.updateState,'version':row.latestVersionNumber}:result('unknown','updateUnconfirmed');
+    }
+    if (method==='ignoreInstalledModUpdate') return this.ignoreUpdate(row);
+    return this.changeResource_(method, row, args['enabled']===true, true);
+  }
+
+  /** 页面与具名调用共用准入、共享影响提示和提交。异步确认不能授权同名新文件或已淘汰的更新。 */
+  private async changeResource_(method:string, row:ResourceRow, desired:boolean=false, skill:boolean=false):Promise<Record<string,Object>> {
+    const port=this.localResourceAccess_();
+    const name=row.filename;
+    if (!port.active || !port.ready || port.error || port.pending || this.verifying || this.importing ||
+      !port.rows.includes(row) || row.filePath!==port.directory+'/'+name) return result('failed','entryChanged');
+    const toggle=method==='setInstalledResourceEnabled';
+    const action=toggle?'更改启用状态':method==='requestInstalledResourceDelete'?'删除':method==='repairInstalledMod'?'修复':method==='updateInstalledMod'?'更新':'';
+    if (!action) return result('failed','unsupportedOperation');
+    const candidate=this.currentUpdate_(row);
+    if ((toggle && !port.togglable) || (action==='修复' && row.integrity!==ModIntegrity.CORRUPT) ||
+      (action==='更新' && (!candidate || row.updateState!=='outdated'))) return result('failed','actionUnavailable');
+    const matches=captureFileEntry(this.mcDir,port.directory,port.version,name);
+    if (!matches) return result('failed','entryChanged');
+    if (!toggle || (port.shared && row.enabled!==desired)) {
+      if (skill) LauncherSkillBus.awaitingUser(method);
+      const decision=await this.getUIContext().getPromptAction().showDialog({title:action+'「'+name+'」？',
+        message:port.shared?'此资源位于共享目录，操作会影响使用该目录的实例。':'本次操作仅针对所选版本的资源。',
+        buttons:[{text:'取消',color:this.theme.textSecondary as string},{text:action,color:this.theme.errorText as string}]}).catch(():undefined=>undefined);
+      if (decision?.index!==1) return result('cancelled');
+    }
+    const now=this.localResourceAccess_();
+    if (!now.active || this.verifying || this.importing || this.pendingDelete || now.epoch!==port.epoch ||
+      now.kind!==port.kind || !now.rows.includes(row) || !matches(this.mcDir,now.directory,now.version,name)) return result('failed','entryChanged');
+    if (toggle) {
+      const dest=now.directory+'/'+toggleEnabledFilename(name,desired);
+      if (dest!==row.filePath && fs.accessSync(dest)) return result('failed','targetExists');
+      this.handleToggle(row,desired);
+      return fs.accessSync(dest) && (dest===row.filePath || !fs.accessSync(row.filePath))?{'state':'ready','enabled':desired}:result('unknown','toggleOutcomeUnknown');
+    }
+    if (action==='删除') {
+      if (this.promptDelete_(name)<0) return result('failed','entryChanged');
+      return this.executeDelete()?result('ready'):result('failed','removeFailed');
+    }
+    if (action==='修复') return row.integrity===ModIntegrity.CORRUPT ? this.doRepair(row,matches) : result('failed','entryChanged');
+    if (candidate!==this.currentUpdate_(row)) return result('failed','updateChanged');
+    return this.doUpdate(row);
+  }
+
+  /** 仅共享本页真实列表和既有按钮回调，不允许调用者给出文件路径。 */
+  private localResourceAccess_(): LocalResourceAccess {
+    return { active: this.mounted_ && this.active && AppStorage.get<boolean>('appInForeground') === true,
+      shared:resolveInstanceGameDir(this.mcDir,this.versionId,this.versionIsolation)===this.mcDir, ready:this.loaded, error:this.scanError_, epoch:this.scanEpoch_, directory:this.targetDir(), version:this.versionId,
+      kind:this.kind, rows:this.rows, togglable:metaOf(this.kind).togglable, pending:this.pendingDelete, confirmation:this.deleteEpoch_,
+      toggle:(row: ResourceRow,enabled: boolean): Promise<Record<string,Object>> => this.changeResource_('setInstalledResourceEnabled',row,enabled),
+      prompt:(name: string): number => this.promptDelete_(name), remove:(): boolean => this.executeDelete(),
+      cancel:(): void => { this.pendingDelete = ''; }, back:(): void => { this.onClose(); } };
+  }
+
+  private promptDelete_(name: string): number {
+    this.deleteTarget_ = captureFileEntry(this.mcDir,this.targetDir(),this.versionId,name);
+    if (!this.deleteTarget_) return -1;
+    this.deleteEpoch_++; this.pendingDelete=name; return this.deleteEpoch_;
+  }
+
   aboutToAppear() {
+    LauncherSkillBus.bind('installedResources',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>this.resourceSkill_(method,args),
+      ():boolean=>this.localResourceAccess_().active);
+    ProductQa.bindSurface('library',this,(action: string,json: string,id: string): Promise<string> =>
+      this.qaLibrary_.run(this.localResourceAccess_(),action,json,id));
     this.navigationProjectionAlive_ = true;
     this.mounted_ = true;
     ModUpdateCoordinator.instance().addListener(this.coordListener)
@@ -257,6 +379,8 @@ export struct InstalledResourcesSheet {
   }
 
   aboutToDisappear() {
+    LauncherSkillBus.unbind('installedResources',this);
+    ProductQa.unbindSurface('library',this);
     this.navigationProjectionAlive_ = false;
     this.mounted_ = false;
     this.cancelScan();
@@ -498,10 +622,10 @@ export struct InstalledResourcesSheet {
             togglable: metaOf(this.kind).togglable,
             expanded: this.expandedPath === row.filePath,
             onExpand: () => { this.toggleExpand(row.filePath) },
-            onToggle: (enabled: boolean) => { this.handleToggle(row, enabled) },
-            onDelete: () => { this.pendingDelete = row.filename },
-            onRepair: () => { this.doRepair(row) },
-            onUpdate: () => { this.doUpdate(row) },
+            onToggle: (enabled: boolean) => { this.changeResource_('setInstalledResourceEnabled',row,enabled) },
+            onDelete: () => { this.changeResource_('requestInstalledResourceDelete',row) },
+            onRepair: () => { this.changeResource_('repairInstalledMod',row) },
+            onUpdate: () => { this.changeResource_('updateInstalledMod',row) },
             onRecheck: () => { this.recheckUpdate(row) },
             onIgnore: () => { this.ignoreUpdate(row) },
           })
@@ -660,6 +784,7 @@ export struct InstalledResourcesSheet {
     if (!this.active || !this.mounted_) return;
     this.scopeKey_ = this.targetDir() + '|' + this.kind;
     this.loaded = false;
+    this.scanError_ = false;
     this.pendingUpdates_.clear();
     this.modMeta_.clear();
     this.expandedPath = '';
@@ -668,6 +793,7 @@ export struct InstalledResourcesSheet {
     this.scanControl_ = control;
     this.loadLocalRows(epoch, control).catch((error: Error) => {
       if (!this.isCurrent(epoch)) return;
+      this.scanError_ = true;
       this.rows = this.resourceData_.replace([]);
       this.visibleCount = 0;
       this.loaded = true;
@@ -785,12 +911,13 @@ export struct InstalledResourcesSheet {
           this.modMeta_.set(m.filePath, { source: src, projectId: m.remoteProjectId!, installedVersionId: m.remoteVersionId })
           this.setRowUpdate(m.filePath, 'checking', '')
           try {
+            const identity=updateFileIdentity(m.filePath);
             let versions = await this.getVersionsForSource_(src, m.remoteProjectId!, loaderKey, gameVer, modrinth, curseforge)
             if (!this.isCurrent(epoch)) return
             let latest = await updateSession.pick(src, m.remoteProjectId!, m.remoteVersionId!, versions)
             if (!this.isCurrent(epoch)) return;
             if (latest !== null && latest.id !== m.remoteVersionId && pickPrimaryFile(latest.files) !== null) {
-              this.pendingUpdates_.set(m.filePath, latest)
+              this.pendingUpdates_.set(m.filePath, {version:latest,identity:identity})
               if (this.ignoredKeys_.has(m.filePath + '|' + latest.id)) {
                 this.setRowUpdate(m.filePath, 'ignored', latest.versionNumber)
               } else {
@@ -848,6 +975,8 @@ export struct InstalledResourcesSheet {
   }
 
   private setRowUpdate(filePath: string, state: string, latestVersionNumber: string): void {
+    // 重新检查、无候选、忽略及失败都会撤销上轮可提交的单个更新。
+    if (state !== 'outdated' && state !== 'updating') this.pendingUpdates_.delete(filePath);
     const row = this.resourceData_.find(filePath);
     if (row === undefined) return;
     row.updateState = state;
@@ -860,6 +989,13 @@ export struct InstalledResourcesSheet {
     if (row === undefined) return;
     row.updateState = 'updating';
     row.updatingPct = Math.max(0, Math.min(100, Math.floor(pct)));
+  }
+
+  private currentUpdate_(row: ResourceRow): OfferedModUpdate | undefined {
+    const offer=this.pendingUpdates_.get(row.filePath);
+    if (!offer || row.updateState!=='outdated') return undefined;
+    try { return updateFileIdentity(row.filePath)===offer.identity ? offer : undefined; }
+    catch (_) { return undefined; }
   }
 
   /** 重连：把正被全局协调器更新的行恢复为 'updating' + 当前进度。 */
@@ -912,25 +1048,41 @@ export struct InstalledResourcesSheet {
    * 本地批量导入：多选资源文件，逐项校验与导入；部分成功也刷新列表。
    * 模组要 .jar，资源包 / 光影 / 数据包要 .zip（取 metaOf(kind).primaryExt）。
    */
-  private async doImport(): Promise<void> {
-    if (this.importing) return
+  private async doImport(folderRef:string=''): Promise<Record<string,Object>> {
+    if (this.importing) return result('needsUser','actionUnavailable');
     let ctx = this.getAbilityCtx()
-    if (ctx === null) { this.safeToast('上下文不可用，无法导入', 1500); return }
+    if (ctx === null) { this.safeToast('上下文不可用，无法导入', 1500); return result('failed','actionUnavailable') }
     let dir = this.targetDir()
-    if (dir.length === 0) { this.safeToast('请先选择一个已装版本', 1500); return }
+    if (dir.length === 0) { this.safeToast('请先选择一个已装版本', 1500); return result('failed','actionUnavailable') }
     let m = metaOf(this.kind)
+    const originalRoot=this.mcDir, originalVersion=this.versionId, isolated=this.versionIsolation;
+    const originalKind=this.kind;
+    const current=():boolean=>this.mounted_ && this.active && this.mcDir===originalRoot && this.versionId===originalVersion &&
+      this.versionIsolation===isolated && this.targetDir()===dir && originalKind===this.kind;
+    const shared=resolveInstanceGameDir(this.mcDir,this.versionId,this.versionIsolation)===this.mcDir;
+    const scope:ArchiveSelectionScope={root:originalRoot,current:current,consent:async():Promise<boolean>=>{
+      if (!shared) return true;
+      const choice=await this.getUIContext().getPromptAction().showDialog({title:'导入到共享 .minecraft 目录？',
+        message:'使用同一游戏目录的实例都会看到本次导入。已有同名文件将保留。',buttons:[
+        {text:'取消',color:this.theme.textSecondary as string},{text:'选择文件',color:this.theme.actionText as string}]}).catch(():undefined=>undefined);
+      return choice?.index===1;
+    }};
+    if (folderRef && !this.skillScope_.belongs(originalRoot,dir,originalVersion,folderRef)) return result('failed','directoryChanged');
     this.importing = true
     try {
-      let r = await GameArchiveIO.importResourceFiles(ctx, dir, [m.primaryExt])
-      if (r.cancelled) return
+      if (folderRef) LauncherSkillBus.awaitingUser('importInstalledResources');
+      let r = await GameArchiveIO.importResourceFiles(ctx, dir, [m.primaryExt],500,scope)
+      if (r.cancelled) return result('cancelled');
       this.safeToast(r.message, r.failures.length > 0 ? 3500 : 1800)
       if (r.names.length > 0) {
         this.refresh()
         this.onChanged()
       }
+      return {'state':r.failures.length>0?(r.names.length?'partial':'failed'):'ready','imported':r.names,'failedCount':r.failures.length,'reason':r.targetChanged?'directoryChanged':r.failures.length?'fileRejected':''}
     } catch (e) {
       AppLogger.warn(TAG, 'doImport failed', e, LOG_DOMAIN_DOWNLOAD)
       this.safeToast('导入失败：' + (e as Error).message, 2200)
+      return result('failed','importFailed');
     } finally {
       this.importing = false
     }
@@ -940,13 +1092,13 @@ export struct InstalledResourcesSheet {
    * 校验完整性（全量）：对已收编模组重算 sha1 与基准比对检出损坏；不符再反查消歧。
    * 复用 fetchIconsAsync(fullVerify=true)。完成后 toast 汇总损坏数。
    */
-  private async doFullVerify(): Promise<void> {
+  private async doFullVerify(): Promise<Record<string,Object>> {
     // 初始枚举是唯一发布基础清单的任务，不能被空快照校验打断。
-    if (!this.loaded || !this.active || !this.mounted_) return;
-    if (this.verifying) return
-    if (this.kind !== ResourceKind.MOD) return
+    if (!this.loaded || !this.active || !this.mounted_) return result('needsUser','actionUnavailable');
+    if (this.verifying) return result('needsUser','actionUnavailable');
+    if (this.kind !== ResourceKind.MOD) return result('needsUser','actionUnavailable');
     let dm = DownloadManager.instance()
-    if (!dm.isCaBundleInitialized()) { this.safeToast('网络组件未就绪，请稍后再试', 1800); return }
+    if (!dm.isCaBundleInitialized()) { this.safeToast('网络组件未就绪，请稍后再试', 1800); return result('failed','actionUnavailable') }
     this.cancelScan();
     const epoch = this.scanEpoch_;
     this.scanControl_ = new LocalModScanControl();
@@ -962,12 +1114,14 @@ export struct InstalledResourcesSheet {
           return { state: !this.isCurrent(epoch) ? LedgerState.ABORTED : corrupt > 0 ? LedgerState.FAILED : LedgerState.SUCCESS,
             summary: !this.isCurrent(epoch) ? '校验页面已离开，本轮结果未发布' : '已确认损坏模组 ' + corrupt, fileCount: this.rows.length }
         })
-      if (!this.isCurrent(epoch)) return;
+      if (!this.isCurrent(epoch)) return result('unknown','scanChanged');
       let corrupt = 0
       for (let r of this.rows) { if (r.integrity === ModIntegrity.CORRUPT) corrupt++ }
       this.safeToast(corrupt > 0 ? ('校验完成：发现 ' + corrupt + ' 个损坏模组') : '校验完成：未发现已确认的损坏', 2400)
+      return {'state':'ready','corrupt':corrupt,'files':this.rows.length}
     } catch (e) {
       if (this.isCurrent(epoch)) this.safeToast('校验失败：' + (e as Error).message, 2200)
+      return result('failed','verifyFailed');
     } finally {
       if (this.isCurrent(epoch)) this.verifying = false
     }
@@ -977,14 +1131,14 @@ export struct InstalledResourcesSheet {
    * 一键修复损坏模组：按清单记录的源 + 版本重新下载【同一版本】，走 ModUpdateCoordinator
    * 暂存下载 + sha1 校验 + 原子替换（不污染 mods/）。完成后重扫即恢复 verified。
    */
-  private async doRepair(row: ResourceRow): Promise<void> {
+  private async doRepair(row: ResourceRow, matches: FileEntryCheck): Promise<Record<string,Object>> {
     const repairMcDir = this.mcDir
     const repairVersionId = this.versionId
     const repairIsolation = this.versionIsolation
     let meta = this.modMeta_.get(row.filePath)
-    if (meta === undefined) { this.safeToast('无法修复（未关联来源）', 2000); return }
+    if (meta === undefined) { this.safeToast('无法修复（未关联来源）', 2000); return result('failed','actionUnavailable') }
     let dm = DownloadManager.instance()
-    if (!dm.isCaBundleInitialized()) { this.safeToast('网络组件未就绪，请稍后再试', 1800); return }
+    if (!dm.isCaBundleInitialized()) { this.safeToast('网络组件未就绪，请稍后再试', 1800); return result('failed','actionUnavailable') }
     this.safeToast('正在获取修复版本…', 1500)
     try {
       let src = (meta.source === ModSource.CURSEFORGE) ? ModSource.CURSEFORGE : ModSource.MODRINTH
@@ -996,7 +1150,9 @@ export struct InstalledResourcesSheet {
         let mr = this.makeModrinth(dm)
         ver = await mr.getVersion(meta.installedVersionId)
       }
-      if (pickPrimaryFile(ver.files) === null) { this.safeToast('该版本无可下载文件', 2000); return }
+      if (!this.localResourceAccess_().active || !matches(this.mcDir,this.targetDir(),this.versionId,row.filename) ||
+        !this.rows.includes(row) || row.integrity!==ModIntegrity.CORRUPT) return result('failed','entryChanged');
+      if (pickPrimaryFile(ver.files) === null) { this.safeToast('该版本无可下载文件', 2000); return result('failed','actionUnavailable') }
       this.expandedPath = ''
       this.setRowUpdate(row.filePath, 'updating', ver.versionNumber)
       await ModUpdateCoordinator.instance().start({
@@ -1012,9 +1168,11 @@ export struct InstalledResourcesSheet {
       this.safeToast('修复完成', 1600)
       this.refresh()
       this.onChanged()
+      return result('ready')
     } catch (e) {
       this.setRowIntegrity(row.filePath, ModIntegrity.CORRUPT)
       this.safeToast('修复失败：' + (e as Error).message, 2400)
+      return result('failed','repairFailed');
     }
   }
 
@@ -1049,57 +1207,63 @@ export struct InstalledResourcesSheet {
   }
 
   /** 单条「检查更新」：清掉该行的忽略记录后，重新查一次最新版。 */
-  private async recheckUpdate(row: ResourceRow): Promise<void> {
+  private async recheckUpdate(row: ResourceRow): Promise<boolean> {
     const epoch = this.scanEpoch_;
     const control = this.scanControl_;
-    if (!this.isCurrent(epoch) || control === null || row.updateState === 'checking') return;
+    if (!this.isCurrent(epoch) || control === null || row.updateState === 'checking') return false;
+    this.setRowUpdate(row.filePath, 'none', '')
     let meta = this.modMeta_.get(row.filePath)
-    if (meta === undefined) { this.safeToast('无法检查（未关联 Modrinth）', 1800); return }
+    if (meta === undefined) { this.safeToast('无法检查（未关联 Modrinth）', 1800); return false }
     // 清掉该文件的所有忽略记录（用户主动检查 = 想看到结果）
     let drop: string[] = []
     this.ignoredKeys_.forEach((k: string) => { if (k.startsWith(row.filePath + '|')) drop.push(k) })
     for (let k of drop) this.ignoredKeys_.delete(k)
 
     let dm = DownloadManager.instance()
-    if (!dm.isCaBundleInitialized()) { this.safeToast('网络组件未就绪，请稍后再试', 1800); return }
+    if (!dm.isCaBundleInitialized()) { this.safeToast('网络组件未就绪，请稍后再试', 1800); return false }
     let loaderKey = resolveInstalledLoaderKey(this.mcDir, this.versionId)
     let gameVer = resolveInstalledMcVersion(this.mcDir, this.versionId)
     this.setRowUpdate(row.filePath, 'checking', '')
     try {
+      const identity=updateFileIdentity(row.filePath);
       let modrinth = this.makeModrinth(dm)
       let curseforge = this.makeCurseForge(dm)
       let src = (meta.source === ModSource.CURSEFORGE) ? ModSource.CURSEFORGE : ModSource.MODRINTH
       let versions = await this.getVersionsForSource_(src, meta.projectId, loaderKey, gameVer, modrinth, curseforge)
-      if (!this.isCurrent(epoch)) return;
+      if (!this.isCurrent(epoch)) return false;
       const scan = await new LocalModScanner(modrinth, curseforge).scan({ mcDir: this.mcDir,
         versionId: this.versionId, versionIsolation: this.versionIsolation, kind: ResourceKind.MOD,
         control: control, localMods: this.localMods_ })
-      if (!this.isCurrent(epoch)) return;
+      if (!this.isCurrent(epoch)) return false;
       const session = createModUpdateSession(scan.mods, new ModSourceRouter([modrinth, curseforge]),
         () => !this.isCurrent(epoch));
       let latest = await session.pick(src, meta.projectId, meta.installedVersionId, versions)
-      if (!this.isCurrent(epoch)) return;
+      if (!this.isCurrent(epoch)) return false;
       if (latest !== null && latest.id !== meta.installedVersionId && pickPrimaryFile(latest.files) !== null) {
-        this.pendingUpdates_.set(row.filePath, latest)
+        this.pendingUpdates_.set(row.filePath, {version:latest,identity:identity})
         this.setRowUpdate(row.filePath, 'outdated', latest.versionNumber)
       } else {
         this.setRowUpdate(row.filePath, 'latest', '')
         this.safeToast('当前没有满足依赖要求的更新', 1800)
       }
+      return true
     } catch (e) {
-      if (!this.isCurrent(epoch)) return;
+      if (!this.isCurrent(epoch)) return false;
       this.setRowUpdate(row.filePath, 'none', '')
       this.safeToast('检查失败：' + (e as Error).message, 2200)
+      return false
     }
   }
 
   /** 忽略本次更新（会话级，记到该目标版本；出现更新版本会重新提示）。 */
-  private ignoreUpdate(row: ResourceRow): void {
-    let latest = this.pendingUpdates_.get(row.filePath)
-    if (latest !== undefined) this.ignoredKeys_.add(row.filePath + '|' + latest.id)
+  private ignoreUpdate(row: ResourceRow): Record<string,Object> {
+    const latest = this.currentUpdate_(row)?.version;
+    if (!latest) return result('failed','actionUnavailable');
+    this.ignoredKeys_.add(row.filePath + '|' + latest.id)
     this.expandedPath = ''
     this.setRowUpdate(row.filePath, 'ignored', row.latestVersionNumber)
     this.safeToast('已忽略该更新', 1400)
+    return {'state':'ready','updateState':row.updateState};
   }
 
   /**
@@ -1107,9 +1271,10 @@ export struct InstalledResourcesSheet {
    * 本组件只置一次 'updating' 做即时反馈，进度与完成由协调器监听驱动。
    * 走协调器的好处：跨 sheet 关闭/重开进度不丢、mods/ 不出现半成品、完成后才替换旧文件。
    */
-  private async doUpdate(row: ResourceRow): Promise<void> {
-    let latest = this.pendingUpdates_.get(row.filePath)
-    if (latest === undefined) { this.safeToast('更新信息已过期，请刷新后重试', 1800); return }
+  private async doUpdate(row: ResourceRow): Promise<Record<string,Object>> {
+    const offer = this.currentUpdate_(row);
+    if (!offer) { this.safeToast('更新信息已过期，请刷新后重试', 1800); return result('failed','actionUnavailable') }
+    const latest = offer.version;
     this.setRowUpdate(row.filePath, 'updating', row.latestVersionNumber)
     try {
       await ModUpdateCoordinator.instance().start({
@@ -1126,12 +1291,16 @@ export struct InstalledResourcesSheet {
       this.onChanged()
       // 完成后协调器会 notify → onCoordChange 触发 refresh；这里再兜一次确保刷新
       this.refresh()
+      return result('ready')
     } catch (e) {
       let msg = (e as Error).message
       let isCancelled = msg.indexOf('已取消') >= 0 || msg.indexOf('cancel') >= 0
       AppLogger.warn(TAG, `doUpdate failed: ${msg}`, null, LOG_DOMAIN_DOWNLOAD)
-      this.setRowUpdate(row.filePath, 'outdated', row.latestVersionNumber)
+      if (this.pendingUpdates_.get(row.filePath)===offer && this.resourceData_.find(row.filePath)===row) {
+        this.setRowUpdate(row.filePath, 'outdated', latest.versionNumber)
+      }
       this.safeToast(isCancelled ? '已取消更新' : ('更新失败：' + msg), 2400)
+      return result('failed','updateFailed');
     }
   }
 
@@ -1162,11 +1331,13 @@ export struct InstalledResourcesSheet {
     }
   }
 
-  private executeDelete(): void {
+  private executeDelete(): boolean {
     let target = this.pendingDelete
     this.pendingDelete = ''
-    if (target.length === 0) return
+    const matches=this.deleteTarget_;
+    this.deleteTarget_=undefined;
     let dir = this.targetDir()
+    if (!target || !matches || !this.localResourceAccess_().active || !matches(this.mcDir,dir,this.versionId,target)) return false;
     let path = dir + '/' + target
     let installer = new ModInstaller(DownloadManager.instance())
     try {
@@ -1179,11 +1350,13 @@ export struct InstalledResourcesSheet {
       }
       this.refresh()
       this.onChanged()
+      return ok && !fs.accessSync(path);
     } catch (e) {
       let msg = (e as Error).message
       AppLogger.warn(TAG, `delete failed: ${msg}`, null, LOG_DOMAIN_UI)
       getTaskActivityOwner().recordSummary('resource_manage', target, 'failed', '删除资源失败：' + msg)
       this.safeToast('删除失败：' + msg, 2000)
+      return false;
     }
   }
 

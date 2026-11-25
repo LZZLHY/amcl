@@ -77,13 +77,13 @@ static_assert(kAuto120.min == 30 && kAuto120.max == 120 &&
               "Auto must track the current display refresh rate");
 constexpr amcl::ohos::FrameRatePolicy kCapped60 =
     amcl::ohos::MakeFrameRatePolicy(120, 0, 0, 0, 60, true);
-static_assert(kCapped60.min == 30 && kCapped60.max == 60 &&
-                  kCapped60.expected == 60,
-              "an explicit cap must be a hard scheduler ceiling");
+// 旧档位只限制调度上限；固定面板投票在 controller 的独立入口中验证。
+static_assert(kCapped60.min == 30 && kCapped60.max == 60 && kCapped60.expected == 60,
+              "legacy caps must leave the lower bound adaptive");
 constexpr amcl::ohos::FrameRatePolicy kCapAboveDisplay =
     amcl::ohos::MakeFrameRatePolicy(90, 0, 0, 0, 120, true);
-static_assert(kCapAboveDisplay.max == 90 && kCapAboveDisplay.expected == 90,
-              "a cap must never request more than the current display rate");
+static_assert(kCapAboveDisplay.min == 30 && kCapAboveDisplay.max == 90 && kCapAboveDisplay.expected == 90,
+              "a ceiling above the display rate must not raise the panel request");
 constexpr amcl::ohos::FrameRatePolicy kInactiveCapped =
     amcl::ohos::MakeFrameRatePolicy(120, 0, 0, 0, 60, false);
 static_assert(kInactiveCapped.min == 30 && kInactiveCapped.max == 30 &&

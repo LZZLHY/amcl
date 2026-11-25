@@ -25,7 +25,7 @@ import java.util.LinkedList;
 final class AMCLDisplay implements DisplayImplementation {
 	// 私有运行期配对协议：只有实际L2初始化才握手，不为能力探测提前加载游戏类。
 	// Sys的既有公开JNI_VERSION保持19；独立协议禁止旧Java owner与新neutral模型混跑。
-	private static final int AMCL_CONTROL_PROTOCOL = 0x4c324432;
+	private static final int AMCL_CONTROL_PROTOCOL = 0x4c324433;
 	private static final int AMCL_LOOK_PROTOCOL = 0x4c324c31;
 
 	private DisplayMode currentMode;
@@ -338,7 +338,10 @@ final class AMCLDisplay implements DisplayImplementation {
 	 * 返回true仅表示实际Next已报告本轮为空；256条耗尽或原consumer换代只暂缓领取，
 	 * 不弹旧readBuffer、不制造取消、不补current身份。递归调用同样暂缓，由外层完成。
 	 */
-	private boolean drainEvents(int budget) {
+	private boolean drainEvents(int budget) { return drainEvents(budget, 0L); }
+
+	/** 主动设位只同步消费到本次请求，后到输入留给正常轮询；共用原事件序列和防重入检查。 */
+	private boolean drainEvents(int budget, long untilOrder) {
 		if (mouseEventQueue == null && keyboardEventQueue == null) return true;
 		if (inputDraining) return false;
 		// cursor JNI允许同步重入退休本实例并创建新target。原排空循环只能消费原consumer，
@@ -351,7 +354,7 @@ final class AMCLDisplay implements DisplayImplementation {
 		try {
 		int remaining = budget;
 		while (controlConsumer == originConsumer && remaining-- > 0) {
-			if (!nNextEvent(evTmp)) return true;
+			if (!(untilOrder == 0L ? nNextEvent(evTmp) : nNextEventThrough(evTmp, untilOrder))) return true;
 			int type = evTmp[0];
 				switch (type) {
 				case 1020: { // opaque前缀：完整64bit token，禁止以低32bit身份代替。
@@ -901,7 +904,12 @@ final class AMCLDisplay implements DisplayImplementation {
 	}
 
 	public int getNativeCursorCapabilities() { return 0; }
-	public void setCursorPosition(int x, int y) { /* 增量模型，无需设置 */ }
+	/** Java 菜单坐标原点在左下，neutral 使用窗口左上坐标。尺寸与原目标必须出自同一活跃窗口。 */
+	public void setCursorPosition(int x, int y) {
+		if (grabbed || mouseEventQueue == null || controlConsumer == 0) return;
+		final long order = nRequestMenuWarp(controlConsumer, x, y);
+		if (order != 0) drainEvents(Integer.MAX_VALUE, order);
+	}
 	public void setNativeCursor(Object handle) throws LWJGLException { }
 	public int getMinCursorSize() { return 0; }
 	public int getMaxCursorSize() { return 0; }
@@ -1021,6 +1029,8 @@ final class AMCLDisplay implements DisplayImplementation {
 	private static native double nGetCursorX();
 	private static native double nGetCursorY();
 	private static native boolean nNextEvent(int[] out);
+	private static native long nRequestMenuWarp(long consumer, int x, int y);
+	private static native boolean nNextEventThrough(int[] out, long untilOrder);
 	private static native void nSetGrab(boolean grab);
 	// 新私有JNI仅连接经身份核对的neutral端口，不改变旧五整数NextEvent含义。
 	private static native long nControlOpen();

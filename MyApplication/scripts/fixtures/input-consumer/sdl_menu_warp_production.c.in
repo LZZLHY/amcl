@@ -1,0 +1,206 @@
+/* 实际neutral的claim/ring/ACK与SDL SDK的缓存、全局坐标、事件队列一起执行。
+ * dummy窗口的角色和触点资格是平台边缘，游戏调用的是公开SDL API。 */
+@PRELUDE@
+#include "input/input_menu_cursor_snapshot.h"
+
+static bool allow_touch;
+static bool echo_warp;
+static int echo_count;
+static bool nested_request, nested_regrab;
+static void switch_grab(int enabled)
+{
+    sourceSdkMode(enabled); grabbing = enabled != 0;
+}
+static Uint64 touch_claim(AmclEnqueueMenuWarpV1 enqueue, void *request)
+{
+    return allow_touch ? enqueue(request) : 0;
+}
+
+static bool echo_from_watcher(void *data, SDL_Event *event)
+{
+    (void)data;
+    if (event->type == SDL_EVENT_MOUSE_MOTION && nested_request) {
+        nested_request = false;
+        SDL_WarpMouseInWindow(activeWindow, 120, 124);
+        float x, y; SDL_GetMouseState(&x, &y);
+        CHECK(x == 105 && y == 107);
+    }
+    if (event->type == SDL_EVENT_MOUSE_MOTION && nested_regrab) {
+        nested_regrab = false;
+        CHECK(SDL_SetWindowRelativeMouseMode(activeWindow, true));
+    }
+    if (echo_warp && event->type == SDL_EVENT_MOUSE_MOTION) {
+        CHECK(++echo_count == 1);
+        SDL_WarpMouseInWindow(activeWindow, event->motion.x, event->motion.y);
+    }
+    return true;
+}
+
+static void check_position(float x, float y)
+{
+    float local_x, local_y, global_x, global_y;
+    int origin_x, origin_y;
+    SDL_GetMouseState(&local_x, &local_y);
+    SDL_GetGlobalMouseState(&global_x, &global_y);
+    CHECK(SDL_GetWindowPosition(activeWindow, &origin_x, &origin_y));
+    CHECK(origin_x == 75 && origin_y == 53);
+    CHECK(local_x == x && local_y == y && global_x - origin_x == x && global_y - origin_y == y);
+}
+
+static int relevant_events(SDL_Event *events, int capacity)
+{
+    SDL_Event event;
+    int count = 0;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_KEY_DOWN) {
+            CHECK(count < capacity);
+            events[count++] = event;
+        }
+    }
+    return count;
+}
+
+int main(void)
+{
+    const AmclInputHostApiV1 *core = amclInputGetHostApiV1();
+    CHECK(amclInputHostDescriptorPublishV1(core) == 0);
+    amclControlDeliveryPublishV1();
+    amclLookExecutionPublishV1();
+    amclSourceControlPublishV1();
+    CHECK(amclSourceControlPrepareV1() == 1);
+    Uint64 session = 0;
+    CHECK(core->beginSession(&session) == 0 && core->publishFocus(1) == 0);
+    AmclInputSurfacePayload surface = {0};
+    surface.active = 1; surface.widthPx = 640; surface.heightPx = 480; surface.density = 1;
+    surface.validFields = AMCL_INPUT_SURFACE_FIELD_ALL; surface.publicationGeneration = 1;
+    CHECK(core->publishSurface(&surface) == 0);
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS));
+    activeWindow = SDL_CreateWindow("Menu cursor", 640, 480, SDL_WINDOW_HIDDEN);
+    CHECK(activeWindow && SDL_SetWindowPosition(activeWindow, 75, 53));
+    SDL_SetKeyboardFocus(activeWindow);
+    SDL_SetMouseFocus(activeWindow);
+  AmclInputEvent context;SDL_zero(context);context.header.abiVersion=1;context.header.structSize=sizeof(context);
+  context.header.eventType=AMCL_INPUT_EVENT_SURFACE_CONTEXT_CHANGED;context.header.source=AMCL_INPUT_SOURCE_SYNTHETIC;
+  context.payload.surfaceContext.generation=1;context.payload.surfaceContext.windowId=activeWindow->id;context.payload.surfaceContext.displayId=1;
+  context.payload.surfaceContext.widthPx=640;context.payload.surfaceContext.heightPx=480;context.payload.surfaceContext.density=1;
+  context.payload.surfaceContext.validFields=AMCL_INPUT_SURFACE_CONTEXT_FIELD_WINDOW|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DISPLAY|
+    AMCL_INPUT_SURFACE_CONTEXT_FIELD_RECT|AMCL_INPUT_SURFACE_CONTEXT_FIELD_DENSITY|AMCL_INPUT_SURFACE_CONTEXT_FIELD_TRANSFORM;
+  CHECK(core->submitEvent(&context)==0);
+    CHECK(sourceSdkBind() == 1);
+    sourceSdkActivate();
+    sourceSdkMode(0);
+    CHECK(amclControlDeliveryBindSessionV1(1) == 0);
+    CHECK(amclLookExecutionGetPortV1()->bindSession(1) == 0);
+    CHECK(OPENHARMONY_ControlReady(activeWindow->id));
+    amclBackendInputSetActive(AMCL_BACKEND_INPUT_SDL3,1);
+    OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+    sourceSdkWarpSetup(activeWindow->id);
+    inputBridge_setCarriedMenuWarpClaimV1(touch_claim);
+    struct SDL_WindowData role = {0};
+    role.role = OPENHARMONY_WINDOW_PRESENTED;
+    struct SDL_WindowData *platform_data = activeWindow->internal;
+    activeWindow->internal = &role;
+    bridge.SetLookCursor = sourceSdkWarpLookCursor;
+    bridge.SetGrabState = switch_grab;
+    SDL_GetMouse()->SetRelativeMouseMode = OPENHARMONY_SetRelativeMouseMode;
+    SDL_GetMouse()->TryWarpMenuCursor = OPENHARMONY_TryWarpMenuCursor;
+    SDL_GetMouse()->WarpMouseGlobal = OPENHARMONY_WarpMenuGlobal;
+    SDL_GetMouse()->WarpMouse = OPENHARMONY_WarpMouse;
+    SDL_GetMouse()->GetGlobalMouseState = OPENHARMONY_GlobalMouseState;
+    bridge.GetCursorSnapshot = sourceSdkWarpSnapshot;
+    CHECK(OPENHARMONY_GetMenuWarpRequest(&bridge) != NULL);
+    SDL_Event events[16];
+    sourceSdkWarpPosition(320, 240);
+    OPENHARMONY_PumpOrderedEvents(&bridge, activeWindow->id);
+    (void)relevant_events(events, 16);
+    check_position(320, 240);
+    allow_touch = false;
+    SDL_WarpMouseInWindow(activeWindow, 91, 111);
+    check_position(320, 240);
+    CHECK(relevant_events(events, 16) == 0);
+    CHECK(!SDL_WarpMouseGlobal(75 + 91, 53 + 111));
+    allow_touch = true;
+    CHECK(SDL_HideCursor());
+    for (int n = 0; n < 2; ++n) {
+        SDL_WarpMouseInWindow(activeWindow, 320, 240);
+        CHECK(!SDL_GetRelativeMouseMode());
+        CHECK(relevant_events(events, 16) == 1 && events[0].type == SDL_EVENT_MOUSE_MOTION);
+    }
+    CHECK(SDL_ShowCursor());
+    CHECK(SDL_SetWindowRelativeMouseMode(activeWindow, true));
+    CHECK(SDL_SetWindowRelativeMouseMode(activeWindow, false));
+    CHECK(relevant_events(events, 16) == 0);
+    float baseline_x, baseline_y;
+    SDL_GetRelativeMouseState(&baseline_x, &baseline_y);
+    SDL_SetHint("SDL_MOUSE_INTEGER_MODE", "1");
+    CHECK(SDL_AddEventWatch(echo_from_watcher, NULL));
+    for (int pass = 0; pass < 3; ++pass) {
+        sourceSdkButton(1, 1);
+        echo_count = 0;
+        echo_warp = true;
+        if (pass == 1) CHECK(SDL_WarpMouseGlobal(75 + 91.9f, 53 + 111.9f));
+        else SDL_WarpMouseInWindow(activeWindow, 91.9f, 111.9f);
+        echo_warp = false;
+        /* 对应 Gui.setScreen 在 init 返回时立即 resync，期间没有普通 pump。 */
+        check_position(91, 111);
+        CHECK(echo_count == 1);
+        AmclCommittedMenuCursorV1 committed = {0};
+        committed.structSize = sizeof(committed);
+        CHECK(inputBridge_getCommittedMenuCursorV1(&committed) && committed.x == 91 &&
+              committed.y == 111 && committed.logicalTarget == activeWindow->id);
+        CHECK(relevant_events(events, 16) == 2 && events[0].type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+              events[0].button.button == SDL_BUTTON_RIGHT && events[1].type == SDL_EVENT_MOUSE_MOTION &&
+              events[1].motion.windowID == activeWindow->id && events[1].motion.x == 91 && events[1].motion.y == 111 &&
+              events[1].motion.xrel == 0 && events[1].motion.yrel == 0);
+        if (pass) {
+            sourceSdkWarpRelative(0, 7, -4);
+            OPENHARMONY_PumpOrderedEvents(&bridge, activeWindow->id);
+            check_position(98, 107);
+            CHECK(relevant_events(events, 16) == 1 && events[0].type == SDL_EVENT_MOUSE_MOTION);
+            if (pass == 2) {
+                float dx, dy;
+                SDL_GetRelativeMouseState(&dx, &dy);
+                CHECK(dx == 7 && dy == -4);
+            }
+        }
+        sourceSdkWarpRelative(5, 0, 0);
+        sourceSdkButton(1, 0);
+        OPENHARMONY_PumpOrderedEvents(&bridge, activeWindow->id);
+        CHECK(relevant_events(events, 16) == 0);
+        sourceSdkWarpPresent();
+        OPENHARMONY_PumpOrderedEvents(&bridge, activeWindow->id);
+        check_position(pass ? 98 : 91, pass ? 107 : 111);
+        CHECK(relevant_events(events, 16) == 1 && events[0].type == SDL_EVENT_MOUSE_BUTTON_UP &&
+              events[0].button.button == SDL_BUTTON_RIGHT && !(SDL_GetMouseState(NULL,NULL) & SDL_BUTTON_RMASK));
+        float dx, dy;
+        CHECK(SDL_SetWindowRelativeMouseMode(activeWindow, true));
+        OPENHARMONY_PumpOrderedEvents(&bridge, activeWindow->id);
+        SDL_GetRelativeMouseState(&dx, &dy);
+        CHECK(dx == 0 && dy == 0 && relevant_events(events, 16) == 0);
+        SDL_SendMouseMotion(0, activeWindow, SDL_DEFAULT_MOUSE_ID, true, 3, 2);
+        SDL_GetRelativeMouseState(&dx, &dy);
+        CHECK(dx == 3 && dy == 2);
+        CHECK(SDL_SetWindowRelativeMouseMode(activeWindow, false));
+        (void)relevant_events(events, 16);
+    }
+    /* 在SDK仍执行watcher时保留外层已交付坐标，返回后再按序应用内层请求。 */
+    nested_request = true;
+    SDL_WarpMouseInWindow(activeWindow, 105, 107);
+    check_position(120, 124);
+    CHECK(relevant_events(events, 16) == 2);
+    /* regrab可在当前motion尚未ADD时发生，旧菜单事件不能出现在世界队列里。 */
+    nested_regrab = true;
+    SDL_WarpMouseInWindow(activeWindow, 140, 120);
+    CHECK(!nested_regrab && relevant_events(events, 16) == 0);
+    CHECK(SDL_SetWindowRelativeMouseMode(activeWindow, false));
+    SDL_RemoveEventWatch(echo_from_watcher, NULL);
+    inputBridge_setCarriedMenuWarpClaimV1(NULL);
+    activeWindow->internal = platform_data;
+    sourceSdkDeactivate();
+    SDL_DestroyWindow(activeWindow);
+    SDL_Quit();
+    puts("PASS SDL_WarpMouseInWindow first read, global origin, repeat/equal point, ordered DOWN/MOTION/UP, neutral ACK, release and look delta");
+    return 0;
+}

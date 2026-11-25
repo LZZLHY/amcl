@@ -81,4 +81,28 @@ const privateUnwind = elfAbiFixture([], ['_Unwind_Resume']); zstdLock(privateUnw
 assert.throws(() => check(entry, provider, [['libs/arm64-v8a/' + zstdName, privateUnwind]]), /private static unwinder/);
 fs.writeFileSync(path.join(zstdRoot, 'artifacts.json'), JSON.stringify({ artifacts: [] }));
 assert.throws(() => check(entry, provider, [['libs/arm64-v8a/' + zstdName, zstd]]), /unique unstripped source/);
+// 独立 jemalloc 不由 entry CMake 链接；对其真实包路径同样检查载荷、私有符号和固定身份。
+const allocatorName = 'libamcl_lwjgl_jemalloc.so';
+const allocatorRoot = path.join(root, 'prebuilt/jemalloc');
+fs.mkdirSync(path.join(allocatorRoot, 'symbols'), { recursive: true });
+const symbolFile = path.join(allocatorRoot, 'symbols', allocatorName);
+function auditAllocator(source, packaged, override = {}) {
+  const unstripped = { path: 'symbols/' + allocatorName, size: source.length,
+    sha256: createHash('sha256').update(source).digest('hex'), ...override };
+  fs.writeFileSync(symbolFile, source);
+  fs.writeFileSync(path.join(allocatorRoot, 'build-provenance.json'), JSON.stringify({
+    elf: { soname: allocatorName }, unstripped
+  }));
+  return check(entry, provider, [['libs/arm64-v8a/' + allocatorName, packaged]]);
+}
+const packagedAllocator = elfAbiFixture(['je_malloc']);
+const allocatorSymbols = elfAbiFixture(['je_malloc'], ['arena_internal']);
+assert(auditAllocator(allocatorSymbols, packagedAllocator).checkedFirstPartyImages.includes('libs/arm64-v8a/' + allocatorName));
+assert.throws(() => auditAllocator(packagedAllocator, packagedAllocator), /lacks private symbol table/);
+assert.throws(() => auditAllocator(allocatorSymbols, packagedAllocator, { size: 1 }), /unstripped source identity/);
+assert.throws(() => auditAllocator(allocatorSymbols, packagedAllocator, { sha256: '0'.repeat(64) }), /unstripped source identity/);
+assert.throws(() => auditAllocator(allocatorSymbols, packagedAllocator, { path: 'libamcl_lwjgl_jemalloc.so' }), /unique unstripped source/);
+const differentPayload = Buffer.from(packagedAllocator); differentPayload[200] ^= 1;
+assert.throws(() => auditAllocator(allocatorSymbols, differentPayload), /runtime byte changed/);
+assert.throws(() => auditAllocator(elfAbiFixture(['je_malloc'], ['_Unwind_Resume']), packagedAllocator), /private static unwinder/);
 console.log('PASS application ABI: real ELF public/private duplicate, UND, malformed metadata and payload identity controls');

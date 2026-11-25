@@ -4,11 +4,11 @@
     "repository": "https://github.com/icculus/SDL.git",
     "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
     "abiBase": "f87239e71e42da91ca317a12eefb82cfbf3393eb",
-    "amclSourceBeforeLock": "4d69aadde870436b811b733223ee2f0f8c2e52bd"
+    "amclSourceBeforeLock": "04375a962bd72e0d9b6941c12969c613c65d88fd"
   },
   "recipe": {
-    "patchsetSha256": "da5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9",
-    "revision": "SDL-3.5.0-release-3.4.0-983-ge293db30d-amclpsda5e1474ff949c3dc028f197fbb0e7ea3d66922cad26ed65b2feb2e7be6edfe9",
+    "patchsetSha256": "d93acd64e6f581e31b5b04f1fb36f176eaba9f31b3bc2cfa9acd60f2e3895e15",
+    "revision": "SDL-3.5.0-release-3.4.0-983-ge293db30d-amclpsd93acd64e6f581e31b5b04f1fb36f176eaba9f31b3bc2cfa9acd60f2e3895e15",
     "orderedInputs": [
       {
         "ordinal": 1,
@@ -189,16 +189,44 @@
         "name": "0030-openharmony-auxiliary-sdl-role.patch",
         "size": 31148,
         "sha256": "464894148deddb717bfe628a106e6c05ef816801f892368130d3ad7c1c83819d"
+      },
+      {
+        "ordinal": 31,
+        "name": "0031-openharmony-phone-clipboard-write.patch",
+        "size": 6462,
+        "sha256": "22f00522615f7956f65281a610abe2a3703c57ed3f61103e6f8443b80a880641"
+      },
+      {
+        "ordinal": 32,
+        "name": "0034-mobile-gamepad-joystick-subsystem.patch",
+        "size": 17876,
+        "sha256": "2ff6f0a91f11b5440f868d8f79a94208af344954ce6ff496dcd5f095c2d651d3"
+      },
+      {
+        "ordinal": 33,
+        "name": "0032-openharmony-desktop-fullscreen-sync.patch",
+        "size": 32785,
+        "sha256": "5729e6c37dab7f8b01c9d9efe72a92d4a21aa20a3255170d81de1bc9eba78bfe"
+      },
+      {
+        "ordinal": 34,
+        "name": "0033-openharmony-presented-text-input-demand.patch",
+        "size": 21523,
+        "sha256": "4eac8db5ff11e31a83eb9a763aef2096d822d306c71b2d37c37376b340deb2f7"
+      },
+      {
+        "ordinal": 35,
+        "name": "0035-openharmony-carried-menu-cursor-position.patch",
+        "size": 20813,
+        "sha256": "bcee2db73a84ab68530cf23d9772f3c87f7930d43928d67505ce886c3da76273"
+      },
+      {
+        "ordinal": 36,
+        "name": "0036-openharmony-gamepad-change-query.patch",
+        "size": 9392,
+        "sha256": "8da4f822f5e6aadf4520630f36d82ad827f40e0fdc9b42e89e7ce9d07dd83892"
       }
     ]
-  },
-  "configuration": {
-    "target": "aarch64-linux-ohos",
-    "buildType": "Release",
-    "desktopHost": true,
-    "virtualJoystick": true,
-    "dynamicApi": false,
-    "consumerReadyClaimed": false
   },
   "tools": {
     "llvm\\bin\\clang.exe": {
@@ -242,25 +270,32 @@
       "sha256": "0584729091676af239535182d9133761217cfff0f8599acf2ea2c9e394025731"
     }
   },
+  "configuration": {
+    "target": "aarch64-linux-ohos",
+    "buildType": "Release",
+    "desktopHost": true
+  },
   "artifacts": {
     "raw": {
-      "sha256": "853a33d1eccd412d02483b6a6e9b21ce60ed3ef7949bad081c1ee8ef50984064",
-      "size": 2257888
+      "size": 2276192,
+      "sha256": "fb11b0f89187d18212f7003a5c0c82ac292e4547d4bf1081fd39f2590c619678"
     },
     "sdkStripAll": {
-      "sha256": "7c2a09fa6d4e4172a147fd105cfa203e433b2e11049734e7622bd845892d6c29",
-      "size": 1861448,
+      "size": 1876096,
+      "sha256": "d48d772c9cb9f1b2d34a415c2646b2b9ead601ffd4043a5bd5459eb53b3a7bf8",
       "stripToolSha256": "7092b2a07041635687d30d54f1e60b9cc440bc914d50cf0e2f3a21c348c97967"
     }
   },
   "independentBuilds": [
     {
-      "receipt": "D:\\dhao1\\desktop\\AMCL\\.workspace\\build\\sdl3-ad96dfaf\\aux-r4\\candidate-receipt.json",
+      "receipt": ".workspace/tasks/inpfast/build/if-pad/sdl3-dc4b35d4/run-20261125-210834-41c2daec/candidate-receipt.json",
+      "sha256": "63bc4b18b4423efd74f5536013a2b61e139d6e05f22d124a6ea7ede938734a6c",
       "state": "VerifiedCandidate"
     },
     {
-      "receipt": "D:\\dhao1\\desktop\\AMCL\\.workspace\\run\\sdl-aux-1113\\native-r5\\receipt.json",
-      "state": "fresh normal locked OHOS Release and Deploy; all original gates passed"
+      "receipt": ".workspace/tasks/inpfast/leases/native-sdl-aux/9016c3e73abd477fbd650c4f227a2fc6/execution.json",
+      "sha256": "4012775bc37916e7915fc94e91ae8a91fed9107509877713cbc5dee6036d5bc1",
+      "state": "独立锁定编译通过并比对原件"
     }
   ],
   "verification": {
@@ -269,19 +304,15 @@
     "layout": true,
     "surface": true,
     "launchContract": true,
-    "independentRawByteEquality": true,
-    "independentSdkStripAllByteEquality": true,
-    "lookAndControlColdExports": true,
-    "actualHap": false,
-    "device": false,
-    "auxiliaryHostColdExport": true
+    "independentRawByteEquality": true
   },
-  "evidenceTask": "sdl-aux-1113",
-  "recordedAt": "2026-11-13T08:18:25.053424+08:00",
-  "rawAndStripComparisonReceipt": "D:\\dhao1\\desktop\\AMCL\\.workspace\\run\\sdl-aux-1113\\native-final-r2\\receipt.json",
+  "evidenceTask": "inpfast",
+  "recordedAt": "2026-11-25T21:09:52+08:00",
+  "rawAndStripComparisonReceipt": ".workspace/tasks/inpfast/runs/inpfast/sdl-main36/identity.json",
   "previousProvenance": {
-    "path": "D:\\dhao1\\desktop\\AMCL\\.workspace\\run\\sdl-aux-1113\\native-final-r2\\previous-provenance.json",
-    "sha256": "888ef60baf0aa35469c835ab3659917c1c4d2f09749e3f3d1e3f26a504aa149e"
+    "commit": "85196fd29b85e921b3066a162853558af142879a",
+    "path": "prebuilt/sdl3/build-provenance.json",
+    "sha256": "f0320d10eefba7a484125aae27ab68ba06504c8f92710504071adb8769fd9a75"
   },
-  "qualification": "Independent native recipe/raw/strip and host gates passed; App HAP and full-modpack device validation pending"
+  "qualification": "移动手柄 SDL 差量更新已通过两次独立 OHOS Release 编译、ABI、符号及锁定字节核验。"
 }

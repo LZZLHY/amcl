@@ -6,11 +6,6 @@
  */
 import { InputAbi, parseInputPlan, ResolvedInputPlan } from 'launch'
 
-/** ProcessRuntime 在本局初始化时发布的用户请求；设置页变化只在下局重新采纳。 */
-export const NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY: string = 'nativeGamepadRouteRequested'
-/** 已请求原生时，平台注册/枚举确实成功；不表示游戏 consumer 或模组已使用。 */
-export const NATIVE_GAMEPAD_CAPTURE_READY_KEY: string = 'nativeGamepadCaptureReady'
-
 /** 一种用途只有一条有副作用路线；Mapped 表示启动器键鼠映射，Native 表示游戏标准出口。 */
 export enum GamepadOutputRoute { Mapped = 'mapped', Native = 'native' }
 
@@ -54,43 +49,37 @@ export interface NativeGamepadRouteDecision {
   readonly reason: NativeGamepadRouteReason
 }
 
-/**
- * 将原会话的只读路由回执解释为用户提示。保存偏好不是本函数的输入；映射请求已完成时
- * 不增加提示，仍待切换时保留真实applied路线。Applied只说明实际来源开关已采用，
- * 不宣称游戏/模组消费过任何事件；Pending/Unsupported的目标不能替代仍保持的旧路线。
- * 缺席回执保持空值，调用方继续沿原会话维护取得事实，读取不申请采集或重试路由。
- */
-export function nativeGamepadRouteStatusMessage(decision: NativeGamepadRouteDecision | undefined): string {
-  if (decision === undefined || (!decision.requestedNative && decision.status === NativeGamepadRouteStatus.Applied)) return ''
-  // 这是原来源开关的实际读回值。目标为Mapped并不证明旧Native已经结束，不能将
-  // 准备中的target或已保存requested当成成功；当前Host冻结事实之外的合法回执也保持诚实。
-  const currentRoute: string = decision.applied === GamepadOutputRoute.Native
-    ? '本局仍保持原生手柄路线。' : '本局仍使用启动器映射。'
+/** 玩家仅需确认已采用的操作方式。等待计划或释放旧输入时先不弹；明确降级时说明原因。 */
+export function nativeGamepadRouteNotice(decision: NativeGamepadRouteDecision, previous?: GamepadOutputRoute): string {
+  if (decision.applied === previous) return ''
+  if (decision.status === NativeGamepadRouteStatus.Applied) {
+    if (decision.applied === GamepadOutputRoute.Native) return '本局已启用原生手柄。'
+    return previous === GamepadOutputRoute.Native ? '本局已切换为启动器手柄映射。' : ''
+  }
+  if (decision.applied !== GamepadOutputRoute.Mapped) return ''
+  if (decision.reason === NativeGamepadRouteReason.CaptureUnavailable) return '手柄采集不可用，使用启动器映射。'
   if (decision.status === NativeGamepadRouteStatus.Unsupported) {
     return decision.reason === NativeGamepadRouteReason.AbiUnsupported
-      ? '当前游戏输入接口不支持原生手柄；' + currentRoute
-      : '当前游戏的手柄路线无法确认；' + currentRoute
+      ? '本局不支持原生手柄，使用启动器映射。' : '手柄路线无法确认，使用启动器映射。'
   }
-  if (decision.status === NativeGamepadRouteStatus.Pending) {
-    if (decision.reason === NativeGamepadRouteReason.ApplyPending) return '手柄路线正在等待原输入结束，尚未完成切换；' + currentRoute
-    if (decision.reason === NativeGamepadRouteReason.CaptureUnavailable) return '原生手柄采集暂不可用，正在等待确认；' + currentRoute
-    return '本局手柄路线正在等待游戏输入准备；' + currentRoute
-  }
-  return decision.applied === GamepadOutputRoute.Native
-    ? '本局已启用原生手柄路线；当前游戏还需支持控制器。'
-    : '本局继续使用启动器手柄映射。'
+  return ''
 }
 
 /**
  * 使用独立输入计划的正式 parser；不从 graphics/window provider 重新选择 ABI。
  * 空计划只 Pending 且继续 Mapped；坏计划和 L2 明确 Unsupported。平台不可用时
  * 保留合法映射与原生 desired，等待后续本局资格变化或下局重新初始化，不重放旧轴。
- * requested/platformCaptureReady 由宿主在 prepare 冻结；applied 在真实 setter 后
+ * requested 在 prepare 冻结，platformCaptureReady 由本局实际 ABI 绑定后的注册结果确认；applied 在真实 setter 后
  * 重新读取，释放拒绝时仍为旧路线。本纯函数没有重试时钟或来源归约权限。
  */
 export function resolveNativeGamepadRoute(requested: boolean, platformCaptureReady: boolean,
   inputPlanWire: string, applied: GamepadOutputRoute = GamepadOutputRoute.Mapped): NativeGamepadRouteDecision {
-  const plan: ResolvedInputPlan | undefined = parseInputPlan(inputPlanWire)
+  return resolveBoundGamepadRoute(requested, platformCaptureReady, parseInputPlan(inputPlanWire), inputPlanWire.length > 0, applied)
+}
+
+/** 宿主只传由 bindPlan 已验证的计划；无计划与提供了无效计划的公开入口仍区别报告。 */
+export function resolveBoundGamepadRoute(requested: boolean, platformCaptureReady: boolean,
+  plan: ResolvedInputPlan | undefined, supplied: boolean, applied: GamepadOutputRoute): NativeGamepadRouteDecision {
   const abiNativeOutlet: boolean = plan !== undefined &&
     (plan.abi === InputAbi.GLFW || plan.abi === InputAbi.SDL3)
   const desired: GamepadOutputRoute = requested ? GamepadOutputRoute.Native : GamepadOutputRoute.Mapped
@@ -99,7 +88,7 @@ export function resolveNativeGamepadRoute(requested: boolean, platformCaptureRea
   let reason: NativeGamepadRouteReason = NativeGamepadRouteReason.MappedRequested
 
   if (requested) {
-    if (inputPlanWire.length === 0) {
+    if (!supplied) {
       status = NativeGamepadRouteStatus.Pending
       reason = NativeGamepadRouteReason.PlanUnbound
     } else if (plan === undefined) {

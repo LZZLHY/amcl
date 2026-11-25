@@ -1,6 +1,7 @@
 /** 真Source/Core/typed backend/bridge/JNI provider；只有窗口资源与平台值由宿主显式提供。
  * ring容量、Source候选、归约、控制票、前缀与消费者缓存不在本夹具实现。 */
 #include "input/amcl_input_api.h"
+#include "input/input_menu_cursor_snapshot.h"
 #include "input/amcl_input_host_descriptor.h"
 #include "input/platform_input_ingress.h"
 #include "input/source/source_control_client.h"
@@ -44,6 +45,25 @@ extern "C" __declspec(dllexport) int sourceL2Next(int*t,int*a,int*b,int*c,int*d)
     const int result=inputBridge_l2NextEvent(t,a,b,c,d);
     if(result){actualTrace.push_back(*t);actualTrace.push_back(*a);actualTrace.push_back(*b);actualTrace.push_back(*c);actualTrace.push_back(*d);}return result;
 }
+// 这里仅替代宿主没有的实体窗口和承接手指；顺序、坐标和事件都由完整生产 bridge 决定。
+void inputBridge_glfwSetTargetV1(uint64_t,uint64_t,uint64_t);
+void inputBridge_publishTouchMenuRelativeV1(int,uint32_t,double,double,double,double);
+void inputBridge_getCursorSnapshot(double*,double*);
+static bool menuWarpFixture;
+static uint64_t claimMenuWarp(AmclEnqueueMenuWarpV1 enqueue,void* request){return enqueue(request);}
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_menuWarpWindow(
+        JNIEnv*,jclass,jboolean held){
+    menuWarpFixture=true;
+    inputBridge_glfwSetTargetV1(0x1000,1,42);
+    inputBridge_setCarriedMenuWarpClaimV1(held?claimMenuWarp:nullptr);
+}
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_menuMove(JNIEnv*,jclass,jdouble x,jdouble y){
+    inputBridge_publishTouchMenuRelativeV1(0,0,x,y,799,599);
+}
+extern "C" __declspec(dllexport) int sourceMenuPosition(double* x,double* y){
+    if(!menuWarpFixture)return 0; inputBridge_getCursorSnapshot(x,y);return 1;
+}
+
 extern "C" __declspec(dllexport) void sourceL2SetActive(int active){inputBridge_l2SetActive(active);}
 extern "C" __declspec(dllexport) void sourceSetGrab(int active){inputBridge_setGrabState(active);}
 /** Source原POD结果副本；accepted/transport/cache是不同事实，不在此改写结果。 */

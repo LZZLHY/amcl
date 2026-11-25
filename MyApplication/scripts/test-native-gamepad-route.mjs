@@ -29,12 +29,12 @@ function wire(abi) {
 const wires = { empty: '', LWJGL2: wire('LWJGL2'), GLFW: wire('GLFW'), SDL3: wire('SDL3') };
 
 /** 完整执行ProcessRuntime初始化；未声明的系统依赖必须失败，不用三行规则镜像代替模块。 */
-async function processFixture(requested, captureResult, override) {
-  const values = new Map(), calls = [], ledgerOwnership = [], preferences = { requested };
+async function checkIsolatedBootstrap(requested) {
+  const values = new Map(), calls = [], ledgerOwnership = [];
   const storage = { setOrCreate: (key, value) => values.set(key, value), get: key => values.get(key) };
   const native = { getDiagnosticCapabilities: () => 0,
-    desktopSetGamepadNativeMode: enabled => { calls.push(['native-mode', enabled]); return captureResult; } };
-  class Preferences { phoneExternalDir = ''; desktopNativeGamepad = preferences.requested; }
+    desktopSetGamepadNativeMode: enabled => { calls.push(['native-mode', enabled]); return true; } };
+  class Preferences { phoneExternalDir = ''; desktopNativeGamepad = requested; }
   const dependencies = {
     'libentry.so': { default: native },
     'commons': { DiagnosticPolicy: { configure: noop }, DistributionPolicy: { configure: noop },
@@ -58,7 +58,7 @@ async function processFixture(requested, captureResult, override) {
   };
   // 音频是独立生命周期端口；本组检查输入路由，不能因新增进程装配依赖而跳过真实ProcessRuntime。
   dependencies['./ModAudioRuntime'] = { ModAudioRuntime: { attach: noop } };
-  const body = override ?? fs.readFileSync(path.join(root, processPath), 'utf8');
+  const body = fs.readFileSync(path.join(root, processPath), 'utf8');
   const result = compiler.transpileModule(body, { fileName: processPath,
     compilerOptions: { module: compiler.ModuleKind.CommonJS, target: compiler.ScriptTarget.ES2020 }, reportDiagnostics: true });
   assert.equal((result.diagnostics ?? []).filter(d => d.category === compiler.DiagnosticCategory.Error).length, 0);
@@ -70,9 +70,8 @@ async function processFixture(requested, captureResult, override) {
   const initialize = () => module.exports.initializeGameProcess({ filesDir: '/private/files', config: { colorMode: 1 } });
   await initialize();
   assert.deepEqual(ledgerOwnership, [false], '游戏进程初始化必须明确关闭父账本维护所有权');
-  return { values, calls, preferences, initialize,
-    requested: () => values.get(policy.NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY),
-    ready: () => values.get(policy.NATIVE_GAMEPAD_CAPTURE_READY_KEY) };
+  assert.deepEqual(calls, [], '未取得实际本局输入 ABI 前，独立进程启动器不注册手柄采集');
+  assert.equal(values.has('nativeGamepadRouteRequested'), false, '游戏输入选择绑定本局而非进程 AppStorage');
 }
 
 /** 真实来源输出记录；emitControl是生产采用的按设备/控件运输接缝，不另造owner归约器。 */
@@ -125,24 +124,8 @@ assert.equal(policy.resolveNativeGamepadRoute(true, true, wires.GLFW.replace('bi
 assert.equal(policy.resolveNativeGamepadRoute(true, true, wires.GLFW.replace('abi=GLFW', 'abi=LWJGL2')).abiNativeOutlet, false);
 pass('actual input plans empty/L2/GLFW/SDL × request/capture; invalid combinations; mapped source output');
 
-for (const requested of [false, true]) for (const rawReady of [false, true]) {
-  const f = await processFixture(requested, rawReady);
-  assert.equal(f.requested(), requested);
-  assert.equal(f.ready(), requested && rawReady, 'mode-off success must not claim capture READY');
-  assert.equal(f.values.has('nativeGamepadOutputActive'), false);
-  assert.deepEqual(f.calls, [['native-mode', requested]]);
-}
-pass('actual ProcessRuntime publishes requested/capture facts only; platform init is not route selection');
-
-{
-  // SetNativeMode(false)的成功不能升级采集事实；直接撤回完整ProcessRuntime中的这道限定。
-  const original = fs.readFileSync(path.join(root, processPath), 'utf8');
-  const before = 'NATIVE_GAMEPAD_CAPTURE_READY_KEY, nativePad && padReady';
-  assert.equal(original.split(before).length, 2, 'unique capture-fact mutation');
-  const bad = await processFixture(false, true, original.replace(before, 'NATIVE_GAMEPAD_CAPTURE_READY_KEY, padReady'));
-  assert.throws(() => assert.equal(bad.ready(), false), assert.AssertionError);
-  pass('compiled ProcessRuntime negative rejected: mode-off success falsely claims capture READY');
-}
+for (const requested of [false, true]) await checkIsolatedBootstrap(requested);
+pass('isolated bootstrap configures the game ledger and leaves controller registration to the game session');
 
 {
   const f = sourceFixture();
@@ -187,25 +170,10 @@ pass('actual manager held-route transition releases old contribution and never d
 }
 pass('actual RELEASE rejection retains pending/applied, successful retry finishes; config.enabled is separate');
 
-{
-  const process = await processFixture(true, true), f = sourceFixture();
-  const requested = process.requested(), ready = process.ready();
-  assert.equal(apply(f, requested, ready, wires.GLFW).applied, Route.Native);
-  process.preferences.requested = false;
-  assert.equal(process.requested(), true, 'setting change does not update current frozen process fact');
-  assert.equal(apply(f, requested, ready, wires.GLFW).applied, Route.Native);
-  const next = await processFixture(false, true), nextSource = sourceFixture();
-  assert.equal(apply(nextSource, next.requested(), next.ready(), wires.GLFW).applied, Route.Mapped);
-  nextSource.pad.handleButtonForDevice(9, nextSource.keys.OHOS_BUTTON_A, true);
-  assert.equal(nextSource.output.length, 1);
-  f.runtime.stop(); nextSource.runtime.stop();
-}
-pass('actual Preferences initialization freezes this session; new preference is adopted by next process session');
-
 /** 撤回候选只修改内存生产正文，要求成功转译且由真实source行为/应用回执拒绝。 */
 for (const [name, before, after] of [
   ['L2 window provider mistaken for input ABI', 'plan.abi === InputAbi.SDL3)', 'plan.abi === InputAbi.SDL3 || plan.abi === InputAbi.LWJGL2)'],
-  ['empty plan pending qualification removed', 'if (inputPlanWire.length === 0) {', "if (false) {"],
+  ['empty plan pending qualification removed', 'if (!supplied) {', "if (false) {"],
   ['platform capture ignored', '} else if (!platformCaptureReady) {', '} else if (false) {'],
   ['target pretends applied', 'status === NativeGamepadRouteStatus.Applied && applied !== target', 'false']
 ]) {
@@ -232,20 +200,19 @@ for (const [name, before, after] of [
 for (const [inputWire, capture, applied, expected] of [
   [wires.LWJGL2, true, Route.Mapped, /不支持原生手柄/],
   ['bad-plan', true, Route.Mapped, /路线无法确认/],
-  [wires.empty, true, Route.Mapped, /等待游戏输入准备/],
-  [wires.GLFW, false, Route.Mapped, /采集暂不可用/],
-  [wires.GLFW, true, Route.Mapped, /等待原输入结束/],
-  [wires.GLFW, true, Route.Native, /已启用原生手柄路线.*游戏还需支持控制器/]
+  [wires.empty, true, Route.Mapped, /^$/],
+  [wires.GLFW, false, Route.Mapped, /采集不可用/],
+  [wires.GLFW, true, Route.Mapped, /^$/],
+  [wires.GLFW, true, Route.Native, /已启用原生手柄/]
 ]) {
   const decision = policy.resolveNativeGamepadRoute(true, capture, inputWire, applied);
-  const message = policy.nativeGamepadRouteStatusMessage(decision);
+  const message = policy.nativeGamepadRouteNotice(decision);
   assert.match(message, expected);
-  if (decision.status !== Status.Applied) assert.doesNotMatch(message, /已启用原生手柄路线/);
+  if (decision.status !== Status.Applied) assert.doesNotMatch(message, /已启用原生手柄/);
   assert.doesNotMatch(message, /input-|source-|unsupported|pending|consumer/);
 }
-assert.equal(policy.nativeGamepadRouteStatusMessage(undefined), '');
-assert.equal(policy.nativeGamepadRouteStatusMessage(policy.resolveNativeGamepadRoute(false, true, wires.GLFW)), '');
-pass('real route messages: original Applied/Pending/Unsupported, L2/unknown/capture false and no internal reason tokens');
+assert.equal(policy.nativeGamepadRouteNotice(policy.resolveNativeGamepadRoute(false, true, wires.GLFW)), '');
+pass('real route Toast distinguishes settled unavailable routes, ordinary mapping, pending and applied native');
 
 // 当前Host冻结事实不会因设置热变更进入这些回执；纯政策契约仍接收真实applied参数。
 // 每例都由正式resolver生成，不能手造DTO再宣称当前产品已发生Native→Mapped等待。
@@ -259,31 +226,29 @@ for(const [requested,capture,inputWire,expectedReason] of [
   const decision=policy.resolveNativeGamepadRoute(requested,capture,inputWire,Route.Native);
   assert.equal(decision.applied,Route.Native);assert.equal(decision.target,Route.Mapped);
   assert.equal(decision.reason,expectedReason);assert.notEqual(decision.status,Status.Applied);
-  const message=policy.nativeGamepadRouteStatusMessage(decision);
-  assert.match(message,/仍保持原生手柄路线/,'ACTUAL_APPLIED_ROUTE 目标映射不能伪装实际已切换');
-  assert.doesNotMatch(message,/仍使用启动器映射|已启用原生手柄路线/);
+  assert.equal(policy.nativeGamepadRouteNotice(decision),'','ACTUAL_APPLIED_ROUTE 目标映射不能伪装实际已切换');
 }
 pass('real resolver receipts preserve Native applied during Pending/Unsupported, including mapped request awaiting original route');
 
-// 移除Pending分支须真正改变用户提示，编译正常的生产负控不能靠导入失败冒充命中。
+// 撤掉真实切换判据会让旧映射尚未释放时误报成功，负控需在实际通知输出失败。
 {
   const original = fs.readFileSync(path.join(root, policyPath), 'utf8');
-  const anchor = 'if (decision.status === NativeGamepadRouteStatus.Pending) {';
+  const anchor = 'if (decision.status === NativeGamepadRouteStatus.Applied) {';
   assert.equal(original.split(anchor).length, 2);
-  const bad = makePureEtsLoader({ launch: plan }, { [policyPath]: original.replace(anchor, 'if (false) {') })(policyPath);
+  const bad = makePureEtsLoader({ launch: plan }, { [policyPath]: original.replace(anchor, 'if (true) {') })(policyPath);
   const pending = policy.resolveNativeGamepadRoute(true, true, wires.GLFW, Route.Mapped);
-  assert.throws(() => assert.match(bad.nativeGamepadRouteStatusMessage(pending), /等待原输入结束/), assert.AssertionError);
-  pass('compiled route-message withdrawal cannot hide actual pending application');
+  assert.throws(() => assert.equal(bad.nativeGamepadRouteNotice(pending, Route.Native), ''), assert.AssertionError);
+  pass('compiled route-message withdrawal cannot announce pending application as a successful switch');
 }
 {
   const original=fs.readFileSync(path.join(root,policyPath),'utf8');
-  const anchor='const currentRoute: string = decision.applied === GamepadOutputRoute.Native';
+  const anchor="if (decision.applied !== GamepadOutputRoute.Mapped) return ''";
   assert.equal(original.split(anchor).length,2);
   const bad=makePureEtsLoader({launch:plan},{[policyPath]:original.replace(anchor,
-    'const currentRoute: string = decision.target === GamepadOutputRoute.Native')})(policyPath);
-  const waiting=policy.resolveNativeGamepadRoute(false,true,wires.GLFW,Route.Native);
-  assert.throws(()=>assert.match(bad.nativeGamepadRouteStatusMessage(waiting),/仍保持原生手柄路线/,
-    'ACTUAL_APPLIED_ROUTE'),error=>error instanceof assert.AssertionError&&error.message.includes('ACTUAL_APPLIED_ROUTE'));
+    "if (decision.target !== GamepadOutputRoute.Mapped) return ''")})(policyPath);
+  const waiting=policy.resolveNativeGamepadRoute(true,true,wires.LWJGL2,Route.Native);
+  assert.throws(()=>assert.equal(bad.nativeGamepadRouteNotice(waiting),'','ACTUAL_APPLIED_ROUTE'),
+    error=>error instanceof assert.AssertionError&&error.message.includes('ACTUAL_APPLIED_ROUTE'));
   pass('compiled target-as-applied message withdrawal rejected by actual resolver Native receipt');
 }
 console.log('Native gamepad route production tests: ' + passed + ' groups passed; no consumer/mod-use claim');

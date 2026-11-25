@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scanSpans, stripComments } from './lib/source-noise.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -108,11 +109,16 @@ function forbidMatch(text, pattern, label) {
 
 /**
  * 帧率设置的接线判据：只检查真实设置回调，不允许借用其他方法、注释或字符串中的
- * 同名调用。偏好服务采用首帧后的惰性getter，但状态更新、持久化及同步Native交接
- * 仍必须在同一次回调内依次发生；本函数只返回诊断，供负向控制复用而不改退出码。
+ * 同名调用。必须先等待真实偏好所有者确认，再在发布回调中读取确认值并同步交给 Native。
+ * 保留用于选中偏好字段的字符串，其余字面量不能伪造接线；本函数供撤回负控共用。
  */
 export function analyzeFrameCapSettings(source) {
-  const code = maskCppTrivia(source), errors = [];
+  const code = scanSpans(source, { lang: 'js' }).map(({ kind, start, end }) => {
+    const token = source.slice(start, end);
+    if (kind === 'code') return token;
+    if (kind === 'string' && ['"ohosFrameRateCap"', "'ohosFrameRateCap'"].includes(token)) return "'ohosFrameRateCap'";
+    return ' ';
+  }).join(''), errors = [];
   /** 平衡已去除字符串/注释的花括号，缺失定义时拒绝借用后续无关代码块。 */
   const bodyOf = pattern => {
     const match = pattern.exec(code);
@@ -134,20 +140,19 @@ export function analyzeFrameCapSettings(source) {
   if (!/if\s*\(\s*this\.prefManager_\s*===\s*null\s*\)\s*\{?\s*this\.prefManager_\s*=\s*new\s+PreferenceManager\s*\(\s*this\.context\s*\)\s*;?\s*\}?\s*return\s+this\.prefManager_\s*;?\s*$/.test(getter.trim())) {
     errors.push('real cached preference getter');
   }
-  const body = bodyOf(/\bonOhosFrameRateCapChange\s*:\s*\(\s*fpsCap\s*:\s*number\s*\)\s*(?::\s*void\s*)?=>\s*/);
-  const state = /\bthis\.ohosFrameRateCap\s*=\s*fpsCap\b/.exec(body);
-  const persist = /\bthis\.getPrefManager_\s*\(\s*\)\s*\.\s*ohosFrameRateCap\s*=\s*fpsCap\b/.exec(body);
-  const native = /\btestNapi\.setOhosFrameRateCap\s*\(\s*fpsCap\s*\)/.exec(body);
-  if (!state) errors.push('settings state update');
-  if (!persist) errors.push('persistent cap through preference getter');
-  if (!native) errors.push('immediate native cap handoff');
-  if (state && persist && native) {
-    if (!(state.index < persist.index && persist.index < native.index)) errors.push('state/persistence/native ordering');
-    // await或延迟调度会把Native更新推迟到另一个任务，违背用户选择后立即交接的契约。
-    if (/=>|\b(?:function|await|setTimeout|setInterval|setImmediate|queueMicrotask|Promise|postFrameCallback|postDelayedFrameCallback)\b/.test(body.slice(0, native.index))) {
-      errors.push('native cap handoff deferred from settings callback');
-    }
-  }
+  const save = bodyOf(/\bprivate\s+async\s+saveLauncherChange_\s*\([^;{}]*?\)\s*:\s*Promise\s*<\s*boolean\s*>/).replace(/\s+/g, '');
+  if (!/^try\{awaitthis\.getPrefManager_\(\)\.saveLauncherFields\(values,active\);?publish\(\);?returntrue;?\}/.test(save) ||
+      !/\bcatch\([^)]*\)\{[^{}]*returnfalse;?\}$/.test(save)) errors.push('await durable settings owner before publishing');
+  const body = bodyOf(/\bonOhosFrameRateCapChange\s*:\s*\(\s*fpsCap\s*:\s*number\s*\)\s*:\s*Promise\s*<\s*boolean\s*>\s*=>/).replace(/\s+/g, '');
+  const publish = "returnthis.saveLauncherChange_({'ohosFrameRateCap':fpsCap},():void=>{";
+  const state = 'this.ohosFrameRateCap=this.getPrefManager_().ohosFrameRateCap';
+  const native = 'testNapi.setOhosFrameRateCap(this.ohosFrameRateCap)';
+  if (!body.startsWith(publish)) errors.push('persistent cap transaction');
+  if (!body.includes(state)) errors.push('settings state update from confirmed cap');
+  if (!body.includes(native)) errors.push('immediate native cap handoff');
+  // 发布函数中的两步必须相邻，不能提前交付未落盘的值或再安排一次异步任务。
+  if (!body.startsWith(publish + state + ';try{' + native) &&
+      !body.startsWith(publish + state + 'try{' + native)) errors.push('confirmed state/native ordering or deferred dispatch');
   return { ok: errors.length === 0, errors };
 }
 
@@ -300,6 +305,44 @@ requireFunctionBodyMatch(glfwCompat,
 
 requireMatch(frameHeader, /fpsCap[\s\S]*active/, 'cap-aware pure policy');
 requireMatch(frame, /foregroundSources/, 'Ability foreground source mask');
+// 帧率调度锁早于VSync句柄释放；SDK真实接口的失败和生命周期另由宿主回归验证。
+requireFunctionBodyMatch(frame, /\bbool\s+EnsureFrameRatePinnerLocked\s*\([^)]*\)/,
+  /failedStart\.reset\(created\)[\s\S]*OH_NativeVSync_SetExpectedFrameRateRange[\s\S]*OH_NativeVSync_RequestFrame/,
+  'ownership starts before attempting to vote');
+requireFunctionBodyMatch(frame, /\bvoid\s+StopFrameRatePinnerLocked\s*\([^)]*\)/,
+  /ClearFrameRatePinnerVoteLocked[\s\S]*update\.previous\.reset/,
+  'clear the vote before moving the retired instance');
+requireMatch(frame, /\bstruct\s+FrameRateUpdate\s*\{[\s\S]*?previous;[\s\S]*?failedStart;[\s\S]*?std::lock_guard/,
+  'retired panel instances destroyed after the last member releases the frame lock');
+requireFunctionBodyMatch(frame, /\bvoid\s+OnFrameRatePinnerFrame\s*\([^)]*\)/,
+  /OH_NativeVSync_RequestFrame/,
+  'panel vote rearmed by a dedicated VSync callback');
+forbidMatch(functionBody(frame, /\bvoid\s+OnFrameRatePinnerFrame\s*\([^)]*\)/),
+  /OH_NativeXComponent_|OH_NativeVSync_Destroy|\b(?:SwapBuffers|Present|QueuePresent)\b/,
+  'XComponent, destruction, or presentation from the panel frame callback');
+requireFunctionBodyMatch(frame, /\bbool\s+ApplyControllerLocked\s*\([^)]*\)/,
+  /active\s*&&\s*fixedRate\s*>\s*0[\s\S]*EnsureFrameRatePinnerLocked[\s\S]*else[\s\S]*StopFrameRatePinnerLocked\s*\(/,
+  'panel pinner gated on the active lifecycle and an explicit fixed refresh rate');
+requireMatch(cmake, /libnative_vsync\.so/, 'native VSync link for the panel-rate pinner');
+// XComponent 的不透明声明依赖 API 22 接口，低版本必须保持默认行为。
+requireMatch(gamePage, /setXComponentSurfaceConfig\(\{\s*isOpaque:\s*true\s*\}\)/,
+  'opaque XComponent surface declaration');
+requireMatch(gamePage, /sdkApiVersion\s*<\s*22/,
+  'API-22 runtime guard for the opaque surface declaration');
+// Vulkan 路径的队列深度由交换链 minImageCount 决定，这里把在飞张数提到 5。
+requireMatch(mgConfig, /MOBILEGL_MAGMA_FRAMESINFLIGHT/,
+  'swapchain-driven BufferQueue depth');
+// 固定刷新率单独保存，最终以实际游戏屏幕明确支持的档位为准。
+requireMatch(settingsPage, /openSheet_\('fixed-refresh-rate'\)/,
+  'explicit fixed refresh-rate settings entry');
+requireMatch(stripComments(settingsPage, { lang: 'js' }),
+  /if\s*\(kind\s*===\s*'fixed-refresh-rate'\)\s*\{\s*return\s*\[\s*0,\s*30,\s*60,\s*90,\s*120,\s*144\s*\]\.map\([^{}]*\{\s*const withinCap:\s*boolean\s*=\s*this\.ohosFrameRateCap\s*===\s*0\s*\|\|\s*rate\s*<=\s*this\.ohosFrameRateCap;\s*return\s*\{[^{}]*enabled:\s*withinCap\b/,
+  'separate fixed choices bounded by NativeVSync and the legacy cap');
+requireMatch(settingsPage, /kind === 'fixed-refresh-rate'\) return this\.onOhosFixedRefreshRateChange\(Number\(value\)\)/,
+  'confirmed fixed refresh-rate dispatch');
+requireFunctionBodyMatch(gamePage, /\bprivate\s+resolveFixedRefreshRate\s*\(\s*\)\s*:\s*number/,
+  /display\.getDisplayByIdSync\(this\.gameDisplayId\)[\s\S]*gameDisplay\.id !== this\.gameDisplayId[\s\S]*gameDisplay\.supportedRefreshRates[\s\S]*rates\.indexOf\(rate\)/,
+  'fixed request validated against the current game display');
 requireMatch(frameHeader,
   /return state\.surfaceReady && state\.focused &&\s*state\.foregroundSources != 0;/,
   'surface, foreground and focus activation gate');
@@ -314,7 +357,7 @@ requireFunctionBodyMatch(frame,
   'display-change compatibility refresh query path');
 requireFunctionBodyMatch(frame,
   /\bbool\s+RefreshExpectedFrameRateHintForDisplayRate\s*\([^)]*\)/,
-  /component\s*==\s*nullptr[\s\S]*!g_frameRateController\.lifecycle\.surfaceReady[\s\S]*ApplyControllerLocked\(lifecycleStage,\s*false,\s*false,\s*displayRate\)/,
+  /component\s*==\s*nullptr[\s\S]*!g_frameRateController\.lifecycle\.surfaceReady[\s\S]*supportedFixedRate[\s\S]*ApplyControllerLocked\(update,\s*lifecycleStage,\s*false,\s*false,\s*displayRate\)/,
   'display-change explicit-rate refresh apply path');
 requireMatch(xcomponent, /RegisterFocusEventCallback/, 'XComponent focus callback');
 requireMatch(xcomponent, /RegisterBlurEventCallback/, 'XComponent blur callback');
@@ -345,11 +388,11 @@ requireMatch(preferences,
   'persistent normalized OHOS frame-rate cap');
 // 界面已由即时 chip 改为确认式单选：仍需自动值、完整候选和同一 native 交付回调，
 // 不把旧 Builder 名称保留为门禁替身，也不因新布局削弱下面的真实持久化/即时交付检查。
-requireMatch(settingsPage, /系统调度帧率上限[\s\S]*this\.openSheet_\('frame'\)/,
-  'explicit scheduler-cap settings entry');
+requireMatch(settingsPage, /系统调度帧率[\s\S]*this\.openSheet_\('frame'\)/,
+  'explicit scheduler-rate settings entry');
 requireMatch(settingsPage, /\[0, 30, 60, 90, 120, 144, 165, 240\]/,
   'scheduler-cap automatic and explicit choices');
-requireMatch(settingsPage, /kind === 'frame'\) this\.onOhosFrameRateCapChange\(Number\(value\)\)/,
+requireMatch(settingsPage, /kind === 'frame'\) return this\.onOhosFrameRateCapChange\(Number\(value\)\)/,
   'confirmed scheduler-cap dispatch');
 for (const error of analyzeFrameCapSettings(indexPage).errors) {
   fail(`missing settings state, persistence and immediate native handoff: ${error}`);
@@ -370,7 +413,7 @@ requireFunctionBodyMatch(gamePage,
   'display-change generation-coherent surface-context handoff');
 requireFunctionBodyMatch(gamePage,
   /\bprivate\s+publishStoredInputSurfaceContext\s*\([^)]*\)\s*:\s*void/,
-  /context\.has\(INPUT_SURFACE_FIELD_REFRESH_RATE\)[\s\S]*refreshOhosFrameRateHint\(context\.refreshRateHz\)/,
+  /context\.has\(INPUT_SURFACE_FIELD_REFRESH_RATE\)[\s\S]*sessionHost\.accepts\(this\.frontendLease\)[\s\S]*refreshOhosFrameRateHint\(hasRefresh \? context\.refreshRateHz : 0,\s*context\.provisional \? 0 : this\.supportedFixedRefreshRate\)[\s\S]*refreshOhosFrameRateHint\(context\.refreshRateHz\)/,
   'display-change native policy refresh');
 forbidMatch(gamePage,
   /AMCL_OHOS_FRAME_RATE_CAP|options\.txt[\s\S]*setOhosFrameRateCap/,
@@ -416,7 +459,7 @@ if (!process.exitCode) {
   console.log('[check-ohos-runtime-optimizations] PASS');
   console.log('  benchmark: explicit + disposable-context gated, identity cache, no auto selection');
   console.log('  image probe: producer + consumer DSO paths log address/path/dev/inode + content identity');
-  console.log('  frame hint: persisted cap + display-change refresh + lifecycle policy; no second frame loop');
+  console.log('  frame hint: persisted rate + display-change refresh + lifecycle policy + panel pinner; no second render loop');
   console.log('  NativeWindow: API-20-safe GET telemetry only; no prealloc/usage mutation');
   console.log('  MG config: current schema preserved; legacy/malformed backed up and normalized');
 }

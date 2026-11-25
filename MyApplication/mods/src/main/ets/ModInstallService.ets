@@ -49,7 +49,15 @@ export interface ModInstallRequest {
   optionalIds: string[];
   /** 更新/修复指定的旧文件；服务在持有目录锁时再次核对它仍在当前扫描结果中。 */
   oldPath?: string;
+  oldIdentity?: string;
   wasEnabled?: boolean;
+}
+
+/** 确认后任务可能排队或跨网络等待。只允许事务替换确认时的普通文件。 */
+export function updateFileIdentity(path: string): string {
+  const st = fs.lstatSync(path);
+  if (!st.isFile() || st.isSymbolicLink()) throw new Error('待更新文件已改变');
+  return [st.ino, st.size, st.mtime, st.ctime].join(':');
 }
 
 /** 计划内每个实际下载文件的身份；已安装且兼容的依赖不会出现在此清单中。 */
@@ -105,11 +113,13 @@ export class ModInstallService {
    */
   async install(request: ModInstallRequest, observer: ModInstallObserver, activityId: number = 0): Promise<void> {
     const dir = normalizeModDirectory(resourceKindToInstallDir(ResourceKind.MOD, request.mcDir, request.versionId, request.versionIsolation));
+    const original = request.oldPath === undefined ? '' : (request.oldIdentity ?? updateFileIdentity(request.oldPath));
     await withModDirectoryLock<void>(dir, async (): Promise<void> => {
       ensureModDirectory(dir);
       await recoverModTransaction(dir);
       if (hasModRecoveryJournal(dir)) throw new Error('上次模组事务已结束，但暂存清理尚未完成，请稍后重试');
       this.checkCancelled(observer);
+      if (request.oldPath !== undefined && updateFileIdentity(request.oldPath) !== original) throw new Error('待更新文件已改变');
       const environment = installedModEnvironment(request.mcDir, request.versionId);
       if (environment.loader.length === 0 || !isModVersionCompatible(request.root, environment.loader, environment.gameVersion))
         throw new Error('所选文件不支持目标版本 ' + environment.loader + ' / MC ' + environment.gameVersion);
@@ -187,6 +197,7 @@ export class ModInstallService {
           sha1: await computeFileSha1(staging + '/' + indexRelative) });
         this.checkCancelled(observer);
         if (await this.fingerprint(dir) !== initialFiles) throw new Error('安装期间本地模组发生变化，已保留原文件，请刷新后重试');
+        if (request.oldPath !== undefined && updateFileIdentity(request.oldPath) !== original) throw new Error('待更新文件已改变');
         // 指纹读取会异步让出执行；用户在这段等待内仍可取消，必须在切入不可取消提交前再确认。
         this.checkCancelled(observer);
         observer.phase(MOD_INSTALL_COMMIT_PHASE);

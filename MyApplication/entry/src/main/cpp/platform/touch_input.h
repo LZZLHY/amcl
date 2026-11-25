@@ -71,11 +71,11 @@ void OnDispatchMouseEvent(OH_NativeXComponent* component, void* window);
 void OnDispatchHoverEvent(OH_NativeXComponent* component, bool isHover);
 // 2026-05-29：滚轮经 UIInputEvent AxisEvent 上报（RegisterUIInputEventCallback type=AXIS）
 void OnDispatchAxisEvent(OH_NativeXComponent* component, ArkUI_UIInputEvent* event);
-// ArkUI MouseEvent button fallback. The implementation arbitrates against the
-// native XComponent button channel before publishing one physical edge.
+// ArkUI 按钮在 Native 仲裁后发布。带位置时坐标为组件局部 vp。
 void ohos_route_arkui_physical_mouse_button(
     uint64_t deviceId, int32_t arkuiButton, int32_t action, int32_t mods,
-    uint32_t deviceClass, uint64_t monotonicTimeNs);
+    uint32_t deviceClass, uint64_t monotonicTimeNs, bool hasPosition,
+    double localVpX, double localVpY);
 // native XComponent 的 AXIS 回调是否为当前滚轮所有者（薄封装，真正的判定在
 // input_channel_policy）。保留是为了不改动既有 NAPI 名字。
 bool ohos_native_wheel_channel_seen(void);
@@ -302,13 +302,15 @@ uint64_t ohos_set_control_schema_v3(const AmclCtrlEntry* entries, int count,
     const amcl::input::TouchInteractionConfig* config);
 // 会话/来源显式维护grab公告及已交付光标；false表示实际mode端口暂不可用，不宣称consumer Ready。
 bool ohos_touch_input_maintain();
+/** 前端在同一维护临界区比较本观察者上次值；buffer[25] 标明投影是否变化。 */
+bool ohos_touch_frontend_maintain(double* buffer, int count);
 // UI严格只读当前接受态；不消费公告/ACK，不推进手势或持有，数组约定见NAPI声明。
 void ohos_touch_interaction_visual(double* values, int count);
 // 悬浮鼠标的移动排除区（surface px）。仅更新几何，不退休schema或任何按键持有；w/h均0表示收起。
 bool ohos_set_menu_mouse_bounds(double x,double y,double w,double h);
 // 真实游戏教学工具栏的独立排除区；不改schema/持有，世界及菜单生效，空矩形撤销。
 bool ohos_set_touch_guide_bounds(double x,double y,double w,double h);
-// 仅影响触摸板指针图标的显隐，不仲裁任何输入端；物理指针活动时避免显示一枚旧虚拟光标。
+// 实体指针活动时隐藏虚拟光标，并暂停承接触点的程序设位授权，直到其真实触控操作恢复。
 void ohos_note_physical_pointer_visual(void);
 // 旧无lease已积分gyro弱兼容；只核schema/当前准入，不以跨域Ns假造policy时钟围栏。
 bool ohos_send_touch_gyro_sample_checked(double dx,double dy,int64_t timeNs,uint64_t schemaGeneration);

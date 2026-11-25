@@ -42,6 +42,8 @@ export * from './src/main/ets/version/MetadataCacheStore';
 export * from './src/main/ets/version/RepairTask';
 export * from './src/main/ets/version/ForgeRepairTask';
 export * from './src/main/ets/version/VersionOrdering';
+export * from './src/main/ets/version/LocalVersionInventory';
+export * from './src/main/ets/version/OfficialVersionMetadata';
 
 // ---- modloader 域 ----
 export * from './src/main/ets/modloader/ModLoaderTypes';

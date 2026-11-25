@@ -193,6 +193,10 @@ void inputBridge_setWindowSize(int w, int h);
 #define EVENT_TYPE_TOUCH_MENU_TOOL_SCROLL 1015
 #define EVENT_TYPE_TOUCH_MENU_TOOL_RELATIVE 1016
 #define EVENT_TYPE_TOUCH_MENU_RELATIVE 1017
+// 仅所选菜单消费者领取的主动设位，四个int原样承载两个double；SDL据此同步自己的真实鼠标缓存。
+#define EVENT_TYPE_CARRIED_MENU_WARP 1018
+// 只在新版 SDL 拉取出口标注已解算的承接指移动，不进入共用 ring。
+#define EVENT_TYPE_SDL_CARRIED_MENU_MOTION 1019
 // Native-only LWJGL2 recovery marker. It never enters GLFW3 callbacks; the Java backend uses it to
 // clear its own key/button polling arrays after native ring recovery, because those arrays are a
 // separate state cache that cannot be repaired by only clearing g_keyDownBuffer/g_mouseDownBuffer.
@@ -444,7 +448,7 @@ typedef struct InputBridgeInstanceV1 {
     void (*endLookAction)(void);
     void (*setLookPrefixCallback)(AmclLookPrefixCallbackV1);
     int (*submitProcessedLook)(int32_t, double, double);
-#if AMCL_INPUT_TRACE
+    // 固定保留旧诊断尾的布局；普通构建不注册这些入口，保证其后的正式字段在两种映像中同偏移。
     // 只观察的可选尾：缺席不改变look/输入冷握手，不在delegate本地补另一诊断表。
     uint32_t latencyVersion;
     void (*noteInputLatency)(uint32_t,const AmclInputLatencyV1*);
@@ -453,7 +457,12 @@ typedef struct InputBridgeInstanceV1 {
     // 独立诊断票尾：旧v1字段/offset不动；短尾/未知版本不降级prefix-only终结。
     uint32_t latencyTicketVersion;
     void (*finishInputLatencyTicket)(const AmclInputLatencyV1*,uint32_t);
-#endif
+    void (*setCarriedMenuWarpClaim)(AmclClaimMenuWarpV1);
+    uint64_t (*requestGlfwMenuWarp)(void*, double, double);
+    // 保留旧GLFW可选尾位置，新增跨后端设位和有界L2拉取能力。
+    uint64_t (*requestCarriedMenuWarp)(uint32_t, uint64_t, double, double);
+    int (*l2NextThrough)(int*, int*, int*, int*, int*, uint64_t);
+    int (*sdlNextCarriedThrough)(int*, int*, int*, int*, int*, uint64_t);
 } InputBridgeInstanceV1;
 
 // 可选尾部字段是否存在于 owner 的表里：按该字段自身的结束偏移比较 structSize，而不是整张
@@ -837,6 +846,14 @@ static const AmclPointerDeliveryPolicy g_sdlPointerPolicy = {1u, true, true};
 // DOWN 所在 pump 只提交 cursor；PRESS 必须保持 presentSerial+2，确保 1.21.11 的
 // poll → swap → poll 与下一帧 accumulated movement 消费完整跨越。后续 MOVE/UP 仍停在
 // 原有序队列中，准入后先源点 PRESS，再按原序交付按住区间与终点 RELEASE。
+// 已交付的承接指位移仍可能积存在游戏当帧。只门控收尾标记，保持原松键和后续输入的环顺序。
+typedef struct {
+    uint64_t activation, sinceNs;
+    uint64_t window, generation, identity;
+    uint32_t presentsRemaining;
+    bool awaitingPullReturn;
+} CarriedMotionFence;
+static CarriedMotionFence g_glfwCarriedMotion; // 同 g_glfwPresentationClock 加锁
 static unsigned long long g_presentSerial = 0;
 static void* g_lastPumpWindow = NULL;
 // 延期边沿仍属于原入队动作，不能借最新全局坐标或新的公共顺序重新解释。
@@ -933,11 +950,11 @@ static atomic_bool g_inputReady = false;
 // overflowPending。consumer 在 MC 线程统一 recovery：跳到最新 write sequence、清全部 down buffer、
 // 结束菜单 transaction，并向已注册 GLFW callback 发 RELEASE。宁可丢一整批旧输入，也不能只丢
 // RELEASE 后留下永久按键。日志只在 recovery 时输出，避免卡顿期间刷屏。
-typedef struct {
-    int phase;
-    uint32_t token;
-    double maxX, maxY;
-} MenuRelativeMetadata;
+// 私有ring按事件类型解释旁带；相对操作与绝对设位不会同时占用一个槽。
+typedef union {
+    struct { int phase; uint32_t token; double maxX, maxY; } pointer;
+    struct { uint32_t backend; uint64_t lifetime; } warp;
+} MenuCommandMetadata;
 typedef struct {
     bool left, right, shift;
     bool ordinaryRight, ordinaryShift;
@@ -964,7 +981,7 @@ typedef struct {
     uint64_t toolScopeEpoch; // 工具CANCEL独立作用域，只有1011读取，不伤直接菜单及普通来源
     uint64_t l2KeyboardScope; // 接受时原Keyboard资源，仅L2 key/char读取，标准五int不扩
     uint32_t gestureToken; // BEGIN到END/Cancel全手势，包括无LEFT阶段的位置/滚轮
-    MenuRelativeMetadata relative; // private相对命令的冻结phase/token/窗口边界，四int仍只装dx/dy
+    MenuCommandMetadata relative; // private相对命令的冻结phase/token/窗口边界，四int仍只装dx/dy
 } GLFWInputSlot;
 
 static GLFWInputSlot g_events[EVENT_WINDOW_SIZE];
@@ -1222,6 +1239,7 @@ static atomic_bool g_sdlResetPending = false;
 typedef struct {
     // 与 GLFW/L2 完全相同的私有事务，只把 SDL 实际呈现快照与来源并集留在适配边缘。
     AmclPointerTransaction pointer;
+    CarriedMotionFence carriedMotion;
     unsigned long long presentSerial;
     uint64_t presentedWindow, presentedGeneration;
     uint64_t targetPresentedWindow, targetPresentedGeneration;
@@ -1245,6 +1263,19 @@ static pthread_mutex_t g_menuCursorSnapshotMutex = PTHREAD_MUTEX_INITIALIZER;
 static MenuCursorAuthority g_menuCursorAuthorities[4];
 static uint64_t g_menuCursorSelectedPid = 0, g_menuCursorSelectedSession = 0;
 static uint32_t g_menuCursorSelectedBackend = 0;
+// 平台注册归属当前PID；delegate在首次发现neutral owner时补注册。callback绝不在这把锁内执行。
+static AmclClaimMenuWarpV1 g_menuWarpClaim;
+static uint64_t g_menuWarpClaimPid;
+static atomic_ullong g_menuWarpModeCutoff = 0;
+// 普通触控呈现换表可退休旧手势scope，仍允许本次claim完成；真实换窗/失活/重抓则不能继承请求。
+static atomic_ullong g_warpTargetLifetime[4];
+typedef struct {
+    uint32_t backend;
+    uint64_t target, modeEpoch, lifetime;
+    double x, y;
+} MenuWarpRequest;
+// 同一光标回调可同步请求位置，记录正在交付的warp，防止同点重入无限排队。
+static _Thread_local MenuWarpRequest g_deliveringWarp;
 
 /** ACK PID不混用平台CRT接口；Windows宿主用_getpid，OHOS继续POSIX getpid。 */
 static uint64_t menuCursorProcessId(void) {
@@ -1259,6 +1290,7 @@ static uint64_t menuCursorProcessId(void) {
 static void resetCommittedMenuCursor(uint32_t backend, bool active) {
     pthread_mutex_lock(&g_menuCursorSnapshotMutex);
     MenuCursorAuthority* authority = &g_menuCursorAuthorities[backend];
+    atomic_fetch_add_explicit(&g_warpTargetLifetime[backend], 1ULL, memory_order_release);
     authority->active = active;
     ++authority->activation;
     authority->menuScopeEpoch = atomic_load_explicit(&g_touchMenuScopeEpoch, memory_order_acquire);
@@ -1290,6 +1322,7 @@ static void targetCommittedMenuCursor(uint32_t backend, uint64_t target, uint64_
     pthread_mutex_lock(&g_menuCursorSnapshotMutex);
     MenuCursorAuthority* authority = &g_menuCursorAuthorities[backend];
     if (authority->target != target || authority->publication != publication || authority->wsiIdentity != wsiIdentity) {
+        atomic_fetch_add_explicit(&g_warpTargetLifetime[backend], 1ULL, memory_order_release);
         if (authority->target != target || !authority->currentInitialized) {
             authority->currentX = initialX; authority->currentY = initialY;
             authority->currentInitialized = target != 0;
@@ -1591,6 +1624,10 @@ JNIEXPORT const AmclInputLatencyPortV2* inputBridge_getInputLatencyPortV2(void){
 }
 #endif
 static void replayLocalCallbacksToOwner(const InputBridgeInstanceV1* owner) {
+    pthread_mutex_lock(&g_menuCursorSnapshotMutex);
+    const AmclClaimMenuWarpV1 claim = g_menuWarpClaimPid == menuCursorProcessId() ? g_menuWarpClaim : NULL;
+    pthread_mutex_unlock(&g_menuCursorSnapshotMutex);
+    if (claim && INPUT_BRIDGE_OWNER_HAS_TAIL(owner, setCarriedMenuWarpClaim)) owner->setCarriedMenuWarpClaim(claim);
     if (g_lookPrefixCallbackRegistered && bridgeOwnerHasLookTransportV1(owner)) {
         // 注册可早于owner发布；只向同一整组owner补发最新事实，NULL同步退休其backend资格。
         owner->setLookPrefixCallback(g_lookPrefixCallback);
@@ -1669,9 +1706,41 @@ static bool retireGlfwMenuTools(void* window, unsigned long long generation) {
     return true;
 }
 
+/** 真实坐标回调返回后计帧。SDL先返回给同步pump，等它再查询或取事件时确认前一坐标已交付。 */
+static void armCarriedMotion(CarriedMotionFence* fence, uint64_t activation, uint64_t window,
+        uint64_t generation, uint64_t identity, const AmclPointerDeliveryPolicy* policy) {
+    fence->activation = activation;
+    fence->sinceNs = menuMonotonicNowNs();
+    fence->window = window;
+    fence->generation = generation;
+    fence->identity = identity;
+    fence->presentsRemaining = policy->presentFrames;
+    fence->awaitingPullReturn = policy->sourceBaselineOnNext;
+}
+
+/** 只数同一窗口、渲染代次及实际呈现身份；首份有效呈现可为刚建窗口补齐代次。 */
+static void countCarriedPresent(CarriedMotionFence* fence, uint64_t window, uint64_t generation,
+        uint64_t identity) {
+    if (!fence->presentsRemaining || fence->awaitingPullReturn) return;
+    if ((fence->window && window != fence->window) ||
+        (fence->generation && (generation != fence->generation || identity != fence->identity))) return;
+    fence->window = window;
+    fence->generation = generation;
+    fence->identity = identity;
+    --fence->presentsRemaining;
+}
+
+/** 真实松键留在原队列。退休/停帧超时解除屏障，让仍需要配对的松键继续交付。 */
+static bool carriedEndWaits(CarriedMotionFence* fence, uint64_t activation) {
+    if (fence->presentsRemaining && fence->activation == activation &&
+        !atomic_load_explicit(&g_isGrabbing, memory_order_acquire) && !menuPendingExpired(fence->sinceNs)) return true;
+    fence->presentsRemaining = 0;
+    return false;
+}
+
 /** callback内仍能同步读当前B；ACK等返回后才成立，回调换目标/失活不能给新身份记旧点。 */
 static bool submitGlfwMenuCursor(void* window, double x, double y, uint64_t order,
-                                 unsigned long long generation) {
+                                 unsigned long long generation, bool carriedMotion) {
     updateCurrentMenuCursor(AMCL_MENU_CURSOR_BACKEND_GLFW, x, y);
     if (!g_invoke_CursorReceipt && !g_invoke_CursorPos) return true;
     const uint64_t cursorActivation = committedMenuCursorActivation(AMCL_MENU_CURSOR_BACKEND_GLFW);
@@ -1680,7 +1749,15 @@ static bool submitGlfwMenuCursor(void* window, double x, double y, uint64_t orde
     else g_invoke_CursorPos(window, x, y); // 旧ABI/宿主直达callback仍以返回作为交付边界。
     if (!l3ActivationMatches(generation)) return false;
     // receipt=0仅说明没有实际游戏callback；wrapper提交的同步current仍保留给后面的相对输入。
-    if (delivered) commitMenuCursor(AMCL_MENU_CURSOR_BACKEND_GLFW, x, y, order, cursorActivation);
+    if (delivered) {
+        commitMenuCursor(AMCL_MENU_CURSOR_BACKEND_GLFW, x, y, order, cursorActivation);
+        if (carriedMotion) {
+            pthread_mutex_lock(&g_glfwPresentationMutex);
+            armCarriedMotion(&g_glfwCarriedMotion, cursorActivation, g_glfwPresentationClock.window,
+                g_glfwPresentationClock.generation, g_glfwPresentationClock.identity, &g_glfwPointerPolicy);
+            pthread_mutex_unlock(&g_glfwPresentationMutex);
+        }
+    }
     return true;
 }
 
@@ -1947,7 +2024,7 @@ void inputBridge_dispatchCharCodepoint(void* window, unsigned int codepoint) {
 // sequence 验证和普通 event 复制，原子 publishedSequence 本身不能保护非原子 event 字段。
 // ============================================================
 
-static void sendData_locked(int type, int i1, int i2, int i3, int i4, const MenuRelativeMetadata* relative) {
+static uint64_t sendData_locked(int type, int i1, int i2, int i3, int i4, const MenuCommandMetadata* relative) {
     const unsigned long long sequence =
         atomic_load_explicit(&g_writeSequence, memory_order_relaxed);
     GLFWInputSlot* slot = &g_events[sequence % EVENT_WINDOW_SIZE];
@@ -1962,8 +2039,9 @@ static void sendData_locked(int type, int i1, int i2, int i3, int i4, const Menu
     slot->toolScopeEpoch = atomic_load_explicit(&g_touchMenuToolScopeEpoch, memory_order_relaxed);
     memset(&slot->relative, 0, sizeof(slot->relative));
     if (relative) slot->relative = *relative;
-    const int phase = type == EVENT_TYPE_MENU_POINTER ? i1 : relative ? relative->phase : -1;
-    const uint32_t token = type == EVENT_TYPE_MENU_POINTER ? (uint32_t)i4 : relative ? relative->token : 0;
+    const bool relativeGesture = type == EVENT_TYPE_TOUCH_MENU_RELATIVE && relative;
+    const int phase = type == EVENT_TYPE_MENU_POINTER ? i1 : relativeGesture ? relative->pointer.phase : -1;
+    const uint32_t token = type == EVENT_TYPE_MENU_POINTER ? (uint32_t)i4 : relativeGesture ? relative->pointer.token : 0;
     if ((type == EVENT_TYPE_MENU_POINTER || type == EVENT_TYPE_TOUCH_MENU_RELATIVE) &&
         (phase == MENU_POINTER_BEGIN || phase == MENU_POINTER_DOWN)) g_producerMenuGestureToken = token;
     slot->gestureToken = type == EVENT_TYPE_TOUCH_MENU_SCROLL ? g_producerMenuGestureToken : token;
@@ -2016,6 +2094,7 @@ static void sendData_locked(int type, int i1, int i2, int i3, int i4, const Menu
             atomic_fetch_add_explicit(&g_sdlOverflowDropCount, 1ULL, memory_order_relaxed);
         }
     }
+    return slot->interactionOrder;
 }
 
 static void sendData(int type, int i1, int i2, int i3, int i4) {
@@ -2303,13 +2382,77 @@ JNIEXPORT void inputBridge_pushTouchMenuToolScrollV1(int xoffset, int yoffset) {
     amclDesktopNotifyInput();
 }
 
+/** 注册触控准入，不经环境变量取得可执行地址。旧owner缺能力时沿用原程序光标行为。 */
+JNIEXPORT void inputBridge_setCarriedMenuWarpClaimV1(AmclClaimMenuWarpV1 claim) {
+    const InputBridgeInstanceV1* owner = bridgeDelegate();
+    pthread_mutex_lock(&g_menuCursorSnapshotMutex);
+    g_menuWarpClaim = claim;
+    g_menuWarpClaimPid = menuCursorProcessId();
+    pthread_mutex_unlock(&g_menuCursorSnapshotMutex);
+    if (owner && INPUT_BRIDGE_OWNER_HAS_TAIL(owner, setCarriedMenuWarpClaim)) owner->setCarriedMenuWarpClaim(claim);
+}
+
+/** 在libentry已核触点、mode与surface的事务内仅写入ring。snapshots之后的换目标由cutoff退休。 */
+static uint64_t enqueueCarriedMenuWarp(void* context) {
+    const MenuWarpRequest* warp = (const MenuWarpRequest*)context;
+    int words[4];
+    memcpy(words, &warp->x, sizeof(double));
+    memcpy(words + 2, &warp->y, sizeof(double));
+    uint64_t order = 0;
+    amclInputBeginInteractionBatch();
+    pthread_mutex_lock(&g_pushMutex);
+    if (!atomic_load_explicit(&g_isGrabbing, memory_order_acquire) &&
+        atomic_load_explicit(&g_lookModeEpoch, memory_order_acquire) == warp->modeEpoch &&
+        atomic_load_explicit(&g_warpTargetLifetime[warp->backend], memory_order_acquire) == warp->lifetime &&
+        (lookRingReserveLocked(1) & (1u << (warp->backend - 1u)))) {
+        MenuCommandMetadata metadata;
+        metadata.warp.backend = warp->backend;
+        metadata.warp.lifetime = warp->lifetime;
+        order = sendData_locked(EVENT_TYPE_CARRIED_MENU_WARP, words[0], words[1], words[2], words[3], &metadata);
+    }
+    pthread_mutex_unlock(&g_pushMutex);
+    amclInputEndInteractionBatch();
+    return order;
+}
+
+JNIEXPORT uint64_t inputBridge_requestCarriedMenuWarpV1(uint32_t backend, uint64_t window, double x, double y) {
+    const InputBridgeInstanceV1* owner = bridgeDelegate();
+    if (owner) {
+        if (INPUT_BRIDGE_OWNER_HAS_TAIL(owner, requestCarriedMenuWarp)) return owner->requestCarriedMenuWarp(backend, window, x, y);
+        if (backend == AMCL_MENU_CURSOR_BACKEND_GLFW && INPUT_BRIDGE_OWNER_HAS_TAIL(owner, requestGlfwMenuWarp))
+            return owner->requestGlfwMenuWarp((void*)(uintptr_t)window, x, y);
+        return 0;
+    }
+    if (backend < 1 || backend > 3 || !window || !isfinite(x) || !isfinite(y) ||
+        (backend == AMCL_MENU_CURSOR_BACKEND_GLFW && !hasGlfwCursorCallback()) ||
+        atomic_load_explicit(&g_isGrabbing, memory_order_acquire)) return 0;
+    MenuWarpRequest warp = {backend, window, atomic_load_explicit(&g_lookModeEpoch, memory_order_acquire), 0, x, y};
+    pthread_mutex_lock(&g_menuCursorSnapshotMutex);
+    const MenuCursorAuthority* target = &g_menuCursorAuthorities[backend];
+    warp.lifetime = atomic_load_explicit(&g_warpTargetLifetime[backend], memory_order_acquire);
+    const bool active = g_menuWarpClaimPid == menuCursorProcessId() &&
+        g_menuCursorSelectedPid == g_menuWarpClaimPid && g_menuCursorSelectedSession != 0 &&
+        g_menuCursorSelectedBackend == backend && target->active && target->publication != 0 && target->target == window;
+    const AmclClaimMenuWarpV1 claim = active ? g_menuWarpClaim : NULL;
+    pthread_mutex_unlock(&g_menuCursorSnapshotMutex);
+    if (g_deliveringWarp.backend == backend && g_deliveringWarp.target == window &&
+        g_deliveringWarp.x == x && g_deliveringWarp.y == y &&
+        g_deliveringWarp.modeEpoch == warp.modeEpoch && g_deliveringWarp.lifetime == warp.lifetime) return 0;
+    // 在平台的原触点、surface、mode事务内取公共order，不持bridge锁执行反向准入。
+    return claim ? claim(enqueueCarriedMenuWarp, &warp) : 0;
+}
+
+JNIEXPORT uint64_t inputBridge_requestGlfwMenuWarpV1(void* window, double x, double y) {
+    return inputBridge_requestCarriedMenuWarpV1(AMCL_MENU_CURSOR_BACKEND_GLFW, (uint64_t)(uintptr_t)window, x, y);
+}
+
 /** 相对操作在最终consumer的current上应用，不能把Native desired绝对位置当作实际基线。 */
 static void publishMenuRelative(int type, int phase, uint32_t token,
         double dx, double dy, double maxX, double maxY) {
     if (!isfinite(dx) || !isfinite(dy) || !isfinite(maxX) || !isfinite(maxY) ||
         fabs(dx) > 1048576 || fabs(dy) > 1048576 || maxX < 0 || maxY < 0 || maxX > 1048576 || maxY > 1048576) return;
     int words[4]; memcpy(words, &dx, sizeof(dx)); memcpy(words + 2, &dy, sizeof(dy));
-    MenuRelativeMetadata metadata = {phase, token, maxX, maxY};
+    MenuCommandMetadata metadata = {{phase, token, maxX, maxY}};
     amclInputBeginInteractionBatch();
     pthread_mutex_lock(&g_pushMutex);
     sendData_locked(type, words[0], words[1], words[2], words[3], &metadata);
@@ -2332,7 +2475,10 @@ JNIEXPORT void inputBridge_publishTouchMenuRelativeV1(int phase, uint32_t token,
         if (INPUT_BRIDGE_OWNER_HAS_TAIL(owner, publishTouchMenuRelative)) owner->publishTouchMenuRelative(phase, token, dx, dy, maxX, maxY);
         return;
     }
-    if (phase < MENU_POINTER_MOVE || phase > MENU_POINTER_END || (phase != MENU_POINTER_MOVE && token == 0)) return;
+    // 无token的END仅是屏障，无坐标或按键含义，不能接受夹带位移的非法终点。
+    const bool carriedEnd = phase == MENU_POINTER_END && token == 0 && dx == 0 && dy == 0 && maxX == 0 && maxY == 0;
+    if (phase < MENU_POINTER_MOVE || phase > MENU_POINTER_END ||
+        (phase != MENU_POINTER_MOVE && token == 0 && !carriedEnd)) return;
     publishMenuRelative(EVENT_TYPE_TOUCH_MENU_RELATIVE, phase, token, dx, dy, maxX, maxY);
 }
 
@@ -2341,7 +2487,8 @@ static bool isScopedMenuEvent(int type) {
     return type == EVENT_TYPE_MENU_POINTER || type == EVENT_TYPE_TOUCH_MENU_TOOL ||
         type == EVENT_TYPE_TOUCH_MENU_CURSOR || type == EVENT_TYPE_TOUCH_MENU_TOOL_CURSOR ||
         type == EVENT_TYPE_TOUCH_MENU_SCROLL || type == EVENT_TYPE_TOUCH_MENU_TOOL_SCROLL ||
-        type == EVENT_TYPE_TOUCH_MENU_RELATIVE || type == EVENT_TYPE_TOUCH_MENU_TOOL_RELATIVE;
+        type == EVENT_TYPE_TOUCH_MENU_RELATIVE || type == EVENT_TYPE_TOUCH_MENU_TOOL_RELATIVE ||
+        type == EVENT_TYPE_CARRIED_MENU_WARP;
 }
 
 /** 在最终consumer处核两类冻结资格，tool-only退休不改变direct菜单的epoch。 */
@@ -2373,8 +2520,8 @@ static bool queuedMenuInvalidates(uint32_t token, uint64_t epoch,
         const GLFWInputEvent* event = &slot->event;
         if (slot->menuScopeEpoch != epoch) continue;
         if (event->type == EVENT_TYPE_MENU_POINTER || event->type == EVENT_TYPE_TOUCH_MENU_RELATIVE) {
-            const int phase = event->type == EVENT_TYPE_MENU_POINTER ? event->i1 : slot->relative.phase;
-            const uint32_t value = event->type == EVENT_TYPE_MENU_POINTER ? (uint32_t)event->i4 : slot->relative.token;
+            const int phase = event->type == EVENT_TYPE_MENU_POINTER ? event->i1 : slot->relative.pointer.phase;
+            const uint32_t value = event->type == EVENT_TYPE_MENU_POINTER ? (uint32_t)event->i4 : slot->relative.pointer.token;
             if (value == token && phase == MENU_POINTER_CANCEL) canceled = true;
             // BEGIN手势的UP只松LEFT，后面仍可能有位置/滚轮或Cancel；必须END才正式关闭。
             // 旧无BEGIN的raw事务没有END字段，继续以原UP兼容，不能因此丢掉旧完整tap。
@@ -2396,35 +2543,72 @@ static void currentMenuCursor(uint32_t backend, double* x, double* y) {
 }
 
 /** 将同顺序中的相对命令在consumer末级应用。clamp边界随源packet冻结，不读取Native desired。 */
-static void resolveRelativeMenuCursor(uint32_t backend, const GLFWInputEvent* event,
-        const MenuRelativeMetadata* relative, double* x, double* y) {
+static bool resolveRelativeMenuCursor(uint32_t backend, const GLFWInputEvent* event,
+        const MenuCommandMetadata* relative, double* x, double* y) {
     double dx = 0.0, dy = 0.0;
     const int words[4] = {event->i1, event->i2, event->i3, event->i4};
     memcpy(&dx, words, sizeof(dx)); memcpy(&dy, words + 2, sizeof(dy));
     currentMenuCursor(backend, x, y);
-    if (relative->phase == MENU_POINTER_MOVE || relative->phase == MENU_POINTER_UP ||
-        relative->phase == MENU_POINTER_DOWN || relative->phase == MENU_POINTER_END) { *x += dx; *y += dy; }
-    *x = fmin(relative->maxX, fmax(0.0, *x));
-    *y = fmin(relative->maxY, fmax(0.0, *y));
+    const double previousX = *x, previousY = *y;
+    if (relative->pointer.phase == MENU_POINTER_MOVE || relative->pointer.phase == MENU_POINTER_UP ||
+        relative->pointer.phase == MENU_POINTER_DOWN || relative->pointer.phase == MENU_POINTER_END) { *x += dx; *y += dy; }
+    // LWJGL2 Mouse 以整数像素、左下为原点，Java 原有换算是 H-round(y)。
+    // 承接指在 H 处横移应仍位于底行，缩放后末个物理像素也不能被四舍五入成列 W。
+    const bool lwjglCarried = backend == AMCL_MENU_CURSOR_BACKEND_LWJGL2 &&
+        event->type == EVENT_TYPE_TOUCH_MENU_RELATIVE && relative->pointer.token == 0 &&
+        relative->pointer.phase == MENU_POINTER_MOVE;
+    const double maxX = lwjglCarried ? floor(relative->pointer.maxX) : relative->pointer.maxX;
+    const double maxY = lwjglCarried ? floor(relative->pointer.maxY) + 1.0 : relative->pointer.maxY;
+    *x = fmin(maxX, fmax(0.0, *x));
+    *y = fmin(maxY, fmax(lwjglCarried ? 1.0 : 0.0, *y));
+    return *x != previousX || *y != previousY;
 }
 
-static bool relativeMenuEndMoves(const GLFWInputEvent* event, const MenuRelativeMetadata* relative) {
-    if (event->type != EVENT_TYPE_TOUCH_MENU_RELATIVE || relative->phase != MENU_POINTER_END) return false;
+/** 零token的普通菜单relative MOVE/END只来自跨界承接指，不借浮鼠工具的生命周期。 */
+static bool isCarriedMenuEvent(int type, const MenuCommandMetadata* relative, int phase) {
+    return type == EVENT_TYPE_TOUCH_MENU_RELATIVE && relative->pointer.token == 0 && relative->pointer.phase == phase;
+}
+
+static bool relativeMenuEndMoves(const GLFWInputEvent* event, const MenuCommandMetadata* relative) {
+    if (event->type != EVENT_TYPE_TOUCH_MENU_RELATIVE || relative->pointer.phase != MENU_POINTER_END) return false;
     double dx = 0.0, dy = 0.0; const int words[4] = {event->i1, event->i2, event->i3, event->i4};
     memcpy(&dx, words, sizeof(dx)); memcpy(&dy, words + 2, sizeof(dy));
     return dx != 0.0 || dy != 0.0;
 }
 
 /** 相对传输只在此末级解算；菜单阶段保留double源点，工具/无token移动转换为旧1010。 */
-static bool resolveRelativeMenuEvent(uint32_t backend, GLFWInputEvent* event,
-        const MenuRelativeMetadata* relative, uint32_t currentToken, double* menuX, double* menuY) {
+static bool resolveMenuCommand(uint32_t backend, uint64_t sequence, GLFWInputEvent* event,
+        const MenuCommandMetadata* relative, uint32_t currentToken, double* menuX, double* menuY,
+        bool* carriedPositionChanged) {
+    if (carriedPositionChanged) *carriedPositionChanged = false;
+    if (event->type == EVENT_TYPE_CARRIED_MENU_WARP) {
+        if (relative->warp.backend != backend) return false;
+        const int words[4] = {event->i1, event->i2, event->i3, event->i4};
+        memcpy(menuX, words, sizeof(double));
+        memcpy(menuY, words + 2, sizeof(double));
+        pthread_mutex_lock(&g_cursorMutex);
+        const bool valid = !atomic_load_explicit(&g_isGrabbing, memory_order_relaxed) &&
+            sequence >= atomic_load_explicit(&g_menuWarpModeCutoff, memory_order_relaxed) &&
+            relative->warp.lifetime == atomic_load_explicit(&g_warpTargetLifetime[backend], memory_order_acquire);
+        if (valid) {
+            g_menuX = *menuX; g_menuY = *menuY;
+            if (backend == AMCL_MENU_CURSOR_BACKEND_GLFW) { g_cLastX = *menuX; g_cLastY = *menuY; }
+            // 程序设位必须重新交给已自行回中的游戏，SDL亦需保护无手指MOVE的右键松手。
+            if (carriedPositionChanged) *carriedPositionChanged = true;
+        }
+        pthread_mutex_unlock(&g_cursorMutex);
+        return valid;
+    }
     *menuX = event->i2; *menuY = event->i3;
     if (event->type != EVENT_TYPE_TOUCH_MENU_RELATIVE && event->type != EVENT_TYPE_TOUCH_MENU_TOOL_RELATIVE) return true;
+    // END只在消费者队首检查帧资格；放行后所有后端均跳过该标记，不重报坐标或释放别的手势。
+    if (isCarriedMenuEvent(event->type, relative, MENU_POINTER_END)) return false;
     const bool tool = event->type == EVENT_TYPE_TOUCH_MENU_TOOL_RELATIVE;
-    const int phase = tool ? MENU_POINTER_MOVE : relative->phase;
-    const uint32_t token = tool ? 0 : relative->token;
+    const int phase = tool ? MENU_POINTER_MOVE : relative->pointer.phase;
+    const uint32_t token = tool ? 0 : relative->pointer.token;
     if (!tool && phase != MENU_POINTER_BEGIN && phase != MENU_POINTER_DOWN && token != 0 && token != currentToken) return false;
-    resolveRelativeMenuCursor(backend, event, relative, menuX, menuY);
+    const bool changed = resolveRelativeMenuCursor(backend, event, relative, menuX, menuY);
+    if (carriedPositionChanged) *carriedPositionChanged = changed && !tool && token == 0 && phase == MENU_POINTER_MOVE;
     if (tool || (phase == MENU_POINTER_MOVE && token == 0)) {
         const double x = *menuX, y = *menuY;
         event->type = EVENT_TYPE_CURSOR_POSITION;
@@ -2482,6 +2666,8 @@ static int returnLegacyEvent(const GLFWInputEvent* event,
 // ============================================================
 
 JNIEXPORT void inputBridge_pushEvent(int type, int i1, int i2, int i3, int i4) {
+    // 1019是本地SDL读端的投影结果，外部普通producer不能把它写进三个消费者共用的队列。
+    if (type == EVENT_TYPE_SDL_CARRIED_MENU_MOTION) return;
     // ⭐ 委派身份判据就挂在这个函数上（见"跨 image 实例委派"不变量 1）：owner 的表里
     // `pushEvent` 存的就是本函数，所以 owner 自己进来时 `bridgeDelegate()` 返回 NULL。
     const InputBridgeInstanceV1* owner = bridgeDelegate();
@@ -2756,7 +2942,7 @@ static bool advanceGlfwMenuPending(void* window, unsigned long long read,
         // 仅恢复冻结源点；实际 callback 仍锁外执行，返回后才冻结 +2 帧基线。
         inputBridge_setMenuCursor(g_glfwPointer.sourceX, g_glfwPointer.sourceY);
         if (!submitGlfwMenuCursor(window, g_glfwPointer.sourceX, g_glfwPointer.sourceY,
-                g_glfwPointer.pendingOrder, generation)) return false;
+                g_glfwPointer.pendingOrder, generation, false)) return false;
         refreshGlfwPresentationState();
         amclPointerSourceDelivered(&g_glfwPointer, g_presentSerial, &g_glfwPointerPolicy);
         return false;
@@ -2859,7 +3045,7 @@ void inputBridge_pumpOrdered(void* window, InputBridgeOrderedPump pump, void* co
         const uint64_t menuScopeEpoch = slot->menuScopeEpoch;
         const uint64_t toolScopeEpoch = slot->toolScopeEpoch;
         const uint32_t gestureToken = slot->gestureToken;
-        const MenuRelativeMetadata relative = slot->relative;
+        const MenuCommandMetadata relative = slot->relative;
         pthread_mutex_unlock(&g_pushMutex);
         // 生产边界可以在队首快照之后推进；读到新scope槽后再次退休旧工具，才能安全接受新owner。
         if (!retireGlfwMenuTools(window, activationGeneration)) return;
@@ -2893,8 +3079,21 @@ void inputBridge_pumpOrdered(void* window, InputBridgeOrderedPump pump, void* co
             ++readSequence; ++drainedThisCycle; continue;
         }
         double menuPointX = 0.0, menuPointY = 0.0;
+        const bool carriedMotion = isCarriedMenuEvent(event.type, &relative, MENU_POINTER_MOVE);
+        if (isCarriedMenuEvent(event.type, &relative, MENU_POINTER_END)) {
+            const uint64_t activation = committedMenuCursorActivation(AMCL_MENU_CURSOR_BACKEND_GLFW);
+            pthread_mutex_lock(&g_glfwPresentationMutex);
+            const bool wait = carriedEndWaits(&g_glfwCarriedMotion, activation);
+            pthread_mutex_unlock(&g_glfwPresentationMutex);
+            if (wait) {
+                // 不领取END，已交付的位置无需重放。前面的typed已泵到order-1，不能越过原松键。
+                atomic_store_explicit(&g_l3ReadSequence, readSequence, memory_order_release);
+                notePumpCycle(drainedThisCycle);
+                return;
+            }
+        }
         const bool menuEndMoves = relativeMenuEndMoves(&event, &relative);
-        if (!resolveRelativeMenuEvent(1, &event, &relative, g_glfwPointer.token, &menuPointX, &menuPointY)) {
+        if (!resolveMenuCommand(1, readSequence, &event, &relative, g_glfwPointer.token, &menuPointX, &menuPointY, NULL)) {
             ++readSequence; ++drainedThisCycle; continue;
         }
         switch (event.type) {
@@ -2909,6 +3108,18 @@ void inputBridge_pumpOrdered(void* window, InputBridgeOrderedPump pump, void* co
                 if(g_lookPrefixCallback)(void)g_lookPrefixCallback(window,token);
                 break;
             }
+            case EVENT_TYPE_CARRIED_MENU_WARP: {
+                const double x = menuPointX, y = menuPointY;
+                // 即使落在上次查询点，游戏也可能刚回中，强制交付这里被冻结的绝对值。
+                const MenuWarpRequest previous = g_deliveringWarp;
+                const MenuWarpRequest current = {1, (uint64_t)(uintptr_t)window,
+                    atomic_load_explicit(&g_lookModeEpoch, memory_order_acquire), relative.warp.lifetime, x, y};
+                g_deliveringWarp = current;
+                const bool valid = submitGlfwMenuCursor(window, x, y, interactionOrder, activationGeneration, true);
+                g_deliveringWarp = previous;
+                if (!valid) return;
+                break;
+            }
             case EVENT_TYPE_TOUCH_MENU_TOOL_CURSOR:
             case EVENT_TYPE_TOUCH_MENU_CURSOR:
                 if (!scopedMenuEventValid(event.type, menuScopeEpoch, toolScopeEpoch)) break;
@@ -2920,7 +3131,7 @@ void inputBridge_pumpOrdered(void* window, InputBridgeOrderedPump pump, void* co
                 double x = 0.0, y = 0.0;
                 if (!atomic_load_explicit(&g_isGrabbing, memory_order_acquire) &&
                     bridgeTakeCursorChange(&x, &y) && hasGlfwCursorCallback()) {
-                    if (!submitGlfwMenuCursor(window, x, y, interactionOrder, activationGeneration)) return;
+                    if (!submitGlfwMenuCursor(window, x, y, interactionOrder, activationGeneration, carriedMotion)) return;
                 }
                 break;
             }
@@ -3011,7 +3222,7 @@ void inputBridge_pumpOrdered(void* window, InputBridgeOrderedPump pump, void* co
                     double menuReportX = 0.0, menuReportY = 0.0;
                     if (!atomic_load_explicit(&g_isGrabbing, memory_order_acquire) &&
                         bridgeTakeCursorChange(&menuReportX, &menuReportY) && hasGlfwCursorCallback()) {
-                        if (!submitGlfwMenuCursor(window, menuReportX, menuReportY, interactionOrder, activationGeneration)) return;
+                        if (!submitGlfwMenuCursor(window, menuReportX, menuReportY, interactionOrder, activationGeneration, false)) return;
                     }
                 }
 
@@ -3318,6 +3529,11 @@ static bool publishBridgeInstanceDescriptor(void) {
     g_bridgeInstance.endLookAction = &inputBridge_endLookActionV1;
     g_bridgeInstance.setLookPrefixCallback = &inputBridge_setLookPrefixCallbackV1;
     g_bridgeInstance.submitProcessedLook = &inputBridge_submitProcessedLookV1;
+    g_bridgeInstance.setCarriedMenuWarpClaim = &inputBridge_setCarriedMenuWarpClaimV1;
+    g_bridgeInstance.requestGlfwMenuWarp = &inputBridge_requestGlfwMenuWarpV1;
+    g_bridgeInstance.requestCarriedMenuWarp = &inputBridge_requestCarriedMenuWarpV1;
+    g_bridgeInstance.l2NextThrough = &inputBridge_l2NextThroughV1;
+    g_bridgeInstance.sdlNextCarriedThrough = &inputBridge_sdlNextCarriedThroughV1;
 #if AMCL_INPUT_TRACE
     g_bridgeInstance.latencyVersion=1;
     g_bridgeInstance.noteInputLatency=&inputBridge_noteInputLatencyV1;
@@ -3422,6 +3638,13 @@ void inputBridge_publishAddress(void) {
                  (unsigned long long)(uintptr_t)&inputBridge_sdlSetTargetV1,
                  (unsigned long long)(uintptr_t)&inputBridge_sdlNotifyFramePresentedForTargetV1);
         setenv("AMCL_SDL_TOUCH_BRIDGE", touchbuf, 1);
+        // 新设位能力单独公布，SDL用已握手neutral映像和PID校验；旧七槽前缀不变。
+        char warpbuf[96];
+        snprintf(warpbuf, sizeof(warpbuf), "AMCLSDLW:2:%llu:%llu:%llu",
+                 (unsigned long long)menuCursorProcessId(),
+                 (unsigned long long)(uintptr_t)&inputBridge_requestCarriedMenuWarpV1,
+                 (unsigned long long)(uintptr_t)&inputBridge_sdlNextCarriedThroughV1);
+        setenv("AMCL_SDL_MENU_WARP_V1", warpbuf, 1);
         char sdlbuf[256];
         snprintf(sdlbuf, sizeof(sdlbuf), "%s:%d:%llu,%llu,%llu,%llu,%llu,%llu,%llu",
                  INPUT_BRIDGE_SDL_PROTO_MAGIC, INPUT_BRIDGE_SDL_PROTO_VERSION,
@@ -3825,6 +4048,8 @@ JNIEXPORT void inputBridge_setGrabState(int grabbing) {
     g_nonPhysicalLookX = 0.0;
     g_nonPhysicalLookY = 0.0;
     // grab 标志与坐标迁移在同一临界区发布，snapshot 不会观察到混合 epoch。
+    // 丢弃发生在旧grab代次的程序定位；普通实体事件与按键仍各按原有规则收尾。
+    atomic_store_explicit(&g_menuWarpModeCutoff, atomic_load_explicit(&g_writeSequence, memory_order_acquire), memory_order_release);
     atomic_store_explicit(&g_isGrabbing, nextGrab, memory_order_release);
     // 逻辑grab代次与physical capture不同，旧stream/prefix在新模式前作废，不补停局dt。
     const uint64_t lookEpoch=atomic_load_explicit(&g_lookModeEpoch,memory_order_relaxed);
@@ -4207,6 +4432,13 @@ int inputBridge_l2NextEvent(int* outType, int* o1, int* o2, int* o3, int* o4) {
     // "26.2 及以下"覆盖到 LWJGL2 世代就是这么来的）。
     const InputBridgeInstanceV1* owner = bridgeDelegate();
     if (owner) return owner->l2NextEvent(outType, o1, o2, o3, o4);
+    return inputBridge_l2NextThroughV1(outType, o1, o2, o3, o4, UINT64_MAX);
+}
+
+/** 程序设位只领取到其公共顺序；旧Next仍按原帧fence与预算合并typed/legacy。 */
+JNIEXPORT int inputBridge_l2NextThroughV1(int* outType, int* o1, int* o2, int* o3, int* o4, uint64_t maxOrder) {
+    const InputBridgeInstanceV1* owner = bridgeDelegate();
+    if (owner) return INPUT_BRIDGE_OWNER_HAS_TAIL(owner, l2NextThrough) ? owner->l2NextThrough(outType, o1, o2, o3, o4, maxOrder) : 0;
     (void)amclSourceControlDrainTerminalsV1();
     atomic_store_explicit(&g_l2Active, true, memory_order_release);
     // 退休是立即可见的触控控制边界；释放仍在L2拉取线程，绝不清ordinary/typed贡献。
@@ -4243,17 +4475,22 @@ int inputBridge_l2NextEvent(int* outType, int* o1, int* o2, int* o3, int* o4) {
         return returnResetEvent(outType, o1, o2, o3, o4);
     }
     // 每次拉取在同一 owner 顺序内选队首；无输出记录也必须重新比较，不能越过另一队列。
-    if (g_l2FrameOpen && g_l2FrameEvents >= EVENT_WINDOW_SIZE) {
-        g_l2FrameOpen = false;
-        return 0;
+    uint64_t frameFence = maxOrder;
+    if (maxOrder == UINT64_MAX) {
+        if (g_l2FrameOpen && g_l2FrameEvents >= EVENT_WINDOW_SIZE) {
+            g_l2FrameOpen = false;
+            return 0;
+        }
+        if (!g_l2FrameOpen) {
+            g_l2FrameOpen = true;
+            g_l2FrameFence = amclInputInteractionFence();
+            g_l2FrameEvents = 0u;
+        }
+        ++g_l2FrameEvents;
+        frameFence = g_l2FrameFence;
+    } else {
+        g_l2FrameOpen = false; // 同步设位提供不可变上限；下次普通轮询另取帧快照。
     }
-    if (!g_l2FrameOpen) {
-        g_l2FrameOpen = true;
-        g_l2FrameFence = amclInputInteractionFence();
-        g_l2FrameEvents = 0u;
-    }
-    ++g_l2FrameEvents;
-    const uint64_t frameFence = g_l2FrameFence;
     const uint64_t baselineOrder = recoveryBaselineOrder(&g_l2Baseline);
     if (baselineOrder != UINT64_MAX) {
         const uint64_t ceiling = baselineOrder < frameFence ? baselineOrder : frameFence;
@@ -4313,7 +4550,7 @@ int inputBridge_l2NextEvent(int* outType, int* o1, int* o2, int* o3, int* o4) {
         const uint64_t toolScopeEpoch = slot->toolScopeEpoch;
         const uint64_t keyScope=slot->l2KeyboardScope;
         const uint32_t gestureToken = slot->gestureToken;
-        const MenuRelativeMetadata relative = slot->relative;
+        const MenuCommandMetadata relative = slot->relative;
         pthread_mutex_unlock(&g_pushMutex);
         if(amclInputOwnerSelectedKeyboardBackendV1()==2u&&(e.type==EVENT_TYPE_KEY||e.type==EVENT_TYPE_CHAR||e.type==EVENT_TYPE_CHAR_MODS)&&
            (!keyScope||keyScope!=amclInputOwnerL2KeyboardScopeV1())){
@@ -4362,7 +4599,7 @@ int inputBridge_l2NextEvent(int* outType, int* o1, int* o2, int* o3, int* o4) {
         }
         double menuPointX = 0.0, menuPointY = 0.0;
         const bool menuEndMoves = relativeMenuEndMoves(&e, &relative);
-        if (!resolveRelativeMenuEvent(2, &e, &relative, menuToken, &menuPointX, &menuPointY)) {
+        if (!resolveMenuCommand(2, read, &e, &relative, menuToken, &menuPointX, &menuPointY, NULL)) {
             atomic_store_explicit(&g_l2ReadSequence, read + 1ULL, memory_order_release); continue;
         }
         const bool start = e.type == EVENT_TYPE_MENU_POINTER &&
@@ -4392,6 +4629,8 @@ int inputBridge_l2NextEvent(int* outType, int* o1, int* o2, int* o3, int* o4) {
         if (e.type == EVENT_TYPE_TOUCH_MENU_SCROLL || e.type == EVENT_TYPE_TOUCH_MENU_TOOL_SCROLL) e.type = EVENT_TYPE_SCROLL;
         if (e.type == EVENT_TYPE_CURSOR_POSITION) consumeOrderedCursor(&e, 2);
         atomic_store_explicit(&g_l2ReadSequence, read + 1ULL, memory_order_release);
+        if (e.type == EVENT_TYPE_CARRIED_MENU_WARP)
+            return returnOrderedMenuCursor(menuPointX, menuPointY, 2, interactionOrder, outType, o1, o2, o3, o4);
         if (e.type == EVENT_TYPE_MENU_POINTER) {
             const int phase = e.i1; const uint32_t token = (uint32_t)e.i4;
             if (!token || phase < MENU_POINTER_MOVE || phase > MENU_POINTER_END) continue;
@@ -4559,7 +4798,7 @@ JNIEXPORT void inputBridge_sdlNotifyFramePresentedForTargetV1(uint64_t window, u
     advanceSdlPresentation(window, generation);
 }
 
-/** sink只改成对clock，不读写consumer pending；Vulkan worker也可安全通知。 */
+/** 呈现线程在同一锁内推进时钟与承接拖动的帧计数，只有输入消费线程可以放行队首的松键。 */
 static void advanceGlfwPresentation(uint64_t window, uint64_t generation) {
     pthread_mutex_lock(&g_glfwPresentationMutex); const uint64_t identity = window;
     if (g_glfwPresentationClock.targetRequired) {
@@ -4568,6 +4807,7 @@ static void advanceGlfwPresentation(uint64_t window, uint64_t generation) {
         window = g_glfwPresentationClock.targetWindow;
     } else if (!window && g_glfwPresentationClock.identity) { pthread_mutex_unlock(&g_glfwPresentationMutex); return; }
     if (window) { g_glfwPresentationClock.window = window; g_glfwPresentationClock.generation = generation; g_glfwPresentationClock.identity = identity; }
+    countCarriedPresent(&g_glfwCarriedMotion, window, generation, identity);
     ++g_glfwPresentationClock.serial; pthread_mutex_unlock(&g_glfwPresentationMutex);
 }
 static void advanceSdlPresentation(uint64_t window, uint64_t generation) {
@@ -4582,6 +4822,7 @@ static void advanceSdlPresentation(uint64_t window, uint64_t generation) {
             g_sdlMenuState.targetPresentedWindow = window; g_sdlMenuState.targetPresentedGeneration = generation; g_sdlMenuState.targetPresentedIdentity = identity;
         }
     }
+    countCarriedPresent(&g_sdlMenuState.carriedMotion, window, generation, identity);
     ++g_sdlMenuState.presentSerial; pthread_mutex_unlock(&g_sdlMenuMutex);
 }
 static void registerGraphicsPresentationSinks(void) {
@@ -4605,6 +4846,9 @@ uint64_t inputBridge_sdlPeekOrder(void) {
     if (owner) return INPUT_BRIDGE_OWNER_HAS_TAIL(owner, sdlPeekOrder) ? owner->sdlPeekOrder() : UINT64_MAX;
     if (atomic_load_explicit(&g_sdlResetPending, memory_order_acquire)) return 0;
     pthread_mutex_lock(&g_sdlMenuMutex);
+    // SDL有序循环先Peek再分流；上一次Next交出的坐标此时已由同步适配器处理。
+    // 空队列也要认领这条返回边界，停稳后才抬手无需从END重新等一帧。
+    g_sdlMenuState.carriedMotion.awaitingPullReturn = false;
     const bool invalid = g_sdlMenuState.pointer.token && (g_sdlMenuState.pointer.scopeEpoch != atomic_load_explicit(&g_touchMenuScopeEpoch, memory_order_acquire) ||
         g_sdlMenuState.pointer.inputTargetEpoch != atomic_load_explicit(&g_sdlInputTargetEpoch, memory_order_acquire) ||
         (g_sdlMenuState.targetPresentedWindow && g_sdlMenuState.presentedWindow &&
@@ -4622,14 +4866,13 @@ uint64_t inputBridge_sdlPeekOrder(void) {
 int inputBridge_sdlNextEvent(int* outType, int* o1, int* o2, int* o3, int* o4) {
     return inputBridge_sdlNextThrough(outType, o1, o2, o3, o4, UINT64_MAX);
 }
-int inputBridge_sdlNextThrough(int* outType, int* o1, int* o2, int* o3, int* o4, uint64_t maxOrder) {
-    const InputBridgeInstanceV1* owner = bridgeDelegate();
-    if (owner) return INPUT_BRIDGE_OWNER_HAS_TAIL(owner, sdlNextThrough) ? owner->sdlNextThrough(outType, o1, o2, o3, o4, maxOrder) : owner->sdlNextEvent(outType, o1, o2, o3, o4);
+static int readSdlNextThrough(int* outType, int* o1, int* o2, int* o3, int* o4, uint64_t maxOrder, bool markCarried) {
     (void)amclSourceControlDrainTerminalsV1();
     if (!atomic_load_explicit(&g_sdlActive, memory_order_acquire)) inputBridge_sdlSetActive(1);
     if (atomic_exchange_explicit(&g_sdlResetPending, false, memory_order_acq_rel)) { resetSdlMenuSession(); return returnResetEvent(outType, o1, o2, o3, o4); }
     GLFWInputEvent retiredTool;
     pthread_mutex_lock(&g_sdlMenuMutex);
+    g_sdlMenuState.carriedMotion.awaitingPullReturn = false;
     bool toolRelease = retireMenuToolEvent(&g_sdlMenuState.left, &g_sdlMenuTool, &retiredTool);
     pthread_mutex_unlock(&g_sdlMenuMutex);
     if (toolRelease) return returnLegacyEvent(&retiredTool, outType, o1, o2, o3, o4);
@@ -4658,7 +4901,7 @@ int inputBridge_sdlNextThrough(int* outType, int* o1, int* o2, int* o3, int* o4,
         if (slot->interactionOrder > maxOrder) { pthread_mutex_unlock(&g_pushMutex); return 0; }
         GLFWInputEvent e = slot->event; const uint64_t interactionOrder = slot->interactionOrder;
         const uint64_t menuScopeEpoch = slot->menuScopeEpoch, toolScopeEpoch = slot->toolScopeEpoch;
-        const uint32_t gestureToken = slot->gestureToken; const MenuRelativeMetadata relative = slot->relative;
+        const uint32_t gestureToken = slot->gestureToken; const MenuCommandMetadata relative = slot->relative;
         pthread_mutex_unlock(&g_pushMutex);
         pthread_mutex_lock(&g_sdlMenuMutex); toolRelease = retireMenuToolEvent(&g_sdlMenuState.left, &g_sdlMenuTool, &retiredTool);
         const uint32_t menuToken = g_sdlMenuState.pointer.token; const bool begun = g_sdlMenuState.pointer.gestureBegun;
@@ -4669,8 +4912,18 @@ int inputBridge_sdlNextThrough(int* outType, int* o1, int* o2, int* o3, int* o4,
             atomic_store_explicit(&g_sdlReadSequence, read + 1ULL, memory_order_release); continue;
         }
         if (e.type == EVENT_TYPE_TOUCH_MENU_SCROLL && gestureToken && gestureToken != menuToken) { atomic_store_explicit(&g_sdlReadSequence, read + 1ULL, memory_order_release); continue; }
+        if (isCarriedMenuEvent(e.type, &relative, MENU_POINTER_END)) {
+            const uint64_t activation = committedMenuCursorActivation(AMCL_MENU_CURSOR_BACKEND_SDL3);
+            pthread_mutex_lock(&g_sdlMenuMutex);
+            const bool wait = carriedEndWaits(&g_sdlMenuState.carriedMotion, activation);
+            pthread_mutex_unlock(&g_sdlMenuMutex);
+            if (wait) return 0; // 队首order不动，SDL的typed/legacy归并会在此结束本轮pump。
+        }
+        // 必须在归约前冻结来源；普通绝对位置、工具和token手势都继续用1010。
+        const bool carriedMove = markCarried && isCarriedMenuEvent(e.type, &relative, MENU_POINTER_MOVE);
         double x = 0, y = 0; const bool endMoves = relativeMenuEndMoves(&e, &relative);
-        if (!resolveRelativeMenuEvent(3, &e, &relative, menuToken, &x, &y)) { atomic_store_explicit(&g_sdlReadSequence, read + 1ULL, memory_order_release); continue; }
+        bool carriedMotion = false;
+        if (!resolveMenuCommand(3, read, &e, &relative, menuToken, &x, &y, &carriedMotion)) { atomic_store_explicit(&g_sdlReadSequence, read + 1ULL, memory_order_release); continue; }
         const bool start = e.type == EVENT_TYPE_MENU_POINTER && (e.i1 == MENU_POINTER_BEGIN || e.i1 == MENU_POINTER_DOWN);
         const bool continuation = start && amclPointerIsContinuation(e.i1, (uint32_t)e.i4, menuToken, begun, held, downAccepted);
         if (start && !continuation && g_gestureTokenEpoch[3] == menuScopeEpoch && (uint32_t)e.i4 <= g_gestureTokenHigh[3]) { atomic_store_explicit(&g_sdlReadSequence, read + 1ULL, memory_order_release); continue; }
@@ -4691,9 +4944,16 @@ int inputBridge_sdlNextThrough(int* outType, int* o1, int* o2, int* o3, int* o4,
             pthread_mutex_lock(&g_sdlMenuMutex); const bool emitted = applyMenuToolEvent(&g_sdlMenuState.left, &g_sdlMenuTool, &e, e.type == EVENT_TYPE_TOUCH_MENU_TOOL, toolScopeEpoch);
             pthread_mutex_unlock(&g_sdlMenuMutex); if (!emitted) continue;
         }
-        if (e.type == EVENT_TYPE_CURSOR_POSITION) {
+        if (e.type == EVENT_TYPE_CURSOR_POSITION || e.type == EVENT_TYPE_CARRIED_MENU_WARP) {
             const int words[4] = {e.i1, e.i2, e.i3, e.i4}; double px = 0, py = 0; memcpy(&px, words, sizeof(px)); memcpy(&py, words + 2, sizeof(py));
-            commitMenuCursor(3, px, py, interactionOrder, committedMenuCursorActivation(3));
+            const uint64_t activation = committedMenuCursorActivation(AMCL_MENU_CURSOR_BACKEND_SDL3);
+            commitMenuCursor(3, px, py, interactionOrder, activation);
+            if (carriedMotion) {
+                pthread_mutex_lock(&g_sdlMenuMutex);
+                armCarriedMotion(&g_sdlMenuState.carriedMotion, activation, g_sdlMenuState.presentedWindow,
+                    g_sdlMenuState.presentedGeneration, g_sdlMenuState.presentedIdentity, &g_sdlPointerPolicy);
+                pthread_mutex_unlock(&g_sdlMenuMutex);
+            }
         }
         #if AMCL_INPUT_TRACE
         if(e.type==AMCL_LOOK_PREFIX_EVENT){
@@ -4704,6 +4964,22 @@ int inputBridge_sdlNextThrough(int* outType, int* o1, int* o2, int* o3, int* o4,
             amclInputLatencyNoteBackendV2(AMCL_ILAT_READ,3,AMCL_ILAT_ENDPOINT_SDL_QUEUE_ADD,&note);
         }
         #endif
+        if (carriedMove) e.type = EVENT_TYPE_SDL_CARRIED_MENU_MOTION;
         return returnLegacyEvent(&e, outType, o1, o2, o3, o4);
     }
+}
+
+int inputBridge_sdlNextThrough(int* outType, int* o1, int* o2, int* o3, int* o4, uint64_t maxOrder) {
+    const InputBridgeInstanceV1* owner = bridgeDelegate();
+    if (owner) return INPUT_BRIDGE_OWNER_HAS_TAIL(owner, sdlNextThrough) ? owner->sdlNextThrough(outType, o1, o2, o3, o4, maxOrder) : owner->sdlNextEvent(outType, o1, o2, o3, o4);
+    return readSdlNextThrough(outType, o1, o2, o3, o4, maxOrder, false);
+}
+
+JNIEXPORT int inputBridge_sdlNextCarriedThroughV1(int* outType, int* o1, int* o2, int* o3, int* o4, uint64_t maxOrder) {
+    const InputBridgeInstanceV1* owner = bridgeDelegate();
+    if (owner) {
+        if (INPUT_BRIDGE_OWNER_HAS_TAIL(owner, sdlNextCarriedThrough)) return owner->sdlNextCarriedThrough(outType, o1, o2, o3, o4, maxOrder);
+        return inputBridge_sdlNextThrough(outType, o1, o2, o3, o4, maxOrder);
+    }
+    return readSdlNextThrough(outType, o1, o2, o3, o4, maxOrder, true);
 }

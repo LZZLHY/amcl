@@ -83,22 +83,49 @@ test('JVM退出请求0与非0均可在没有游戏日志时精确分类，但不
   }
 });
 
-test('精确平台CRASHED不能被Stopping或JVM exit0覆盖', async () => {
+test('手机退出记录只认证同一共享PID的退出0，冷启结束时间来自原件', async () => {
   const f = fixture();
   try {
-    f.publish();
-    f.runtime.write('minecraft/logs/latest.log', '[INFO] Stopping!\n');
-    f.runtime.load('commons/src/main/ets/utils/SessionCapture.ets')
-      .checkpointSessionCapture(f.runtime.directory, f.id, Date.now(), 0);
-    const manifest = f.ledger.ledgerManifest(f.runtime.directory, f.id);
-    manifest.state = f.ledger.LedgerState.CRASHED;
-    manifest.outcomeSource = 'platform.APP_CRASH';
-    manifest.outcomeSummary = '本局SIGABRT';
-    f.runtime.write('logs/ledger/' + f.id + '/manifest.json', JSON.stringify(manifest));
+    const reader = f.runtime.load(readerPath);
+    const phone = { ...f.record, parentPid: f.record.pid, source: 'phone-jvm-exit' };
+    for (const change of [{ parentPid: f.record.parentPid }, { pid: 99, parentPid: 99 }, { exitCode: 7 },
+      { activityId: f.id + 1 }, { timestamp: f.id - 1 }, { source: 'jvm-exit' }]) {
+      f.publish({ ...phone, ...change });
+      assert.equal(reader.readJvmExitEvidence(f.runtime.directory, f.id), undefined, JSON.stringify(change));
+      assert.equal(await reader.readJvmExitEvidenceAsync(f.runtime.directory, f.id), undefined, JSON.stringify(change));
+    }
+    const raw = f.publish(phone);
+    assert.deepEqual(await reader.readJvmExitEvidenceAsync(f.runtime.directory, f.id), phone);
+    assert.deepEqual(reader.readJvmExitEvidence(f.runtime.directory, f.id), phone);
+    const archived = f.runtime.directory + '/logs/ledger/' + f.id + '/jvm/process-exit.json';
+    assert.equal(fs.readFileSync(archived, 'utf8'), fs.readFileSync(raw, 'utf8'));
     const result = await f.runtime.load(resolverPath).resolveRecoveredSessionOutcome(f.runtime.directory, f.id);
-    assert.equal(result.state, f.ledger.LedgerState.CRASHED);
-    assert.equal(result.source, 'platform.APP_CRASH');
+    assert.equal(result.state, f.ledger.LedgerState.SUCCESS);
+    assert.equal(result.source, 'session.jvm-exit');
+    assert.equal(result.endedAt, phone.timestamp);
+    assert.match(result.summary, /手机游戏.*请求正常退出/);
+    assert.doesNotMatch(result.summary, /成功重启|独立游戏进程/);
   } finally { f.runtime.close(); }
+});
+
+test('精确平台CRASHED不能被Stopping或JVM exit0覆盖', async () => {
+  for (const phone of [false, true]) {
+    const f = fixture();
+    try {
+      f.publish(phone ? { ...f.record, parentPid: f.record.pid, source: 'phone-jvm-exit' } : f.record);
+      f.runtime.write('minecraft/logs/latest.log', '[INFO] Stopping!\n');
+      f.runtime.load('commons/src/main/ets/utils/SessionCapture.ets')
+        .checkpointSessionCapture(f.runtime.directory, f.id, Date.now(), 0);
+      const manifest = f.ledger.ledgerManifest(f.runtime.directory, f.id);
+      manifest.state = f.ledger.LedgerState.CRASHED;
+      manifest.outcomeSource = 'platform.APP_CRASH';
+      manifest.outcomeSummary = '本局SIGABRT';
+      f.runtime.write('logs/ledger/' + f.id + '/manifest.json', JSON.stringify(manifest));
+      const result = await f.runtime.load(resolverPath).resolveRecoveredSessionOutcome(f.runtime.directory, f.id);
+      assert.equal(result.state, f.ledger.LedgerState.CRASHED);
+      assert.equal(result.source, 'platform.APP_CRASH');
+    } finally { f.runtime.close(); }
+  }
 });
 
 test('本局真实crash报告继续优先于退出0，已修旧报告归属逻辑不变', async () => {

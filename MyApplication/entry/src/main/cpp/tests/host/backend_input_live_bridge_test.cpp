@@ -11,17 +11,6 @@
 #include <vector>
 
 namespace {
-// 非空时解析器交出这张转发代理表（只替换 getSnapshot），其余时候交出真实表。
-const AmclInputHostApiV1* gResolveOverride = nullptr;
-}
-
-extern "C" int32_t amclInputHostDescriptorResolveV1(const AmclInputHostApiV1** api) {
-    if (!api) return AMCL_INPUT_HOST_DESCRIPTOR_ERROR_INVALID_ARGUMENT;
-    *api = gResolveOverride ? gResolveOverride : amclInputGetHostApiV1();
-    return AMCL_INPUT_HOST_DESCRIPTOR_OK;
-}
-
-namespace {
 [[noreturn]] void Fail(const char* expression, int line) {
     std::cerr << "LIVE BACKEND FAIL line " << line << ": " << expression << '\n';
     std::exit(1);
@@ -75,12 +64,12 @@ int32_t ReopenProxySnapshot(AmclInputSnapshotV1* output) {
     }
     return amclInputGetHostApiV1()->getSnapshot(output);
 }
-void ArmReopenMotion(const AmclInputHostApiV1* api, uint64_t epoch) {
-    gReopenProxy = *api;
-    gReopenProxy.getSnapshot = ReopenProxySnapshot;
+void ArmReopenMotion(uint64_t epoch) {
     gReopenEpoch = epoch;
     gReopenMotionPending = true;
-    gResolveOverride = &gReopenProxy;
+    // 本单线程夹具切换真实 descriptor，只给重开时解析的新 consumer 注入快照边缘。
+    CHECK(amclInputHostDescriptorClearV1() == AMCL_INPUT_HOST_DESCRIPTOR_OK);
+    CHECK(amclInputHostDescriptorPublishV1(&gReopenProxy) == AMCL_INPUT_HOST_DESCRIPTOR_OK);
 }
 
 // 状态基线不是历史输入重放。SDL在core中因积压退休后，只继续原来的Next轮询，
@@ -126,9 +115,12 @@ void TestAutomaticPressureReopen(const AmclInputHostApiV1* api,
         CHECK(api->submitEvent(&motion) == AMCL_INPUT_OK);
         Drain(AMCL_BACKEND_INPUT_LWJGL2); // 活跃兄弟逐条消费，只有SDL停止拉取。
     }
-    if (motionDuringReopen) ArmReopenMotion(api, epoch);
+    if (motionDuringReopen) ArmReopenMotion(epoch);
     const auto recovered = Drain(); // 内部遇STALE→Close→下次Next重新Open，真实生产链。
-    gResolveOverride = nullptr;
+    if (motionDuringReopen) {
+        CHECK(amclInputHostDescriptorClearV1() == AMCL_INPUT_HOST_DESCRIPTOR_OK);
+        CHECK(amclInputHostDescriptorPublishV1(api) == AMCL_INPUT_HOST_DESCRIPTOR_OK);
+    }
     CHECK(!gReopenMotionPending); // 注入确实发生在重开握手之中。
     unsigned resets = 0u, focused = 0u, captured = 0u, currentText = 0u, relative = 0u;
     for (const auto& event : recovered) {
@@ -194,6 +186,9 @@ int main() {
     CHECK(setenv("AMCL_GLFW_INPUT_BACKEND", "typed", 1) == 0);
 #endif
     const auto* api = amclInputGetHostApiV1();
+    gReopenProxy = *api;
+    gReopenProxy.getSnapshot = ReopenProxySnapshot;
+    CHECK(amclInputHostDescriptorPublishV1(api) == AMCL_INPUT_HOST_DESCRIPTOR_OK);
     uint64_t epoch = 0u;
     CHECK(api->beginSession(&epoch) == AMCL_INPUT_OK);
     CHECK(api->publishFocus(1u) == AMCL_INPUT_OK);

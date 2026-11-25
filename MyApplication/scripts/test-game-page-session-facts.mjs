@@ -28,18 +28,26 @@ const grabField = owner.members.find(member => member.name?.getText(pageAst) ===
 assert.ok(grabField, '真实grab投影字段');
 const watch = /@Watch\(\s*['"]([^'"]+)['"]\s*\)/.exec(grabField.getText(pageAst));
 const watcher = watch?.[1];
-const names = ['syncCursorLock', 'updatePageInputActive', ...(watcher ? [watcher] : [])];
+const refocusRecovery = owner.members.find(member => member.name?.getText(pageAst) === 'rearmDesktopKeyRetirements');
+const names = ['syncCursorLock', 'updatePageInputActive', ...(watcher ? [watcher] : []),
+  ...(refocusRecovery ? ['rearmDesktopKeyRetirements'] : [])];
 const methods = names.map(name => {
   const method = owner.members.find(member => member.name?.getText(pageAst) === name);
   assert.ok(method, '真实连接的Page方法:' + name); return method.getText(pageAst);
 }).join('\n');
-let onState, onFocus;
+let onState, onFocus, gameKeyPreIme;
 /** 只定位声明与回调，保留生产函数体；注释或测试自写回调不能满足生产连接。 */
 function visit(node) {
   if (node.kind === compiler.SyntaxKind.PropertyAssignment && node.name?.getText(pageAst) === 'onState'
     && node.initializer.getText(pageAst).includes('this.isInGame')) onState = node.initializer.getText(pageAst);
   if (node.kind === compiler.SyntaxKind.CallExpression && node.expression?.name?.getText(pageAst) === 'onFocus'
     && node.arguments[0]?.getText(pageAst).includes('this.surfaceFocused')) onFocus = node.arguments[0].getText(pageAst);
+  // 必须捕获整页焦点组上的提前分发回调；仅挂游戏画布无法拦住虚拟键子树的默认导航。
+  if (compiler.isCallExpression(node) && node.expression?.name?.getText(pageAst) === 'onKeyPreIme') {
+    const group = node.expression.expression;
+    if (compiler.isCallExpression(group) && group.expression?.name?.getText(pageAst) === 'focusScopeId' &&
+        group.arguments[0]?.text === 'mc_game_focus') gameKeyPreIme = node.arguments[0].getText(pageAst);
+  }
   compiler.forEachChild(node, visit);
 }
 visit(owner); assert.ok(onState && onFocus, '真实Page投影和焦点回调');
@@ -48,6 +56,54 @@ const flush = async () => { for (let index = 0; index < 20; index++) await Promi
 function execute(text, bindings = {}) {
   const code = compiler.transpileModule(text, { compilerOptions: { target: compiler.ScriptTarget.ES2020 } }).outputText;
   return new Function(...Object.keys(bindings), code)(...Object.values(bindings));
+}
+
+if (!snapshotFlag) {
+  assert.ok(gameKeyPreIme, '游戏外层焦点组必须在 ArkUI 默认走焦之前接收窗口按键');
+  const method = owner.members.find(item => item.name?.getText(pageAst) === 'consumeNativeGamepadKey_');
+  const KeySource = { Unknown: 0, Keyboard: 1, JOYSTICK: 2 };
+  const sources = new Map([[11, ['joystick']], [12, ['keyboard']], [13, ['keyboard', 'joystick']]]);
+  const monitor = {
+    captureConnection: id => ({ connection: sources.has(id) ? { id } : undefined }),
+    sourcesForConnection: connection => sources.get(connection.id)
+  };
+  let touchHud = true, mapped = false, softInput = false;
+  const Page = execute('class Page {\n' + method.getText(pageAst) +
+    '\npreIme = ' + gameKeyPreIme + '\n} return Page;', {
+    KeySource, getInputDeviceMonitor: () => monitor, isEntrySoftTextInputRequested: () => softInput,
+    ...environment().load('gamecontrol/src/main/ets/GamepadManager.ets'),
+    ...makePureEtsLoader()('gamecontrol/src/main/ets/OhosKeyCodes.ets'),
+    ProductInputProfile: { current: () => ({ acceptDirectTouchInGame: touchHud }) }
+  });
+  const currentLease = {}, page = new Page();
+  Object.assign(page, { mcStarted: true, pageInputActive: true, inputOverlayPaused: false, frontendLease: currentLease,
+    sessionHost: { accepts: lease => lease === currentLease }, gamepad: { isMappedOutputEnabled: () => mapped } });
+  function check(source, id, key, type, expected) {
+    let stopped = 0;
+    assert.equal(page.preIme({ keySource: source, deviceId: id, keyCode: key, type,
+      stopPropagation: () => { stopped++; } }), expected);
+    assert.equal(stopped, Number(expected), '只停止属于游戏的手柄键，Down/Up 均不再冒泡');
+  }
+  for (const type of [0, 1]) {
+    for (const code of [2012, 2015, 2301, 2016, 2054, 2119, 2050, 2049]) check(KeySource.JOYSTICK, 11, code, type, true);
+    check(KeySource.JOYSTICK, 11, 16, type, false); // 同一外设上的音量键。
+    check(KeySource.Unknown, 11, 2012, type, true);
+    check(KeySource.Keyboard, 11, 2012, type, true); // 平台键类型不明/通用，但此连接仅有手柄能力。
+    check(KeySource.Keyboard, 12, 2012, type, false);
+    check(KeySource.Keyboard, 13, 2054, type, false);
+    check(KeySource.Unknown, 13, 2012, type, false);
+    check(KeySource.Unknown, 0, 2012, type, false);
+    check(KeySource.Unknown, 41, 2012, type, false);
+  }
+  mapped = true; check(KeySource.JOYSTICK, 11, 2301, 0, false); mapped = false;
+  touchHud = false; check(KeySource.JOYSTICK, 11, 2012, 0, false); touchHud = true;
+  softInput = true; check(KeySource.JOYSTICK, 11, 2012, 0, false);
+  softInput = false; check(KeySource.JOYSTICK, 11, 2012, 0, true);
+  for (const [field, value] of [['inputOverlayPaused',true], ['pageInputActive',false], ['mcStarted',false], ['frontendLease',{}]]) {
+    const previous = page[field]; page[field] = value;
+    check(KeySource.JOYSTICK, 11, 2012, 0, false); page[field] = previous;
+  }
+  console.log('PASS actual game-root pre-IME callback: native pad direction/confirm, device-source ambiguity, keyboard, overlay, mapped and retired routes');
 }
 
 /** 两条进程路线仅抽取实际前后台方法；恢复/设置/日志边缘不参与输入资格裁决。 */
@@ -91,11 +147,13 @@ function fixture(observe) {
     'gamecontrol': gamecontrol, 'launch': makePureEtsLoader()('launch/src/main/ets/ResolvedInputPlan.ets'),
     'libentry.so': { default: native },
     '@kit.BasicServicesKit': { systemDateTime: { TimeType: { ACTIVE: 1 }, getUptime: () => 0 } },
+    '@ohos.deviceInfo': { default: { sdkApiVersion: 26 } },
     '@kit.AbilityKit': { appRecovery: { restartApp: noop } },
+    '@ohos.deviceInfo': { default: { deviceType: 'tablet', sdkApiVersion: 26 } },
     // 该夹具只验证输入事实，常亮策略由会话宿主的定向用例承接。
-    'feature_system': { PreferenceManager: class { get gameKeepScreenOn() { return false; } } },
+    'feature_system': { PreferenceManager: class { get gameKeepScreenOn() { return false; } get desktopNativeGamepad() { return false; } } },
     'entry/ProductInputProfile': { ProductInputProfile: { freeze: noop, current: () => ({ productKind: 0, runtimeApi: 26, supportsCursorLock: true }),
-      selection: () => ({ desktopWindow: true }) } },
+      selection: () => ({ desktopWindow: true }), canChooseNativeGamepad: () => true } },
     'entry/ProductGameWindowCoordinator': { ProductGameWindowCoordinator: Window },
     // Native边缘只返回受控token，实际Client执行原connection准入/journal；不把此回执算作ABI Ready。
     '../components/EntrySourceControlClient': { createEntrySourceControlClient: () => {
@@ -122,7 +180,8 @@ function fixture(observe) {
   const host = env.load('entry/src/main/ets/runtime/GameSessionHost.ets').getGameSessionHost();
   const Page = execute('class Page {\n' + methods + '\n}\nreturn Page;'); const page = new Page();
   Object.assign(page, { sessionHost: host, inputRuntime: host.inputRuntime, pageVisible: true, surfaceFocused: true,
-    gameWindowReady: true, inputOverlayPaused: false, pageInputActive: false, gameWindowId: 9 });
+    gameWindowReady: true, inputOverlayPaused: false, pageInputActive: false, gameWindowId: 9,
+    desktopKeyRetirementOnRefocus_: false });
   let grabbed = false;
   Object.defineProperty(page, 'isInGame', { get: () => grabbed, set: value => {
     const changed = value !== grabbed; grabbed = value;

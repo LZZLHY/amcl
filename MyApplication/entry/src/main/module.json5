@@ -17,6 +17,16 @@
     // desktop@PreBuild 在 schema 校验阶段失败。鼠标派生触摸现由 native 身份分类与
     // ProductInputPolicy allowlist 收口，不再依赖一个工具链明确拒绝的 profile。
     "pages": "$profile:main_pages",
+    // 系统智能体按能力描述选择具名方法。普通启动和旧系统的业务入口仍由 EntryAbility 拥有。
+    "skillProfiles": [
+      {
+        "name": "amcl-launcher",
+        "abilityName": "EntryAbility",
+        "version": "1.0.0",
+        "visibility": "system",
+        "srcEntries": ["../../skills/amcl-launcher/scripts/LauncherSkill.ets"]
+      }
+    ],
     "abilities": [
       {
         "name": "EntryAbility",

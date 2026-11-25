@@ -3,11 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+// 无系统调用的生命周期仍装载实际分派器，绑定和解绑沿用生产语义。
+const { LauncherSkillBus } = makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets');
 const source = fs.readFileSync(new URL('../entry/src/main/ets/components/VersionManagerSheet.ets', import.meta.url), 'utf8');
 const ast = compiler.createSourceFile('VersionManagerSheet.ets', source, compiler.ScriptTarget.Latest, true);
 const component = ast.statements.find(node => node.name?.text === 'VersionManagerSheet');
 // 除原导航方法外，同样执行生产任务投影及销毁逻辑；不能用空方法规避新增订阅依赖。
-const names = ['aboutToAppear', 'aboutToDisappear', 'refreshDetailExportTask_', 'openGameExport_',
+const names = ['aboutToAppear', 'aboutToDisappear', 'closeRename', 'refreshDetailExportTask_', 'openGameExport_',
   'mountStep_', 'gotoDetail', 'backToList', 'gotoResources', 'backToDetail', 'gotoSaves', 'gotoFiles',
   'managerNavigationBlocked_', 'requestManagerBack_', 'requestManagerClose_'];
 const snippets = names.map(name => { const node = component.members.find(node => node.name?.text === name);
@@ -48,8 +51,8 @@ function fixture(initialStep = 'list', initialTask = null) {
   // 当前宿主回调属于外部事件边界；每次事件重读注册值，注销后不能保留旧闭包继续派发。
   probe.dismiss = back => { if (probe.activeDismiss !== undefined) probe.activeDismiss(back); };
   const module = { exports: {} };
-  new Function('module', 'Curve', 'getGameExportCoordinator', code)(module,
-    { FastOutSlowIn: 0 }, () => coordinator);
+  new Function('module', 'Curve', 'getGameExportCoordinator', 'LauncherSkillBus', code)(module,
+    { FastOutSlowIn: 0 }, () => coordinator, LauncherSkillBus);
   const subject = new module.exports();
   Object.assign(subject, { initialStep, initialResourceVersion: 'fixture-ver', initialResourceKind: 'mod', currentVersion: 'current',
     mcDir: '/fixture/.minecraft', versionIsolation: true, detailVersion: '',

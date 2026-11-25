@@ -1,4 +1,5 @@
 # 冻结上游 blob，禁止 checkout 的 CRLF 转换或 whitespace 修复改变测试来源。
 src/SDL.c -text -whitespace
 src/events/SDL_events.c -text -whitespace
+src/video/SDL_video.c -text -whitespace
 LICENSE.txt -text -whitespace

@@ -138,16 +138,6 @@ console.log('coordinator: missing/expired/unavailable, login close and late canc
  assert.equal(ui.phase,'storage-blocked');assert.equal(f.coordinator.isBusy(),false);assert.equal(f.counters.sign,0);ui.dispose();
  console.log('coordinator: signing checkpoint failure always releases busy');
 }
-// 内部诊断材料写入正在加密时取消：beforeCommit阻止写入，不能覆写新轮材料。
-{
- const f=await fixture({delayDownload:true}),ui=f.render();await settle();f.coordinator.setAbilityForeground(false);f.fetchGate.resolve();await settle();
- const original=f.kitfs.readTextSync('/sandbox/sideload-update/signing-vault.json'),gate=deferred();f.setEncryptionGate(gate);
- const material=JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'old-operation',storePassword:'test-only',signAlg:'SHA256withECDSA',
-  p12Base64:Buffer.from('other p12').toString('base64'),certificateBase64:Buffer.from('cert fixture').toString('base64'),profileBase64:Buffer.from('profile fixture').toString('base64')});
- const importing=f.coordinator.importMaterial(material).catch(error=>error);await settle();assert.equal(f.coordinator.isBusy(),true);
- ui.cancel();gate.resolve();await importing;assert.equal(f.kitfs.readTextSync('/sandbox/sideload-update/signing-vault.json'),original);ui.dispose();
- console.log('coordinator: material encryption operation owns busy and late commit is rejected');
-}
 // Runtime新绑定保留同Attempt许可但只由新展示面继续，旧窗口事件不能放行安装。
 {
  const f=await fixture({delayDownload:true}),old=f.render();await settle();const before=f.coordinator.runtime();
@@ -425,6 +415,20 @@ for(const mode of ['valid-original','cached-profile','expired-original']){
  assert.equal(f.counters.profileCreates??0,mode==='cached-profile'?0:1);
  assert.equal(await f.vault.readDraft(),undefined);
  assert.equal(f.counters.dispatch,1);ui.dispose();
+}
+/** 验签触发换证后遇到过期登录，重登保持同一下载/活动；第二次验签仍坏时不再消耗云端配额。 */
+for (const failures of [1,2]) {
+ const f=await fixture({expireMaterialFirst:true,materialFailureCount:failures}),ui=f.render();
+ await boundedBoundary(snapshotReached(f.coordinator,s=>s.loginVisible && !!s.loginUrl),f,'换证中重新登录');
+ const attempt=f.coordinator.snapshot().attemptId,activity=f.coordinator.state().activityId;
+ assert.equal(f.coordinator.state().phase,'downloaded');
+ assert.equal(f.counters.download,1);assert.equal(f.counters.sign,1);assert.equal(f.counters.dispatch,0);
+ f.authorize();
+ const end=failures===1?'installing':'failed';
+ await boundedBoundary(snapshotReached(f.coordinator,s=>s.phase===end && !s.finishing),f,'换证重登后原尝试结果');
+ assert.equal(f.coordinator.snapshot().attemptId,attempt);assert.equal(f.coordinator.state().activityId,activity);
+ assert.equal(f.counters.download,1);assert.equal(f.counters.sign,2);assert.equal(f.counters.profileCreates,1);
+ assert.equal(f.counters.dispatch,failures===1?1:0);assert.equal(f.counters.keygen,0);ui.dispose();
 }
 /** 一次服务抖动/旧授权过期应在原尝试内自动恢复，无失败面、人工续期或第二次下载。 */
 for(const options of [{transientSigningFailures:1},{materialFailureCount:1}]){

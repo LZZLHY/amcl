@@ -12,6 +12,7 @@ import {
   computeSdl3PatchsetDigest,
   sdl3PatchsetMarker,
 } from './sdl3-patchset-digest.mjs';
+import { readSdl3ArtifactLock } from './lib/sdl3-artifact-lock.mjs';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -23,14 +24,14 @@ const hap = hapIndex >= 0 ? resolve(process.argv[hapIndex + 1]) : '';
 const provenanceOnly = process.argv.includes('--provenance-only');
 if (!existsSync(so)) throw new Error(`SDL3 artifact missing: ${so}`);
 
-const lines = readFileSync(join(root, 'deps.lock'), 'utf8').split(/\r?\n/);
-const start = lines.findIndex((line) => line.trim() === '[sdl3-native]');
-if (start < 0) throw new Error('deps.lock missing [sdl3-native]');
-const lock = new Map();
-for (let i = start + 1; i < lines.length && !/^\s*\[/.test(lines[i]); i++) {
-  const equals = lines[i].indexOf('=');
-  if (equals < 0) continue;
-  lock.set(lines[i].slice(0, equals).trim(), lines[i].slice(equals + 1).split('#', 1)[0].trim());
+const lock = readSdl3ArtifactLock(root);
+
+// 构建来源记录同样指向正在交付的 recipe、原 ELF 和 SDK strip 两种字节身份。
+const proof = JSON.parse(readFileSync(join(root, 'prebuilt/sdl3/build-provenance.json'), 'utf8'));
+if (proof.source?.commit !== lock.get('commit') || proof.recipe?.patchsetSha256 !== lock.get('patchset_sha256') ||
+    proof.artifacts?.raw?.size !== Number(lock.get('size')) || proof.artifacts?.raw?.sha256 !== lock.get('sha256') ||
+    proof.artifacts?.sdkStripAll?.size !== Number(lock.get('hap_size')) || proof.artifacts?.sdkStripAll?.sha256 !== lock.get('hap_sha256')) {
+  throw new Error('prebuilt/sdl3/build-provenance.json differs from deps.lock [sdl3-native]');
 }
 
 const soBytes = readFileSync(so);

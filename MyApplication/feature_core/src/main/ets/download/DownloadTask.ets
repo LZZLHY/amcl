@@ -10,7 +10,7 @@
 
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { McDownloader } from '../download/McDownloader';
-import { ModLoaderType } from '../modloader/ModLoaderTypes';
+import { ModLoaderType, modLoaderDisplayName } from '../modloader/ModLoaderTypes';
 import { removeDirRecursive, isVersionInstalled, writeVersionInstallCommit,
   removeVersionInstallCommit } from 'commons';
 import { ModLoaderManager } from '../modloader/ModLoaderManager';
@@ -270,7 +270,8 @@ export class DownloadTask {
       new PhaseDetailModel(DownloadPhase.ASSETS, '下载 assets'),
     ];
     if (this.loaderType) {
-      let loaderLabel = this.loaderType === ModLoaderType.FABRIC ? 'Fabric 安装' : 'Forge 安装';
+      // NeoForge、Quilt 各有安装器和运行消息，阶段模型也应使用对应名称。
+      const loaderLabel = (modLoaderDisplayName(this.loaderType) || this.loaderType) + ' 安装';
       details.push(new PhaseDetailModel(DownloadPhase.MODLOADER, loaderLabel));
     }
     details.push(new PhaseDetailModel(DownloadPhase.MERGE, '合并版本'));

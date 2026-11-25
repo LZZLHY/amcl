@@ -57,9 +57,22 @@ export enum HeldKeyDownKind {
  */
 const REPEAT_MAX_GAP_MS = 900
 
+/** 一个页面已经取得资格的实体键，按设备区分同键的多份持有。 */
+export class PhysicalKeyOwner {
+  readonly deviceId: number
+  readonly keyCode: number
+
+  constructor(deviceId: number, keyCode: number) {
+    this.deviceId = deviceId
+    this.keyCode = keyCode
+  }
+}
+
 export class PhysicalHeldKeyTracker {
   /** deviceId → 该设备当前按住的 OHOS keyCode 集合。与 core 的 HeldId 同维度。 */
   private byDevice: Map<number, Set<number>> = new Map()
+  // 仅桌面局部合成松键使用，拦截工具退出后才送回的重复UP。
+  private retiredByDevice: Map<number, Set<number>> = new Map()
   /** keyCode → 正按住该键的设备数。用于跨设备修饰键聚合，不用于 repeat 判定。 */
   private refs: Map<number, number> = new Map()
   /**
@@ -81,6 +94,11 @@ export class PhysicalHeldKeyTracker {
    * FirstDownAfterStale 表示缓存里的按住状态已陈旧（中间的 Up 丢了），已自愈。
    */
   noteDown(deviceId: number, ohosKey: number): HeldKeyDownKind {
+    const retired = this.retiredByDevice.get(deviceId)
+    if (retired !== undefined) {
+      retired.delete(ohosKey)
+      if (retired.size === 0) this.retiredByDevice.delete(deviceId)
+    }
     let keys: Set<number> | undefined = this.byDevice.get(deviceId)
     if (keys === undefined) {
       keys = new Set<number>()
@@ -131,6 +149,7 @@ export class PhysicalHeldKeyTracker {
    * 其他设备按住的同一个键不受影响（引用计数只减 1）。
    */
   releaseDevice(deviceId: number): number[] {
+    this.retiredByDevice.delete(deviceId)
     const released: number[] = []
     const keys: Set<number> | undefined = this.byDevice.get(deviceId)
     if (keys === undefined) return released
@@ -144,9 +163,37 @@ export class PhysicalHeldKeyTracker {
     return released
   }
 
+  hasOwner(deviceId: number, keyCode: number): boolean {
+    return this.byDevice.get(deviceId)?.has(keyCode) ?? false
+  }
+
+  /** 只快照本页的真实held，不枚举Native其它来源；焦点交接按此快照逐键松开。 */
+  keyOwners(): PhysicalKeyOwner[] {
+    const owners: PhysicalKeyOwner[] = []
+    this.byDevice.forEach((keys: Set<number>, deviceId: number): void => {
+      keys.forEach((keyCode: number): void => { owners.push(new PhysicalKeyOwner(deviceId, keyCode)) })
+    })
+    return owners
+  }
+
+  noteSyntheticRelease(deviceId: number, keyCode: number): void {
+    if (!this.noteUp(deviceId, keyCode)) return
+    let retired = this.retiredByDevice.get(deviceId)
+    if (retired === undefined) {
+      retired = new Set<number>()
+      this.retiredByDevice.set(deviceId, retired)
+    }
+    retired.add(keyCode)
+  }
+
+  wasSyntheticallyReleased(deviceId: number, keyCode: number): boolean {
+    return this.retiredByDevice.get(deviceId)?.has(keyCode) ?? false
+  }
+
   /** 幂等地丢弃全部缓存。用于 native reset epoch 变化、页面 hide / dispose。 */
   clear(): void {
     this.byDevice.clear()
+    this.retiredByDevice.clear()
     this.refs.clear()
     this.lastDownAtMs.clear()
   }
@@ -160,6 +207,13 @@ export class PhysicalHeldKeyTracker {
     this.refs.forEach((count: number, key: number) => {
       if (count > 0) snapshot.add(key)
     })
+    return snapshot
+  }
+
+  /** 松键发布使用扣除本owner后的修饰态；真正持有要等Native确认才撤销。 */
+  heldKeysAfterRelease(deviceId: number, keyCode: number): Set<number> {
+    const snapshot: Set<number> = this.heldKeys()
+    if (this.refs.get(keyCode) === 1 && this.hasOwner(deviceId, keyCode)) snapshot.delete(keyCode)
     return snapshot
   }
 

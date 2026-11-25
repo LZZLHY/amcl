@@ -1,7 +1,7 @@
 /**
  * ProductIdentityCollector.ets — 采集当前运行的产品身份（批次 D8）
  *
- * 文档：docs/refactor/测试自动化方案.md §三.8
+ * 产品配置和设备事实在应用进程中采集，供日志与诊断使用。
  *
  * 与 `commons` 的 `ProductIdentity.ets` 的分工：
  *   - 那边是纯类型与格式化，不知道值从哪儿来 ⇒ 可在 Node 单测里喂样本；

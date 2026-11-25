@@ -40,6 +40,8 @@ export struct ActivityShareSheet {
   onClosed: () => void = () => {};
   onBusyChanged: (busy: boolean) => void = () => {};
   onShared: (record: LogShareRecord) => void = () => {};
+  /** 向发起这次预览的调用方回报出站结果；只传稳定阶段和可公开的接收号。 */
+  onShareOutcome: (state: string, reason: string, receipt: string) => void = () => {};
   onAuthorAccepted: (id: string, duplicate: boolean) => void = () => {};
   onAdvancedChanged: (advanced: boolean) => void = () => {};
   @State private phase: string = 'loading';
@@ -107,9 +109,15 @@ export struct ActivityShareSheet {
     const snapshot = this.snapshot; this.snapshot = undefined;
     if (snapshot !== undefined) { try { disposeEvidenceExportSnapshot(snapshot); } catch (e) { /* 已清理 */ } }
   }
-  private fail_(error: Error): void {
+  private fail_(error: Error, defaultStage: string = 'local-prepare'): void {
+    if (!this.alive && this.phase !== 'sending') return;
+    const kind = error instanceof LogShareRequestError ? error.stage : defaultStage;
+    // 已发出后失去应答、凭据未保存或回包未确认时，不能报告为“没有送达”。
+    const uncertain = kind === 'unknown-outcome' || kind === 'persist' || kind === 'verification' ||
+      (this.phase === 'sending' && !(error instanceof LogShareRequestError));
+    this.onShareOutcome(uncertain ? 'unknown' : 'failed', uncertain && kind === 'local-prepare' ? 'unknown-outcome' : kind, '');
     if (!this.alive) return;
-    this.errorText = error.message; this.errorKind = error instanceof LogShareRequestError ? error.stage : 'local-prepare';
+    this.errorText = error.message; this.errorKind = kind;
     this.setPhase_('error');
   }
 
@@ -211,13 +219,16 @@ export struct ActivityShareSheet {
       }
       if (!this.alive || generation !== this.generation) return;
       this.setPhase_('sending');
+      this.onShareOutcome('sending', '', '');
       if (this.destination === 'author') {
         const result = await submitEvidenceToAuthor(snapshot, '活动日志反馈：' + (this.draft.manifest?.title ?? ''), 'manual', this.authorIdentity);
         if (!result.ok) throw new LogShareRequestError(result.error, result.errorStage ?? 'http');
+        this.onShareOutcome('submittedToAuthor', '', result.id);
         if (this.alive) { this.authorId = result.id; this.setPhase_('done'); this.onAuthorAccepted(result.id, result.duplicate); }
       } else {
         const record = await shareEvidenceSnapshot(context, snapshot, activityShareMetadata(this.draft), this.preflight,
           this.advanced && this.confirmUnknownRetry);
+        this.onShareOutcome('shared', '', record.id);
         try { await saveSessionShare(this.activityId, record.id, record.url, record.token, record.sharedAt); }
         catch (e) { /* 独立凭据已落盘；诊断快捷引用失败不能伪装上传失败。 */ }
         if (this.alive) {
@@ -237,9 +248,10 @@ export struct ActivityShareSheet {
     try {
       const record = await retryPendingEvidenceShare(context, this.activityId);
       if (record === undefined) throw new Error('本次没有待保存凭据，请到分享记录查看已有链接');
+      this.onShareOutcome('shared', '', record.id);
       if (this.alive) { this.shared = record; this.serviceText = this.receiptCaption_(record); this.errorText = '';
         this.setPhase_('done'); this.onShared(record); }
-    } catch (e) { this.fail_(e as Error); if (!(e instanceof LogShareRequestError)) this.errorKind = 'persist'; }
+    } catch (e) { this.fail_(e as Error, 'persist'); }
   }
 
   /** 高级选择只能由用户动作进入，不改变任何已经发送的公开链接。 */

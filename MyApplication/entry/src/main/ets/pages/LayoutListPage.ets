@@ -27,6 +27,9 @@ import { AppIcon } from '../components/AppIcon'
 import { ThemeColors, ThemeMode, resolveTheme } from 'commons'
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
+import { GameRunAdmission } from '../runtime/GameRunAdmission';
+import { LayoutDraftAccess } from '../launcherskill/LayoutDraftAccess';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { layoutCatalogPage, layoutCatalogPageCount, clampLayoutCatalogPage, layoutCatalogContainingPage } from '../components/LayoutCatalogPaging'
 
 /** 路由参数：从「打开方式」经 Index 跳入时携带待导入文件 uri。 */
@@ -65,6 +68,10 @@ struct LayoutListPage {
   private importPageGeneration: number = 0
   private importPageMounted: boolean = false
   @State importBusy: boolean = false
+  private selectingLayout_: boolean = false
+  private deletionState_: string = 'idle'
+  private deletionId_: string = ''
+  private lastImport_: SkillFields = { 'state':'idle' }
 
   private getAbilityContext(): common.UIAbilityContext {
     return AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!
@@ -78,10 +85,65 @@ struct LayoutListPage {
     applyNativeTheme(this.titleTheme)
   }
 
+  /** 装载告警、方案 ID 和修订均来自 LayoutStore 的提交快照；写入重新核对三者。 */
+  private async catalogSkill_(method: string,args: SkillFields): Promise<SkillFields> {
+    if (!this.importPageMounted || !ProductInputProfile.supportsTouchLayouts()) return { 'state':'unavailable' };
+    if (this.importBusy || this.mutationBusy || this.selectingLayout_ || this.renameTarget) return { 'state':'busy' };
+    if (method === 'readWorkbenchOutcome') return LayoutDraftAccess.outcome(String(args['draftRef']));
+    if (method === 'listControlLayouts') {
+      this.refreshList();
+      const offset = Number(args['offset'] ?? 0);
+      if (!Number.isSafeInteger(offset) || offset < 0) return { 'state':'failed','reason':'invalidOffset' };
+      const rows: SkillFields[] = [];
+      for (const name of this.profileNames.slice(offset,offset+24)) {
+        const p = this.store.getProfile(name);
+        if (p) rows.push({ 'name':name,'id':p.profileId ?? '', 'revision':p.profileRevision ?? 1,
+          'preset':p.isPreset === true,'active':this.activeName===name,'controls':p.controls.length });
+      }
+      return { 'state':'ready','total':this.profileNames.length,'items':rows,'hasWarnings':!!this.loadNotice,
+        'deletionState':this.deletionState_,'deletionId':this.deletionId_, 'lastImport':this.lastImport_ };
+    }
+    if (this.deletionState_ === 'pending') return { 'state':'needsUser','surface':'confirmDelete' };
+    if (method === 'importControlLayout') return this.doImport();
+    const name = String(args['name']);
+    const p = this.store.getProfile(name);
+    if (!p || !p.profileId || p.profileId !== args['layoutId'] || (p.profileRevision ?? 1) !== args['revision']) return { 'state':'unavailable','reason':'staleLayout' };
+    if (method === 'useControlLayout') {
+      await this.useProfile_(name,p);
+      return { 'state':this.store.getActiveProfile().profileId===p.profileId ? 'ready':'unknown' };
+    }
+    if (method === 'copyControlLayout' || method === 'renameControlLayout') {
+      const next = String(args['newName']).trim();
+      if (!next || next.length>40 || (method === 'renameControlLayout' && p.isPreset)) return { 'state':'failed','reason':'invalidNameOrPreset' };
+      const copy = method === 'copyControlLayout';
+      this.copySource=copy ? p : undefined; this.creatingCopy=copy; this.renameTarget=name; this.renameDraft=next;
+      const result = await this.doRename(p);
+      return result ? { 'state':'ready','id':result.profileId ?? '', 'name':result.name,'revision':result.profileRevision ?? 1 } : { 'state':'unknown' };
+    }
+    if (method === 'requestRemoveControlLayout') {
+      if (!this.store.reviewProfileDeletion(name)) return { 'state':'unavailable','reason':'protected' };
+      this.confirmDelete_(name); return { 'state':'needsUser','id':p.profileId };
+    }
+    if (method === 'exportControlLayout') {
+      const legacy=args['legacy']===true;
+      if (legacy && !this.canExportLegacy_(name)) return { 'state':'unavailable','reason':'notLegacyCompatible' };
+      return this.doExport(name,legacy);
+    }
+    if (method === 'shareControlLayout') return this.doShare(name);
+    if (method === 'openLayoutWorkbench') {
+      const options = args['view'];
+      if (options !== 'geometry' && options !== 'input') return { 'state':'failed','reason':'view' };
+      const opened=await this.openProfileEditor_(name,options==='input');
+      return { 'state':opened ? 'needsUser':'failed','name':name };
+    }
+    return { 'state':'failed','reason':'unknownOperation' };
+  }
+
   async aboutToAppear(): Promise<void> {
     this.applyToolTheme_()
     this.importPageGeneration++
     this.importPageMounted = true
+    this.selectingLayout_=false; this.deletionState_='idle'; this.deletionId_=''
     this.mutationBusy=false; this.renameTarget=''; this.copySource=undefined; this.creatingCopy=false
     if (!ProductInputProfile.supportsTouchLayouts()) {
       this.getUIContext().getRouter().back()
@@ -89,7 +151,12 @@ struct LayoutListPage {
     }
     const context = this.getAbilityContext()
     await this.store.init(context)
+    if (!this.importPageMounted) return
     this.refreshList()
+    LauncherSkillBus.bind('layouts',this,(m: string,a: SkillFields): Promise<SkillFields> => this.catalogSkill_(m,a),(): boolean => {
+      const page=this.getUIContext().getRouter().getState().name;
+      return this.importPageMounted && GameRunAdmission.isAllowed() && (page==='LayoutListPage' || page==='pages/LayoutListPage');
+    });
     // 不强制方向：手机竖屏 / 平板横屏都自然显示
     try {
       let win = await window.getLastWindow(context)
@@ -103,12 +170,19 @@ struct LayoutListPage {
       const params = rp as LayoutListRouteParams
       if (params.importUri !== undefined && params.importUri.length > 0) {
         const uri = params.importUri
-        setTimeout(() => { this.analyzeAndImport(uri) }, 60)
+        const generation=this.importPageGeneration;
+        this.lastImport_={ 'state':'accepted' };
+        setTimeout(() => {
+          if (this.importPageMounted && this.importPageGeneration===generation) this.analyzeAndImport(uri).then((result:SkillFields):void=>{
+            if(this.importPageMounted && this.importPageGeneration===generation)this.lastImport_=result;
+          });
+        }, 60)
       }
     }
   }
 
   aboutToDisappear(): void {
+    LauncherSkillBus.unbind('layouts',this);
     this.importPageMounted = false
     this.importPageGeneration++
   }
@@ -283,38 +357,41 @@ struct LayoutListPage {
     .onClick(() => { if (!this.mutationBusy) { this.renameTarget = ''; this.renameDraft = ''; this.copySource=undefined; this.creatingCopy=false } })
   }
 
-  private async doRename(): Promise<void> {
-    if (this.mutationBusy || this.importBusy || !this.importPageMounted) return
+  private async doRename(expected?:LayoutProfile): Promise<LayoutProfile | undefined> {
+    if (this.mutationBusy || this.importBusy || !this.importPageMounted) return undefined
     const name: string=this.renameDraft.trim(), target: string=this.renameTarget
     const generation: number=this.importPageGeneration, copying: boolean=this.creatingCopy
     if (name.length===0 || name.length>40) { this.statusMsg='请输入1至40字的方案名'; return }
     const source: LayoutProfile | undefined=this.copySource
     this.mutationBusy=true
     try {
+      let committed:LayoutProfile | undefined=undefined;
       if (copying) {
         if (source===undefined) throw new Error('复制来源已失效，请重新选择')
         const created: LayoutProfile=await this.store.createProfile(name,source)
         if (!this.importPageMounted || generation!==this.importPageGeneration) return
-        this.statusMsg='已复制并使用：'+created.name
+        committed=created; this.statusMsg='已复制并使用：'+created.name
       } else {
-        const ok: boolean=await this.store.renameProfile(target,name)
+        const ok: boolean=await this.store.renameProfile(target,name,expected?.profileId,expected?.profileRevision ?? 1)
         if (!this.importPageMounted || generation!==this.importPageGeneration) return
         if (!ok) throw new Error('名称重复、预设不可改名或原方案已改变')
-        this.statusMsg='已重命名：'+name
+        committed=this.store.getProfile(name) ?? undefined; this.statusMsg='已重命名：'+name
       }
       this.renameTarget=''; this.renameDraft=''; this.creatingCopy=false; this.copySource=undefined; this.refreshList()
+      return committed
     } catch (error) {
       if (this.importPageMounted && generation===this.importPageGeneration) {
         this.statusMsg=(copying ? '复制失败：' : '改名失败：')+(error as Error).message; this.refreshList()
       }
+      return undefined
     } finally { if (generation===this.importPageGeneration) this.mutationBusy=false }
   }
 
 
   /** 路由明确携带所选方案；输入设置不会误编辑当前活动方案。 */
-  private openProfileEditor_(name: string, settings: boolean): void {
-    this.getUIContext().getRouter().pushUrl({url:'pages/LayoutEditorPage',params:{profileName:name,settingsOnly:settings}})
-      .catch((error: Error): void => { this.statusMsg='无法打开方案：'+error.message })
+  private async openProfileEditor_(name: string, settings: boolean): Promise<boolean> {
+    try { await this.getUIContext().getRouter().pushUrl({url:'pages/LayoutEditorPage',params:{profileName:name,settingsOnly:settings}}); return true }
+    catch (error) { this.statusMsg='无法打开方案：'+(error as Error).message; return false }
   }
 
   private profileMenu_(name: string): MenuElement[] {
@@ -337,11 +414,11 @@ struct LayoutListPage {
   }
 
   /** “使用”采用整份配置；在途禁重入，迟到结果不更新后来页面。 */
-  private async useProfile_(name: string): Promise<void> {
+  private async useProfile_(name: string, expected?:LayoutProfile): Promise<void> {
     if (this.mutationBusy || this.importBusy) return
     const generation: number=this.importPageGeneration; this.mutationBusy=true
     try {
-      await this.store.setActiveProfile(name)
+      await this.store.setActiveProfile(name,expected?.profileId,expected?.profileRevision ?? 1)
       if (this.importPageMounted && generation===this.importPageGeneration) { this.refreshList(); this.statusMsg='已使用完整操控方案：'+name }
     } catch (error) {
       if (this.importPageMounted && generation===this.importPageGeneration) { this.refreshList(); this.statusMsg='采用失败：'+(error as Error).message }
@@ -354,11 +431,20 @@ struct LayoutListPage {
     const review: LayoutDeletionReview | null=this.store.reviewProfileDeletion(name)
     if (review===null) { this.statusMsg='该方案不能删除，或没有可用的回退方案'; return }
     const generation: number=this.importPageGeneration
-    this.getUIContext().showAlertDialog({title:'删除操控方案「'+review.name+'」',
+    this.deletionId_=review.profileId; this.deletionState_='pending'
+    let committing = false, offered = true;
+    LauncherSkillBus.followUserCondition('requestRemoveControlLayout', (): boolean => committing ||
+      (offered && this.importPageMounted && generation===this.importPageGeneration && this.deletionId_===review.profileId && this.deletionState_==='pending'));
+    const cancelled=():void=>{offered=false;if(this.importPageMounted && generation===this.importPageGeneration && this.deletionId_===review.profileId)this.deletionState_='cancelled'}
+    this.getUIContext().showAlertDialog({title:'删除操控方案「'+review.name+'」', cancel:cancelled,
       message:'将删除此方案的布局、触控、视角和手柄设置。'+
         (review.profileId===review.activeId ? '\n删除后将使用「'+review.fallbackName+'」。' : '')+'\n确认后不能在此页面撤销。',
-      primaryButton:{value:'取消',action:(): void=>{}},secondaryButton:{value:'删除方案',action:(): void=>{
-        if (this.importPageMounted && generation===this.importPageGeneration) this.deleteConfirmed_(review,generation)
+      primaryButton:{value:'取消',action:cancelled},secondaryButton:{value:'删除方案',action:(): void=>{
+        offered = false;
+        if (this.importPageMounted && generation===this.importPageGeneration) {
+          committing = true;
+          this.deleteConfirmed_(review,generation).finally((): void => { committing = false; });
+        }
       }}})
   }
 
@@ -369,10 +455,11 @@ struct LayoutListPage {
       const deleted: boolean=await this.store.deleteReviewedProfile(review)
       if (!this.importPageMounted || generation!==this.importPageGeneration) return
       this.refreshList()
+      this.deletionState_=deleted ? 'ready' : 'changed'
       this.statusMsg=deleted ? '已删除：'+review.name : '方案或回退选择已改变，本次未删除，请重新确认'
     } catch (error) {
       if (this.importPageMounted && generation===this.importPageGeneration) {
-        this.refreshList(); this.statusMsg='删除失败，原方案保留：'+(error as Error).message
+        this.deletionState_='failed'; this.refreshList(); this.statusMsg='删除失败，原方案保留：'+(error as Error).message
       }
     } finally { if (generation===this.importPageGeneration) this.mutationBusy=false }
   }
@@ -474,25 +561,29 @@ struct LayoutListPage {
     return parts.join('  ·  ')
   }
 
-  private async doExport(name: string, legacyCompatible: boolean = false): Promise<void> {
+  private async doExport(name: string, legacyCompatible: boolean = false): Promise<SkillFields> {
     try {
       const json = this.store.exportToJson(name, legacyCompatible)
       const savePicker = new picker.DocumentSaveOptions()
       savePicker.newFileNames = ['layout_' + name + (legacyCompatible ? '_v3' : '') + '.json']
       const documentPicker = new picker.DocumentViewPicker(this.getAbilityContext())
+      LauncherSkillBus.awaitingUser('exportControlLayout');
       const result = await documentPicker.save(savePicker)
       if (result && result.length > 0) {
-        const file = fs.openSync(result[0], fs.OpenMode.WRITE_ONLY)
+        const file = fs.openSync(result[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC)
         try { fs.writeSync(file.fd, json) } finally { fs.closeSync(file) }
         this.statusMsg = legacyCompatible ? '已导出旧版兼容副本；原独立来源方案仍保留' : '已导出: ' + name
+        return { 'state':'ready','saved':true }
       }
+      return { 'state':'cancelled' }
     } catch (e) {
       this.statusMsg = '导出失败: ' + (e as Error).message
+      return { 'state':'failed','reason':'exportFailed' }
     }
   }
 
   /** 用鸿蒙原生系统分享面板分享该方案（写临时 .json 到缓存目录再以文件形式分享）。 */
-  private async doShare(name: string): Promise<void> {
+  private async doShare(name: string): Promise<SkillFields> {
     try {
       const json = this.store.exportToJson(name)
       const ctx = this.getAbilityContext()
@@ -509,12 +600,15 @@ struct LayoutListPage {
       }
       const data = new systemShare.SharedData(record)
       const controller = new systemShare.ShareController(data)
+      LauncherSkillBus.awaitingUser('shareControlLayout');
       await controller.show(ctx, {
         selectionMode: systemShare.SelectionMode.SINGLE,
         previewMode: systemShare.SharePreviewMode.DETAIL
       })
+      return { 'state':'needsUser','surface':'systemShare' }
     } catch (e) {
       this.statusMsg = '分享失败: ' + (e as Error).message
+      return { 'state':'failed','reason':'shareUnavailable' }
     }
   }
 
@@ -526,30 +620,37 @@ struct LayoutListPage {
     return '未知'
   }
 
-  private async doImport(): Promise<void> {
+  private async doImport(): Promise<SkillFields> {
+    if (!this.importPageMounted || this.importBusy || this.selectingLayout_) return { 'state':'busy' }
+    const generation=this.importPageGeneration; this.selectingLayout_=true
     try {
       const openPicker = new picker.DocumentSelectOptions()
       const documentPicker = new picker.DocumentViewPicker(this.getAbilityContext())
+      LauncherSkillBus.awaitingUser('importControlLayout');
       const result = await documentPicker.select(openPicker)
-      if (!result || result.length === 0) return
-      await this.analyzeAndImport(result[0])
+      if (!this.importPageMounted || generation!==this.importPageGeneration) return { 'state':'unknown' }
+      if (!result || result.length === 0) return { 'state':'cancelled' }
+      const outcome = await this.analyzeAndImport(result[0]);
+      if (this.importPageMounted && this.importPageGeneration===generation) this.lastImport_=outcome;
+      return outcome
     } catch (e) {
       this.statusMsg = '导入失败: ' + (e as Error).message
-    }
+      return { 'state':'failed','reason':'importFailed' }
+    } finally { if (generation===this.importPageGeneration) this.selectingLayout_=false }
   }
 
   /** 分析并导入指定路径/uri（文件选择器与「打开方式」共用）。 */
-  private async analyzeAndImport(path: string): Promise<void> {
-    if (this.importBusy || !this.importPageMounted) return
+  private async analyzeAndImport(path: string): Promise<SkillFields> {
+    if (this.importBusy || !this.importPageMounted) return { 'state':'busy' }
     const generation: number = this.importPageGeneration
     this.importBusy = true
     try {
       // 导入前分析：格式 / 合法性 / 设备类型 / 旧版本
       const a: ImportAnalysis = await this.store.analyzeImportFile(path)
-      if (!this.importPageMounted || generation !== this.importPageGeneration) return
+      if (!this.importPageMounted || generation !== this.importPageGeneration) return { 'state':'unknown' }
       if (!a.ok) {
         this.statusMsg = '无法导入：' + a.reason
-        return
+        return { 'state':'failed','reason':'invalidLayout' }
       }
       // 需要用户确认的情形：设备不符 / 旧版迁移
       if (a.deviceMismatch || a.legacy || a.format !== 'amcl') {
@@ -570,7 +671,7 @@ struct LayoutListPage {
         // 2026-05-23 API NEXT 迁移：全局 AlertDialog.show 弃用，改走
         // this.getUIContext().getPromptAction().showDialog(...)。res.index===1 = 仍要导入。
         try {
-          this.getUIContext().getPromptAction().showDialog({
+          const res = await this.getUIContext().getPromptAction().showDialog({
             title: '导入布局方案',
             message: msg,
             buttons: [
@@ -578,39 +679,32 @@ struct LayoutListPage {
               { text: '取消', color: this.titleTheme.textSecondary as string },
               { text: '仍要导入', color: this.titleTheme.actionText as string },
             ],
-          }).then((res: promptAction.ShowDialogSuccessResponse) => {
-            if (res.index === 1 && this.importPageMounted && generation === this.importPageGeneration) {
-              this.commitImport(a, generation)
-            }
-          }).catch(() => { /* 点框外 = 取消，冻结预览保留到缓存回收。 */ })
-        } catch (e) {
-          this.statusMsg = '导入失败: ' + (e as Error).message
-        }
-        return
+          })
+          if (res.index !== 1) return { 'state':'cancelled' }
+          if (!this.importPageMounted || generation !== this.importPageGeneration) return { 'state':'unknown' }
+        } catch (_) { return { 'state':'cancelled' } }
       }
       // 无异常 → 直接导入
-      this.commitImport(a, generation)
+      return await this.commitImport(a, generation)
     } catch (e) {
       this.statusMsg = '导入失败: ' + (e as Error).message
+      return { 'state':'failed','reason':'invalidLayout' }
     } finally { if (generation === this.importPageGeneration) this.importBusy = false }
   }
 
   /** 实际落盘导入（供直接导入与确认对话框复用）。 */
-  private commitImport(review: ImportAnalysis, generation: number): void {
-    if (!this.importPageMounted || generation !== this.importPageGeneration) return
-    // 回执中私有 candidate 已完成转换与系统补齐；不重新读取文件，也不随新 viewport 转换坐标。
-    const operation: Promise<LayoutProfile | null> = this.store.commitReviewedImport(review.reviewId ?? '')
-    operation.then((p: LayoutProfile | null) => {
-      if (!this.importPageMounted || generation !== this.importPageGeneration) return
-      if (p) {
-        this.refreshList()
-        this.statusMsg = '已导入: ' + p.name
-      } else {
-        this.statusMsg = '导入失败：文件格式错误'
-      }
-    }).catch((e: Error) => {
-      this.statusMsg = '导入失败: ' + e.message
-    })
+  private async commitImport(review: ImportAnalysis, generation: number): Promise<SkillFields> {
+    if (!this.importPageMounted || generation !== this.importPageGeneration) return { 'state':'unknown' }
+    try {
+      const p = await this.store.commitReviewedImport(review.reviewId ?? '')
+      if (!this.importPageMounted || generation !== this.importPageGeneration) return { 'state':'unknown' }
+      if (!p) { this.statusMsg = '导入失败：文件格式错误'; return { 'state':'failed','reason':'invalidLayout' } }
+      this.refreshList(); this.statusMsg = '已导入: ' + p.name
+      return { 'state':'ready','name':p.name,'id':p.profileId ?? '', 'revision':p.profileRevision ?? 1 }
+    } catch (e) {
+      if (this.importPageMounted && generation===this.importPageGeneration) this.statusMsg = '导入失败: ' + (e as Error).message
+      return { 'state':'unknown','reason':'importUnconfirmed' }
+    }
   }
 
   /** 保留原正文的父组件状态与业务回调；具名content只转调此真正@Builder，避免this漂移。 */

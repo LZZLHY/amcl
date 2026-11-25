@@ -3,6 +3,9 @@
   "baselineId": "amcl-build-gates-8ee89d35",
   "sourceCommit": "8ee89d352c13bfb40db9e92773578af3f454b67b",
   "description": "原入口完整性基线。PowerShell采用官方AST，JS/TS采用TypeScript AST，CI采用YAML结构；不是运行通过收据。",
+  "retiredPreflightGroups": [
+    { "id": "device-automation", "reason": "旧设备 QA 判定器与其宿主自测已整体退役；原始 42 组见 sourceCommit。" }
+  ],
   "approvedForeachExtensions": [
     {
       "callsite": "build-hap.ps1:call-034",
@@ -4440,14 +4443,6 @@
       ]
     },
     {
-      "id": "device-automation",
-      "line": 1378,
-      "body": "() => {\n  const self = spawnSync('node', ['scripts/test-device-automation.mjs'], {\n    cwd: ROOT,\n    encoding: 'utf8',\n  });\n  const out = ((self.stdout || '') + (self.stderr || '')).trim();\n  const passed = /(\\d+)\\/(\\d+) checks passed/.exec(out);\n  // 样本组在 CI 上会 SKIP（原始日志在 .gitignore 的 /.logs/ 下）⇒ 这里把它显式报出来，\n  // 免得\"少跑了一组\"看起来和\"全跑过了\"一样。\n  const sampleSkipped = out.includes('SKIP  真实样本组');\n  return {\n    ok: self.status === 0,\n    summary: self.status === 0\n      ? `${passed ? passed[1] : '?'} judge self-tests pass` +\n        (sampleSkipped ? '（真实样本组 SKIP：raw 不入库）' : '（含真实样本正负对照）')\n      : 'device-automation judge self-test failed（判定工具本身不可信）',\n    detail: self.status === 0 ? null : out,\n  };\n}",
-      "scripts": [
-        "scripts/test-device-automation.mjs"
-      ]
-    },
-    {
       "id": "product-identity",
       "line": 1406,
       "body": "() => {\n  const self = spawnSync('node', ['scripts/test-check-product-identity-banner.mjs'], {\n    cwd: ROOT,\n    encoding: 'utf8',\n  });\n  if (self.status !== 0) {\n    return {\n      ok: false,\n      summary: '产品身份 banner 门禁自测失败（门禁本身不可信）',\n      detail: ((self.stdout || '') + (self.stderr || '')).trim(),\n    };\n  }\n  const gate = spawnSync('node', ['scripts/check-product-identity-banner.mjs'], {\n    cwd: ROOT,\n    encoding: 'utf8',\n  });\n  const output = ((gate.stdout || '') + (gate.stderr || '')).trim();\n  return {\n    ok: gate.status === 0,\n    summary: gate.status === 0\n      ? 'identity banner covers every current product track and follows setNativeLogSink'\n      : 'product identity banner drifted (fields / capability source / emit order)',\n    detail: gate.status === 0 ? null : output,\n  };\n}",
@@ -5735,7 +5730,6 @@
     "scripts/test-desktop-arkts-seams.mjs",
     "scripts/test-desktop-render-diagnostics.mjs",
     "scripts/test-desktop-review-generator.py",
-    "scripts/test-device-automation.mjs",
     "scripts/test-device-connection-runtime.mjs",
     "scripts/test-diagnostic-profile.mjs",
     "scripts/test-diagnostic-source-policy.mjs",

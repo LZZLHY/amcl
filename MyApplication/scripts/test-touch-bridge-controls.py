@@ -102,6 +102,15 @@ def check(name, body, negative=False):
         print(result.stdout.strip())
 check('positive',source)
 for name,before,after in [
+    # 同一触点零位移松手仍需消化程序设位；SDL漏掉位置帧或L2越过order都会在游戏出口被捕获。
+    ('sdl-warp-loses-present-fence', 'if (carriedMotion) {\n                pthread_mutex_lock(&g_sdlMenuMutex);',
+      'if (carriedMotion && e.type != EVENT_TYPE_CARRIED_MENU_WARP) {\n                pthread_mutex_lock(&g_sdlMenuMutex);'),
+    ('sdl-carried-move-loses-source', 'if (carriedMove) e.type = EVENT_TYPE_SDL_CARRIED_MENU_MOTION;',
+      'if (carriedMove) e.type = EVENT_TYPE_CURSOR_POSITION;'),
+    ('old-sdl-sees-private-motion', 'return readSdlNextThrough(outType, o1, o2, o3, o4, maxOrder, false);',
+      'return readSdlNextThrough(outType, o1, o2, o3, o4, maxOrder, true);'),
+    ('l2-warp-pulls-future-release', 'uint64_t frameFence = maxOrder;', 'uint64_t frameFence = amclInputInteractionFence();'),
+    ('l2-warp-loses-bottom-row', 'floor(relative->pointer.maxY) + 1.0', 'floor(relative->pointer.maxY)'),
     ('menu-latest-edge-wins','const bool after = legacyLeftHeld(state);','const bool after = held;'),
     ('drop-current-held-baseline','baseline->held = g_producerOrdinary;','memset(&baseline->held,0,sizeof(baseline->held));'),
     ('drop-accepted-key-512','i1 <= 512','i1 < 512'),

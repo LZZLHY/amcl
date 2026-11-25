@@ -77,7 +77,9 @@ void PlatformInputRequestReset(uint32_t reason);
 // are strict UTF-8; CANDIDATES is the deterministic length-prefixed binary blob
 // defined by text_utf8_codec.h. Selection offsets are Unicode-scalar indices.
 bool PlatformInputTextSessionSupported();
-bool PlatformInputTextSessionBegin(uint64_t textSessionId);
+// 非零SDL需求只由持有宿主文本命令资格的NAPI调用者传入。
+bool PlatformInputTextSessionBegin(uint64_t textSessionId, uint64_t textDemandIdentity = 0);
+uint64_t PlatformInputTextSessionDemand(uint64_t textSessionId);
 bool PlatformInputTextSessionEnd(uint64_t textSessionId);
 bool PlatformInputTextSessionAbort(uint64_t textSessionId);
 /** legacy编辑键也必须证明当前owned文本会话；只核对会话/焦点/surface，不改变physical路由或epoch。 */

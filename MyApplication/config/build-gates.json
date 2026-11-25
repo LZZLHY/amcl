@@ -2255,19 +2255,6 @@
       ]
     },
     {
-      "id": "test-device-automation",
-      "script": "scripts/test-device-automation.mjs",
-      "tool": "node",
-      "kind": "behavior",
-      "domain": "build",
-      "quick": "affected",
-      "cachePolicy": "never",
-      "dependsOn": [],
-      "surfaces": [
-        "scripts/preflight.mjs"
-      ]
-    },
-    {
       "id": "test-device-connection-runtime",
       "script": "scripts/test-device-connection-runtime.mjs",
       "tool": "node",
@@ -2430,6 +2417,162 @@
       "tool": "node",
       "kind": "behavior",
       "domain": "build",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "generate-launcher-skill",
+      "script": "scripts/generate-launcher-skill.mjs",
+      "tool": "node",
+      "kind": "static",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "check-launcher-skill-coverage",
+      "script": "scripts/check-launcher-skill-coverage.mjs",
+      "tool": "node",
+      "kind": "static",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-launcher-skill-coverage",
+      "script": "scripts/test-launcher-skill-coverage.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-named-skill-session",
+      "script": "qa/device/test-named-skill-session.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-launcher-skill-dispatch",
+      "script": "scripts/test-launcher-skill-dispatch.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-launcher-skill-support",
+      "script": "scripts/test-launcher-skill-support.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-launcher-skill-system-feedback",
+      "script": "scripts/test-launcher-skill-system-feedback.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-launcher-runtime-skills",
+      "script": "scripts/test-launcher-runtime-skills.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-launcher-library-skill",
+      "script": "qa/device/test-launcher-library-skill.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-launcher-skill-surfaces",
+      "script": "qa/device/test-launcher-skill-surfaces.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-player-skill-accounts-layout",
+      "script": "scripts/test-player-skill-accounts-layout.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "product",
+      "quick": "affected",
+      "cachePolicy": "never",
+      "dependsOn": [],
+      "surfaces": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "test-qa-version-actions",
+      "script": "scripts/test-qa-version-actions.mjs",
+      "tool": "node",
+      "kind": "behavior",
+      "domain": "runtime",
       "quick": "affected",
       "cachePolicy": "never",
       "dependsOn": [],

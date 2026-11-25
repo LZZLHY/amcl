@@ -295,8 +295,12 @@ export class AccountManager {
   /**
    * 删除账户。如果删的是当前选中，selectedId 清空（getSelected 会回退）。
    */
-  async remove(id: string): Promise<void> {
+  async remove(id: string, expected?: Account, expectedSelection?: string): Promise<void> {
     await this.enqueueMutation(async (): Promise<void> => {
+      // 等待队列时账号可能已被替换；旧确认不能删除新记录。
+      if (expected !== undefined && (this.findById(id) !== expected || this.selectedId !== expectedSelection)) {
+        throw new Error('账户状态已变化，请重新确认');
+      }
       const storage: AccountStorage = this.requireStorage();
       if (this.findById(id) === undefined) return;
       const next: Account[] = this.accounts.filter((account: Account): boolean => account.id !== id);
@@ -336,10 +340,14 @@ export class AccountManager {
   /**
    * 切换选中账户。id 为空表示"无选中"（getSelected 会用 fallback）。
    */
-  async select(id: string): Promise<void> {
+  async select(id: string, expected?: Account): Promise<void> {
     await this.enqueueMutation(async (): Promise<void> => {
       const storage: AccountStorage = this.requireStorage();
-      if (id.length > 0 && !this.findById(id)) throw new AccountError('ACCOUNT_CHANGED', '账号已移除，请重新选择');
+      const target = this.findById(id);
+      // 匿名引用绑定原账号对象。前序编辑可能已提交同 ID 的新对象，需要在实际队列里核查。
+      if (id.length > 0 && (!target || (expected !== undefined && target !== expected))) {
+        throw new AccountError('ACCOUNT_CHANGED', '账号已移除或替换，请重新选择');
+      }
       await storage.setSelectedIdConfirmed(id);
       this.selectedId = id;
       AppLogger.info(TAG, `select: id=${id || '<none>'}`, LOG_DOMAIN_ACCOUNT);

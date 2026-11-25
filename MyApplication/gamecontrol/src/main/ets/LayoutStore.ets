@@ -258,6 +258,7 @@ interface PolicyStatusObserver {
   registration: InputPolicyStatusRegistration
   subscription: InputPolicyStatusSubscription
   listener: InputPolicyStatusListener
+  pending?: InputPolicyActivationSnapshot
 }
 
 /** 删除确认冻结完整身份与回退对象；名称只用于展示，不能单独授权删除同名新实体。 */
@@ -278,12 +279,15 @@ export class LayoutStore {
   private policyStatusRegistration: InputPolicyStatusRegistration | undefined = undefined
   private policyStatusProvider: (() => InputPolicyActivationSnapshot) | undefined = undefined
   private policyStatusObservers: PolicyStatusObserver[] = []
+  private activeStatusPass: PolicyStatusObserver[] | undefined = undefined
+  private retryStatus: boolean = false
 
   /** 登记原会话的纯值 provider，返回不透明身份；仓库仅传递报告，不从报告决定保存或应用。 */
   registerInputPolicyStatusProvider(provider: () => InputPolicyActivationSnapshot): InputPolicyStatusRegistration {
     // 观察资格属于登记时的运行体。替换 provider 时退休旧订阅，不能保留前端闭包直到
     // 下一局再误投，也不能把旧订阅静默改绑到新 registration。
     this.policyStatusObservers = []
+    this.activeStatusPass = undefined; this.retryStatus = false
     const registration: InputPolicyStatusRegistration = new InputPolicyStatusRegistration()
     this.policyStatusRegistration = registration; this.policyStatusProvider = provider
     return registration
@@ -293,6 +297,7 @@ export class LayoutStore {
   removeInputPolicyStatusProvider(registration: InputPolicyStatusRegistration): void {
     this.policyStatusObservers = this.policyStatusObservers.filter((entry: PolicyStatusObserver): boolean => entry.registration !== registration)
     if (registration !== this.policyStatusRegistration) return
+    this.activeStatusPass = undefined; this.retryStatus = false
     this.policyStatusRegistration = undefined; this.policyStatusProvider = undefined
   }
 
@@ -318,12 +323,39 @@ export class LayoutStore {
 
   /** 实际定义投递/维护进展或原 Runtime 通知后只转发值；观察抛错不改变保存/应用事实。 */
   publishInputPolicyStatus(registration: InputPolicyStatusRegistration): void {
-    if (registration !== this.policyStatusRegistration || this.policyStatusProvider === undefined) return
-    const snapshot: InputPolicyActivationSnapshot = cloneInputPolicySnapshot(this.policyStatusProvider())
-    for (const entry of this.policyStatusObservers.slice()) {
-      if (entry.registration !== registration || this.policyStatusObservers.indexOf(entry) < 0) continue
-      try { entry.listener(cloneInputPolicySnapshot(snapshot)) }
-      catch (_) { /* 只读观察失败不夺走进度；继续其它原订阅，前端回收仍负责精确退订。 */ continue }
+    this.deliverPolicyStatus(registration, false, false)
+  }
+
+  /** 每轮借用原订阅数组副本作为身份。回调同步发布了更新时立即结束旧轮，避免旧状态覆盖新状态。 */
+  private deliverPolicyStatus(registration: InputPolicyStatusRegistration, progressObserved: boolean, retryOnly: boolean): void {
+    if (registration !== this.policyStatusRegistration || this.policyStatusProvider === undefined ||
+        this.policyStatusObservers.length === 0) return
+    if (retryOnly && this.activeStatusPass !== undefined) return
+    const pass = this.policyStatusObservers.slice()
+    this.activeStatusPass = pass
+    try {
+      // 新观察者会立即看到当前进度，以实际推送前的值为比较基线。
+      if (!progressObserved) this.inputConfigurationDelivery.consumeStatusChange()
+      if (this.activeStatusPass !== pass || registration !== this.policyStatusRegistration) return
+      const snapshot = retryOnly ? undefined : cloneInputPolicySnapshot(this.policyStatusProvider())
+      if (this.activeStatusPass !== pass) return
+      this.retryStatus = false
+      for (const entry of pass) {
+        if (this.activeStatusPass !== pass) return
+        if (entry.registration !== registration || this.policyStatusObservers.indexOf(entry) < 0) continue
+        const value = snapshot ?? entry.pending
+        if (value === undefined) continue
+        entry.pending = undefined
+        try { entry.listener(cloneInputPolicySnapshot(value)) }
+        catch (_) {
+          // 只有抛错且仍在原轮的订阅重试；健康页面与后来注册者不重收旧值。
+          if (this.activeStatusPass === pass && this.policyStatusObservers.indexOf(entry) >= 0) {
+            entry.pending = value; this.retryStatus = true
+          }
+        }
+      }
+    } finally {
+      if (this.activeStatusPass === pass) this.activeStatusPass = undefined
     }
   }
   /** 已确认的活动配置代次；同一快照不重发，失败保存不污染订阅者。 */
@@ -360,7 +392,9 @@ export class LayoutStore {
   reconcileInputConfiguration(): void {
     const registration: InputPolicyStatusRegistration | undefined = this.policyStatusRegistration
     this.inputConfigurationDelivery.reconcile()
-    if (registration !== undefined) this.publishInputPolicyStatus(registration)
+    if (registration === undefined || registration !== this.policyStatusRegistration || this.policyStatusObservers.length === 0) return
+    if (this.inputConfigurationDelivery.consumeStatusChange()) this.deliverPolicyStatus(registration, true, false)
+    else if (this.retryStatus) this.deliverPolicyStatus(registration, true, true)
   }
 
   /** 运行端口发生真实替换时，仅作废具名订阅者回执；保存修订和其它影响域保持原事实。 */
@@ -1292,6 +1326,9 @@ export class LayoutStore {
     if (this.editorSnapshot) return
     this.editorSnapshot = this.captureState()
     this.editorSnapshotRevision = this.mutationRevision
+    // 跨工具时宿主仍持有编辑租约。新检查点必须在子页回滚失败并退场后继续阻止外部导入，供重开恢复。
+    // 无编辑租约的普通目录操作仍只借用快照，不占编辑器。
+    if (this.editorLeases > 0) this.editorOwnsSnapshot = true
   }
 
   /** 保存成功后提交编辑器事务，避免后续取消恢复已保存内容。 */
@@ -1328,10 +1365,12 @@ export class LayoutStore {
   /**
    * 切换活跃方案
    */
-  async setActiveProfile(name: string): Promise<void> {
+  async setActiveProfile(name: string, expectedId?: string, expectedRevision?: number): Promise<void> {
     return this.runMutation<void>(async (): Promise<void> => {
     const target: LayoutProfile | undefined = this.profiles.find((profile: LayoutProfile): boolean => profile.name === name)
     if (target === undefined) throw new Error('TargetMissing:方案已删除或改名')
+    // 在串行写入实际开始时重核所选实体，前面排队的改名或导入不能让新同名方案冒领请求。
+    if (expectedId !== undefined && (target.profileId !== expectedId || (target.profileRevision ?? 1) !== expectedRevision)) throw new Error('方案已变化，请重新选择')
     const issue: string = this.getProfileCompatibility(name)
     if (issue.length > 0) throw new Error(issue)
     this.captureEditorTransaction()
@@ -1525,13 +1564,13 @@ export class LayoutStore {
    * 重命名方案。阶段 2.2：拒绝重命名系统预设。新名先 trim；活动名必须写成同一个 trim 后的值，
    * 否则磁盘上的 active_profile 指向不存在的方案，getter 会静默回退、独立进程启动准备会失败。
    */
-  async renameProfile(oldName: string, newName: string): Promise<boolean> {
+  async renameProfile(oldName: string, newName: string, expectedId?: string, expectedRevision?: number): Promise<boolean> {
     return this.runMutation<boolean>(async (): Promise<boolean> => {
     this.captureEditorTransaction()
     const trimmed = newName.trim()
     if (trimmed.length === 0 || trimmed.length > 40) return false   // 空名 / 过长拒绝
     const p = this.profiles.find(p => p.name === oldName)
-    if (!p) return false
+    if (!p || (expectedId !== undefined && (p.profileId !== expectedId || (p.profileRevision ?? 1) !== expectedRevision))) return false
     if (p.isPreset) return false                                     // 默认两个系统预设不可改名
     if (trimmed === oldName) return true                             // 没变化，视为成功
     if (this.profiles.find(pp => pp.name === trimmed)) return false  // 重名（含预设名）拒绝

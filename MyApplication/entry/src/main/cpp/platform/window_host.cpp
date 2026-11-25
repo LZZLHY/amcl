@@ -82,6 +82,7 @@ struct Runtime {
     // （XComponent 门禁锁内，UI 线程），读者是 broker 尾部的无锁 peek；单个 32 位原子量，
     // release/acquire 配对即可让读者看到写入前的门禁状态，不需要额外的锁或代次。
     std::atomic<uint32_t> inputForeground{0u};
+    std::atomic<AmclWindowTextInputWakeFn> textInputWake{nullptr};
     // 注册表来自常驻entry映像，只允许首次注册或同表幂等重放；旧PID Runtime不复用它。
     std::atomic<const AmclWindowGeometryClientV1*> geometryClient{nullptr};
     WindowHostCore core{NativeReferenceDriver{nativeReference, nativeUnreference, nullptr}};
@@ -157,17 +158,50 @@ void localObserveDrawable(void* window, uint64_t generation, uint64_t token, int
 int localMatchesPresentationIdentity(void* window,uint64_t generation,uint64_t token,uint64_t resourceEpoch) {
     return runtime().core.matchesPresentationIdentity(window,generation,token,resourceEpoch)?1:0;
 }
+void wakeTextInput(Runtime& state, bool changed) {
+    // ArkTS回读同一账本，唤醒必须在WindowHostCore的发布锁全部释放之后。
+    if (changed) {
+        if (const auto wake = state.textInputWake.load(std::memory_order_acquire)) wake();
+    }
+}
+int localSetTextInputDemand(void* window, uint64_t generation, uint32_t sdlWindowId, uint32_t wanted) {
+    auto& state = runtime();
+    bool changed = false;
+    const int accepted = state.core.setTextInputDemand(window, generation, sdlWindowId, wanted, &changed);
+    wakeTextInput(state, changed);
+    return accepted;
+}
+void localSetTextInputWake(AmclWindowTextInputWakeFn wake) {
+    runtime().textInputWake.store(wake, std::memory_order_release);
+}
+uint64_t localTextInputDemandIdentity() { return runtime().core.textInputDemandIdentity(); }
+uint32_t localPeekTextInputDemand() { return localTextInputDemandIdentity() != 0; }
+int localRunTextInputCommand(uint64_t demand, AmclWindowTextInputCommandFn command, void* context) {
+    return runtime().core.runTextInputCommand(demand, command, context);
+}
 const AmclNativeWindowLeaseBrokerV2 kLocalBroker{
     AMCL_NATIVE_WINDOW_LEASE_BROKER_ABI_VERSION, sizeof(AmclNativeWindowLeaseBrokerV2),
     localAcquire, localRelease, localBeginInput, localEndInput, localPeekGeneration, localPeekState,
     localClaim, localMove, localReleasePresentation, localAcquireIdentity, localMoveGeometry,
     localPeekInputForeground, localGeometryFlags, localGeometryCheckpoint, localObserveDrawable,
-    localMatchesPresentationIdentity
+    localMatchesPresentationIdentity, localSetTextInputDemand, localPeekTextInputDemand, localTextInputDemandIdentity
 };
 
 uint64_t localPublish(void*, int, int, AmclWindowHostCommitFn, void*);
-uint64_t localUpdate(void* window, uint64_t generation, int width, int height) { return runtime().core.updateSize(window, generation, width, height); }
-uint64_t localClear(void* window, uint64_t generation) { return runtime().core.clear(window, generation); }
+uint64_t localUpdate(void* window, uint64_t generation, int width, int height) {
+    auto& state = runtime();
+    bool withdrawn = false;
+    const auto published = state.core.updateSize(window, generation, width, height, &withdrawn);
+    wakeTextInput(state, withdrawn);
+    return published;
+}
+uint64_t localClear(void* window, uint64_t generation) {
+    auto& state = runtime();
+    bool withdrawn = false;
+    const auto published = state.core.clear(window, generation, &withdrawn);
+    wakeTextInput(state, withdrawn);
+    return published;
+}
 int localRead(AmclWindowHostSnapshot* snapshot) {
     if (!snapshot) return 0;
     *snapshot = runtime().core.snapshot();
@@ -198,14 +232,25 @@ struct OwnerApi {
 #if defined(AMCL_WINDOW_HOST_TESTING)
     decltype(&localSetDriver) setDriver;
 #endif
+    decltype(&localSetTextInputWake) setTextInputWake;
+    decltype(&localTextInputDemandIdentity) textInputDemandIdentity;
+    decltype(&localRunTextInputCommand) runTextInputCommand;
 };
+// 可选文本尾部缺席仍允许使用历史owner的窗口和几何前缀。
+constexpr size_t kOwnerRequiredSize = offsetof(OwnerApi, setTextInputWake);
+constexpr size_t kOwnerTextWakeSize = offsetof(OwnerApi, setTextInputWake) + sizeof(OwnerApi::setTextInputWake);
+constexpr size_t kOwnerTextIdentitySize =
+    offsetof(OwnerApi, textInputDemandIdentity) + sizeof(OwnerApi::textInputDemandIdentity);
+constexpr size_t kOwnerTextCommandSize =
+    offsetof(OwnerApi, runTextInputCommand) + sizeof(OwnerApi::runTextInputCommand);
 OwnerApi& localOwnerApi() {
     static std::atomic<OwnerApi*> slot{new OwnerApi{1, sizeof(OwnerApi), processId(),
         localPublish, localUpdate, localClear, localRead, localStats, localRetry, localBroker,
-        localSetInputForeground, localRegisterGeometry
+        localSetInputForeground, localRegisterGeometry,
 #if defined(AMCL_WINDOW_HOST_TESTING)
-        , localSetDriver
+        localSetDriver,
 #endif
+        localSetTextInputWake, localTextInputDemandIdentity, localRunTextInputCommand
     }};
     auto* api = slot.load(std::memory_order_acquire);
     if (api->pid != processId()) {
@@ -242,7 +287,7 @@ OwnerResolution parseOwner(uint64_t currentPid) {
         return {nullptr, OwnerStatus::kMalformed};
     if (pid != currentPid) return {&localOwnerApi(), OwnerStatus::kInherited};
     const auto* api = static_cast<const OwnerApi*>(address);
-    if (api->version != 1 || api->size < sizeof(OwnerApi) || api->pid != currentPid ||
+    if (api->version != 1 || api->size < kOwnerRequiredSize || api->pid != currentPid ||
         !api->publish || !api->update || !api->clear || !api->read || !api->stats || !api->retry || !api->broker ||
         !api->setInputForeground || !api->registerGeometry)
         return {nullptr, OwnerStatus::kMalformed};
@@ -333,7 +378,11 @@ uint64_t localPublish(void* window, int width, int height, AmclWindowHostCommitF
     // 本映像已发布后，若解析出的 broker 不是本映像的，说明所有权被拆分；在描述符恢复一致前
     // 拒绝推进私有 core。缓存只记录本 PID 首次通过校验的结果，所以此检查针对的是首次解析。
     if (runtime().ownerPublished && resolveBroker() != &kLocalBroker) return 0;
-    return runtime().core.publish(window, width, height, callback, context);
+    auto& state = runtime();
+    bool withdrawn = false;
+    const auto published = state.core.publish(window, width, height, callback, context, &withdrawn);
+    wakeTextInput(state, withdrawn);
+    return published;
 }
 }
 
@@ -420,6 +469,23 @@ int amclWindowHostPublishOwner(void) { return publishOwner() ? 1 : 0; }
 int amclWindowHostSetInputForeground(int foreground) {
     const auto resolved = owner();
     return resolved.api ? resolved.api->setInputForeground(foreground) : 0;
+}
+int amclWindowHostSetTextInputWake(AmclWindowTextInputWakeFn wake) {
+    const auto resolved = owner();
+    if (!resolved.api || resolved.api->size < kOwnerTextWakeSize || !resolved.api->setTextInputWake ||
+        (resolved.status != OwnerStatus::kLocal && resolved.status != OwnerStatus::kRemote)) return 0;
+    resolved.api->setTextInputWake(wake);
+    return 1;
+}
+uint64_t amclWindowHostTextInputDemandIdentity(void) {
+    const auto resolved = owner();
+    return resolved.api && resolved.api->size >= kOwnerTextIdentitySize && resolved.api->textInputDemandIdentity
+        ? resolved.api->textInputDemandIdentity() : 0;
+}
+int amclWindowHostRunTextInputCommand(uint64_t demand, AmclWindowTextInputCommandFn command, void* context) {
+    const auto resolved = owner();
+    return resolved.api && resolved.api->size >= kOwnerTextCommandSize && resolved.api->runTextInputCommand
+        ? resolved.api->runTextInputCommand(demand, command, context) : 0;
 }
 int amclWindowHostRegisterGeometryClient(const AmclWindowGeometryClientV1* client) {
     const auto resolved = owner();

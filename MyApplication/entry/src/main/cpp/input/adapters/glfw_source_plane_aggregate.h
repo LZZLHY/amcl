@@ -108,6 +108,7 @@ public:
     bool IsButtonPressed(int32_t button) const;
     void BindTarget(uint64_t target);
     void ObservePoll(uint32_t kind,int32_t code,int32_t actualHeld);
+    void ObserveTargetPoll(uint64_t target,uint32_t kind,int32_t code,int32_t actualHeld);
     void Complete(const AmclControlEmissionV1& receipt,uint32_t phase);
     bool Validate(const AmclControlEmissionV1& receipt) const;
     bool Snapshot(AmclControlSnapshotV1& output) const;

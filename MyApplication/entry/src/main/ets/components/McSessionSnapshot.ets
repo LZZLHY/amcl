@@ -109,7 +109,10 @@ export function resolveSessionSnapshot(rec: ActivityRecord, fallbackMcDir: strin
     const path = ledgerDirOf(context.filesDir, rec.startedAt) + '/game.log';
     try {
       const bytes = fs.statSync(path).size;
-      if (archived === undefined && bytes > 0) loc = { path: path, bytes: bytes, exact: false, expired: false, archiveIndex: -2 };
+      // 旧账本文件可能只有时间戳、甚至带别局横幅，不能遮住已核对本局横幅的工作日志。
+      if (archived === undefined && !loc.exact && bytes > 0) {
+        loc = { path: path, bytes: bytes, exact: false, expired: false, archiveIndex: -2 };
+      }
     } catch (e) { /* 老记录或正在运行的会话由原始日志反查 */ }
   }
   let snap: McSessionSnapshot = {

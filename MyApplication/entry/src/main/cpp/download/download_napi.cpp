@@ -36,6 +36,7 @@
 #include "relay.h"
 
 #include "../utils/amcl_log.h"
+#include "../platform/archive_entry_mutation.h"
 
 #undef LOG_TAG
 #define LOG_TAG "DL_NAPI"
@@ -1337,6 +1338,25 @@ napi_value DownloadComputeFileSha1(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// 仅同步借用已经打开的父目录和文件描述符，不重开 ArkTS 传来的公开路径。
+napi_value ArchiveMutateConfirmedEntry(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4]{};
+    int32_t parent = -1, entry = -1;
+    std::string name, next;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 4 ||
+        napi_get_value_int32(env, args[0], &parent) != napi_ok || napi_get_value_int32(env, args[1], &entry) != napi_ok ||
+        parent < 0 || entry < 0 || !readBoundedString(env, args[2], 255, name, false) ||
+        !readBoundedString(env, args[3], 255, next, true))
+        return throwErrorAndReturnNull(env, "archiveMutateConfirmedEntry: invalid entry");
+    try {
+        const auto message = amcl::archive::MutateConfirmedEntry(parent, entry, name, next);
+        napi_value result{};
+        napi_create_string_utf8(env, message.c_str(), message.size(), &result);
+        return result;
+    } catch (...) { return throwErrorAndReturnNull(env, "archiveMutateConfirmedEntry: operation incomplete"); }
+}
+
 napi_value DownloadPublishNoReplace(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value argv[2] = {nullptr, nullptr};
@@ -1531,6 +1551,7 @@ void registerDownloadNapi(napi_env env, napi_value exports) {
         DL_NAPI_FUNC("downloadShutdown",        DownloadShutdown),
         DL_NAPI_FUNC("downloadSetCaBundle",     DownloadSetCaBundle),
         DL_NAPI_FUNC("downloadComputeFileSha1", DownloadComputeFileSha1),
+        DL_NAPI_FUNC("archiveMutateConfirmedEntry", ArchiveMutateConfirmedEntry),
         DL_NAPI_FUNC("downloadPublishNoReplace", DownloadPublishNoReplace),
         // Phase 3 (S2-2): metadata fetch through engine
         DL_NAPI_FUNC("downloadFetchText",       DownloadFetchText),

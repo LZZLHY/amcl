@@ -189,6 +189,17 @@ export function evaluateDiagnosticHap(buffer, product, mode, requested = 'none')
   if (!developer) {
     const pages = read('resources/base/profile/main_pages.json').toString();
     const abc = read('ets/modules.abc');
+    // 核实正式 ABC 没有设备会话信号和收发目录。产品源集只应引用空装配。
+    const markers = ['amclQaSession', 'amcl-qa-v1', 'qaGameSession', 'qaGameOperation', 'versions.delete.confirm',
+      'library.delete.confirm', 'accounts.prepareRemove', 'resources.search', 'modpacks.confirm', 'tasks.controlState', 'settings.resolution'];
+    for (const file of readZipEntryNames(buffer).filter(name => name.endsWith('.abc'))) {
+      const bytecode = file === 'ets/modules.abc' ? abc : read(file);
+      for (const marker of markers) {
+        if (bytecode.includes(Buffer.from(marker)) || bytecode.includes(Buffer.from(marker, 'utf16le'))) {
+          issues.push('production QA transport remains: ' + marker + ' in ' + file);
+        }
+      }
+    }
     for (const name of ['DevToolsPage', 'InputProbePage', 'RenderPage', 'VulkanPage']) {
       if (pages.includes(name) || abc.includes(Buffer.from(`pages/${name}`))) issues.push(`production developer page remains: ${name}`);
     }

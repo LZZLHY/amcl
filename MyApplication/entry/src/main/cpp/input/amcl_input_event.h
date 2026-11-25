@@ -269,7 +269,8 @@ typedef struct AmclInputPhysicalKeyPayload {
     uint32_t action;
     uint32_t modifiersSnapshot;
     uint32_t lockState;
-    uint32_t reserved[2];
+    // 原预留尾部。仅桌面SDL的owned IME编辑键携带文本需求，普通实体键恒为0。
+    uint64_t textDemandIdentity;
 } AmclInputPhysicalKeyPayload;
 
 typedef struct AmclInputPointerAbsolutePayload { double localPxX; double localPxY; } AmclInputPointerAbsolutePayload;
@@ -362,14 +363,16 @@ typedef struct AmclInputTextCommitPayload {
     // Reuses the leading bytes of the old zeroed tail.  Zero means an old V1
     // producer and is rejected when TEXT_INPUT_SESSION is advertised.
     uint64_t textSessionId;
-    uint8_t reserved[24];
+    uint64_t textDemandIdentity; // 私有桌面SDL文本需求；0保留旧路由。
+    uint8_t reserved[16];
 } AmclInputTextCommitPayload;
 typedef struct AmclInputTextEditingPayload {
     AmclInputBlobRef utf8Blob;
     uint32_t selectionStart;
     uint32_t selectionLength;
     uint64_t textSessionId;
-    uint8_t reserved[16];
+    uint64_t textDemandIdentity;
+    uint8_t reserved[8];
 } AmclInputTextEditingPayload;
 typedef struct AmclInputTextCandidatesPayload {
     AmclInputBlobRef itemsBlob;
@@ -390,7 +393,8 @@ typedef struct AmclInputTextSessionPayload {
     uint64_t textSessionId;
     uint32_t change;
     uint32_t reason;
-    uint64_t reserved[4];
+    uint64_t textDemandIdentity;
+    uint64_t reserved[3];
 } AmclInputTextSessionPayload;
 
 typedef union AmclInputEventPayload {

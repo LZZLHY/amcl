@@ -35,11 +35,14 @@ int main(int argc, char** argv) {
     CHECK(std::string(amclGraphicsRuntimeJsonV1()).empty());
     CHECK(amclGraphicsPublishObserverV1());
     CHECK(std::string(amclGraphicsFailureJsonV1()).empty());
+    CHECK(!amclGraphicsHasUsablePresentationV1());
     amclGraphicsSwapV1("GLFW", 2000000, 1, 0);
     amclGraphicsPresentedV1("GLFW");
+    CHECK(amclGraphicsHasUsablePresentationV1());
     CHECK(amclGraphicsObservationEnabledV1());
     CHECK(std::string(amclGraphicsRuntimeJsonV1()).find("\"swapP95Us\":2000") != std::string::npos);
     amclGraphicsFatalV1("window-create-failed", 0x3003, 7);
+    CHECK(!amclGraphicsHasUsablePresentationV1());
     amclGraphicsFatalV1("later-teardown-failure", 0x300e, 8);
     auto failure = std::string(amclGraphicsFailureJsonV1());
     CHECK(failure.find("\"failureStage\":\"window-create-failed\"") != std::string::npos);
@@ -69,6 +72,7 @@ int main(int argc, char** argv) {
         // env 中仍是父 PID；必须在解引用环境地址前拒绝，旧锁和故障都不能继承。
         setenv(AMCL_GRAPHICS_OBSERVER_ENV, ("1:" + std::to_string(getppid()) + ":0x1").c_str(), 1);
         CHECK(std::string(amclGraphicsRuntimeJsonV1()).empty());
+        CHECK(!amclGraphicsHasUsablePresentationV1());
         setenv("AMCL_GRAPHICS_OBSERVATION", "0", 1);
         CHECK(amclGraphicsPublishObserverV1());
         CHECK(!amclGraphicsObservationEnabledV1());
@@ -77,6 +81,7 @@ int main(int argc, char** argv) {
         CHECK(clean.find("\"presentCount\":0") != std::string::npos);
         amclGraphicsSwapV1("SDL3", 999999999, 1, 0);
         amclGraphicsPresentedV1("SDL3");
+        CHECK(amclGraphicsHasUsablePresentationV1());
         amclGraphicsFatalV1("window-create-failed", 1, 8);
         const auto off = std::string(amclGraphicsRuntimeJsonV1());
         CHECK(off.find("\"presentCount\":1") != std::string::npos);

@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 import { fixture as storageFixture } from './lib/game-layout-fixture.mjs';
+import { compactEditorFixture } from './lib/compact-editor-fixture.mjs';
+import { actionUiReceiver, loadActionComponent } from './lib/unified-actions-fixture.mjs';
 
 const load=makePureEtsLoader();
 const model=load('gamecontrol/src/main/ets/ControlLayout.ets');
@@ -130,10 +132,127 @@ function editorFixture() {
   pass('隐藏抽屉子项稳定ID选择及阶段转换保留隐藏与归属');
 }
 
+/** 生产浮窗产生入口和开关回调，声明接收器仅隔离 ArkUI 绘制。 */
+async function exerciseButtonDragEditor(store, profile) {
+  const ui = actionUiReceiver();
+  const rows = [];
+  const panel = loadActionComponent('entry/src/main/ets/components/LayoutEditor.ets', 'LayoutEditor', {
+    methods: ['SelectedItemControls', 'SelectedMorePanel_', 'ActionsTabContent_', 'BehaviorTabContent', 'SectionLabel', 'ActionFooter'],
+    render: true,
+    globals: { ...ui.globals, Color: {Transparent: 'transparent'}, TextAlign: {End: 'end'}, ToggleType: {Switch: 'switch'},
+      Slider: ui.globals.Column, Blank: ui.globals.Column,
+      type: value => ui.globals.Button().type(value),
+      Toggle: props => ui.globals.Button('拖动开关', props),
+      CompactEditorRow: props => { rows.push(props); return ui.globals.Row(); } },
+    dependencies: { gamecontrol: {...model, ...editing}, commons: load('commons/src/main/ets/common/IconCatalog.ets'),
+      './AppIcon': {AppIcon: ui.globals.AppIcon} },
+  }).prototype;
+  const render = (view, builder) => {
+    rows.length = 0;
+    ui.clear();
+    panel[builder].call(view);
+  };
+  const row = title => {
+    const matches = rows.filter(item => item.title === title);
+    assert.equal(matches.length, 1, title);
+    return matches[0];
+  };
+  const button = label => {
+    const matches = ui.records.filter(item => item.type === 'Button' &&
+      (item.args[0] === label || item.modifiers.accessibilityText?.[0] === label));
+    assert.equal(matches.length, 1, label);
+    return matches[0];
+  };
+  const select = (view, id) => view.selectControlIdentity_(id);
+  const openMore = view => {
+    render(view, 'SelectedItemControls');
+    button('更多按键设置').modifiers.onClick[0]();
+    assert.equal(view.activeSheet, 'more');
+    render(view, 'SelectedMorePanel_');
+  };
+  const openDrag = (view, isOn) => {
+    openMore(view);
+    assert.equal(row('触发与拖动').value, isOn ? '拖动视角已开' : '拖动视角已关');
+    row('触发与拖动').onTap();
+    assert.equal(view.activeSheet, 'group-actions');
+    render(view, 'ActionsTabContent_');
+    const toggle = button('拖动开关');
+    assert.equal(toggle.args[1].isOn, isOn);
+    assert.ok(ui.records.indexOf(toggle) < ui.records.indexOf(button('修改输出绑定')), '按住时拖动视角应在动作页前部');
+    button('双击');
+    button('组 1');
+    return toggle.modifiers.onChange[0];
+  };
+  const {view} = compactEditorFixture(profile, store);
+  view.SectionLabel = panel.SectionLabel;
+  await view.aboutToAppear();
+  assert.equal(view.editorReady, true, view.statusMsg);
+  select(view, 'atk');
+  const original = view.buildProfile();
+  render(view, 'SelectedItemControls');
+  row('绑定').onTap();
+  assert.equal(view.showKeyPicker, true);
+  assert.equal(view.activeSheet, 'edit', '普通按键绑定仍直接打开选键器');
+  view.backEditor_();
+  assert.equal(view.showKeyPicker, false);
+  const turnOnLeft = openDrag(view, false);
+  turnOnLeft(false);
+  assert.equal(view.undoCount, 0, '重复派发当前值不记撤销');
+  turnOnLeft(true);
+  assert.equal(view.selectedItem().dragLook, true);
+  assert.equal(view.selectedItem().swipeGroup, undefined);
+  assert.deepEqual(view.controls.find(item => item.id === 'place'), original.controls.find(item => item.id === 'place'));
+  assert.equal(view.undoCount, 1);
+  view.undo();
+  assert.equal(view.selectedItem().id, 'atk');
+  assert.equal(view.selectedItem().swipeGroup, '1');
+  assert.deepEqual(view.buildProfile(), original, '一次撤销恢复此键的瞄准与接力');
+  view.backEditor_();
+  assert.equal(view.activeSheet, 'more');
+  render(view, 'SelectedMorePanel_');
+  row('显示规则').onTap();
+  assert.equal(view.activeSheet, 'behavior');
+  render(view, 'BehaviorTabContent');
+  assert.ok(ui.records.some(item => item.type === 'Text' && item.args[0] === '何时显示'));
+  view.backEditor_();
+  view.backEditor_();
+  assert.equal(view.activeSheet, 'edit');
+  assert.equal(view.selectedItem().id, 'atk');
+  assert.equal(view.undoCount, 0, '选择、进页和返回不写草稿');
+
+  select(view, 'place');
+  openDrag(view, false)(true);
+  assert.deepEqual(view.controls.find(item => item.id === 'atk'), original.controls.find(item => item.id === 'atk'));
+  let saved;
+  view.onDone = confirmed => { saved = confirmed; };
+  render(view, 'ActionFooter');
+  button('保存').modifiers.onClick[0]();
+  await view.persistenceTask;
+  assert.equal(saved?.profileId, profile.profileId, view.statusMsg);
+  assert.equal(saved.profileRevision, profile.profileRevision + 1);
+  assert.equal(store.isEditorActive(), false);
+
+  const reopened = compactEditorFixture(store.getProfile(profile.name), store).view;
+  await reopened.aboutToAppear();
+  assert.equal(reopened.editorReady, true, reopened.statusMsg);
+  select(reopened, 'atk');
+  openDrag(reopened, false);
+  assert.equal(reopened.selectedItem().swipeGroup, '1');
+  select(reopened, 'place');
+  openDrag(reopened, true);
+  assert.equal(reopened.selectedItem().swipeGroup, undefined);
+  reopened.aboutToDisappear();
+  await reopened.editorCleanupTask;
+  assert.equal(store.isEditorActive(), false);
+  pass('真实紧凑入口、左右拖动独立、接力互斥、撤销与保存重开');
+}
+
 // 真实Store链覆盖此前“组件测试替换Store”漏掉的候选规范化，并验证删除与复制事务。
 const f=storageFixture();
 try {
   const source=model.getDefaultLayout();source.name='触控回归';source.isPreset=false;
+  Object.assign(source.controls.find(item=>item.id==='atk'),{dragLook:false,swipeGroup:'1'});
+  Object.assign(source.controls.find(item=>item.id==='place'),{dragLook:false,swipeGroup:'2'});
   source.touch={menuSensitivity:1.73,actionOverrides:{attack:77}};source.gamepad=model.defaultGamepadConfig();
   source.gamepad.buttonMap.MODE={kind:'key',code:88};
   source.controls.find(item=>item.systemAction==='input').keys=[341,89];
@@ -144,9 +263,11 @@ try {
   const reloaded=store.getProfile(saved.name);
   assert.deepEqual(model.effectiveKeys(reloaded.controls.find(item=>item.systemAction==='input')),[341,89]);
   assert.deepEqual(reloaded.controls,before.controls,'只改输入设置不能清布局绑定或几何');
-  const copied=await store.createProfile('明确复制',reloaded);store.commitEditorTransaction();
-  assert.deepEqual(copied.touch,reloaded.touch);assert.deepEqual(copied.gamepad,reloaded.gamepad);
-  assert.notEqual(copied.controls[0].id,reloaded.controls[0].id);assert.notEqual(copied.profileId,reloaded.profileId);
+  await exerciseButtonDragEditor(store, reloaded);
+  const copySource=store.getProfile(saved.name);
+  const copied=await store.createProfile('明确复制',copySource);store.commitEditorTransaction();
+  assert.deepEqual(copied.touch,copySource.touch);assert.deepEqual(copied.gamepad,copySource.gamepad);
+  assert.notEqual(copied.controls[0].id,copySource.controls[0].id);assert.notEqual(copied.profileId,copySource.profileId);
   const stale=store.reviewProfileDeletion(copied.name);assert.ok(stale);
   const edit=model.cloneLayout(copied);edit.touch.menuSensitivity=2;
   assert.ok(await store.saveEditedProfile(edit));store.commitEditorTransaction();
@@ -162,7 +283,12 @@ try {
   const imported=await f.owner.journal.importPending(f.disk.context);
   assert.equal(imported.imported,1,JSON.stringify(imported));
   assert.deepEqual(model.effectiveKeys(f.owner.store.getProfile(source.name).controls.find(item=>item.systemAction==='input')),[341,89]);
-  pass('真实Store→候选→V2重载/owner合并：聊天保存、完整复制、删除修订CAS与回退');
+  const restarted = f.restartOwner();
+  await restarted.store.init(f.disk.context);
+  const persisted = restarted.store.getProfile(source.name);
+  const left = persisted.controls.find(item => item.id === 'atk'), right = persisted.controls.find(item => item.id === 'place');
+  assert.deepEqual([left.dragLook, left.swipeGroup, right.dragLook, right.swipeGroup], [false, '1', true, undefined]);
+  pass('真实Store→候选→V2重载/owner合并：拖动设置和聊天持久化、完整复制、删除修订CAS与回退');
 } finally { f.disk.close(); }
 
 console.log('PASS touch editing contract: '+cases+' production paths');

@@ -40,6 +40,8 @@ import { LOG_DOMAIN_ACCOUNT } from 'commons';
 import { common } from '@kit.AbilityKit';
 import { getTaskActivityOwner, reserveTaskActivityId, ActivityCategory, ActivityStatus } from 'feature_core';
 import { getAccountManager } from 'account';
+import { AddAccountActions } from '../runtime/AccountSheetActions';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { OfflineAccount, randomAccountId } from 'account';
 import { MicrosoftAccount, completeMicrosoftLogin } from 'account';
 import { AuthlibInjectorAccount, authlibAuthenticate, authlibBindProfile, AuthlibAuthSession } from 'account';
@@ -141,7 +143,54 @@ export struct AddAccountSheet {
 
   private requestAccountClose_(): void { this.cancelPendingAccount_(); this.onClose(); }
 
-  aboutToDisappear(): void { this.cancelPendingAccount_(); }
+  /** 原表单挂载后才交付具名操作，使用与手动填写相同的注册与授权方法。 */
+  onActionsReady?: (actions: AddAccountActions) => void;
+  onPlayerLoginOutcome?: (ref: string, state: string, accountId: string) => void;
+  onPlayerLoginPhase?: (ref: string, phase: string) => void;
+  private loginIntent_: string = '';
+
+  /** 结果只返回给发起这次表单的账号页；用户退回选择器后另一次登录不能认领原请求。 */
+  private finishPlayerLogin_(state: string): void {
+    const ref = this.loginIntent_; this.loginIntent_ = '';
+    if (ref) this.onPlayerLoginOutcome?.(ref, state, state === 'ready' ? getAccountManager().getSelectedId() : '');
+  }
+
+  aboutToAppear(): void {
+    const actions: AddAccountActions = {
+      offline: async (name: string): Promise<string> => {
+        if (this.busy || this.mode !== MODE_CHOOSER) return '';
+        this.mode = MODE_OFFLINE; this.offlineUsername = name;
+        return this.addOffline();
+      },
+      login: async (provider: string): Promise<boolean> => {
+        if (this.busy || this.mode !== MODE_CHOOSER) return false;
+        if (provider === 'microsoft') { await this.startMicrosoftLogin(); return this.isMicrosoftForm_(); }
+        if (provider === 'authlib') { this.enterAuthlibMode(); return true; }
+        return false;
+      }
+    };
+    this.onActionsReady?.(actions);
+    LauncherSkillBus.bind('playerForm',this,async (method: string,args: SkillFields): Promise<SkillFields> => {
+      if (this.mode !== MODE_CHOOSER || this.busy || this.loginIntent_ || typeof args['loginRef'] !== 'string') return { 'state': 'busy' };
+      this.loginIntent_ = String(args['loginRef']);
+      if (method === 'addOfflinePlayer') {
+        const id = await actions.offline(String(args['playerName']));
+        return { 'state': id && getAccountManager().getSelectedId() === id ? 'ready' : 'unknown' };
+      }
+      const usable = method === 'beginPlayerLogin' && await actions.login(String(args['provider']));
+      if (!usable) this.finishPlayerLogin_('failed');
+      else this.onPlayerLoginPhase?.(this.loginIntent_,this.isMicrosoftForm_() ? 'webAuthorization' : 'skinSiteForm');
+      return { 'state': usable ? 'needsUser' : 'failed' };
+    });
+  }
+
+  private isMicrosoftForm_(): boolean { return this.mode === MODE_MICROSOFT; }
+
+  aboutToDisappear(): void {
+    LauncherSkillBus.unbind('playerForm',this);
+    this.cancelPendingAccount_();
+    if (!this.busy) this.finishPlayerLogin_('cancelled');
+  }
 
 
   /** 标题只投影当前账户分支；授权流程与表单草稿仍由原 mode/业务方法持有。 */
@@ -170,11 +219,13 @@ export struct AddAccountSheet {
     if (this.mode === MODE_AUTHLIB && this.authPickProfiles.length > 0) {
       this.cancelPendingAccount_();
       this.authPickProfiles = []; this.authSession = null; this.errorMsg = '';
+      if (this.loginIntent_) this.onPlayerLoginPhase?.(this.loginIntent_,'skinSiteForm');
       return;
     }
     if (this.statusMsg.length > 0) return;
     this.cancelPendingAccount_();
     const microsoft: boolean = this.mode === MODE_MICROSOFT;
+    this.finishPlayerLogin_('cancelled');
     this.mode = MODE_CHOOSER; this.errorMsg = ''; this.codeConsumed = false;
     if (microsoft) { this.stage = STAGE_NONE; this.microsoftOrigin_ = ''; }
   }
@@ -891,12 +942,13 @@ export struct AddAccountSheet {
     const startedAt = this.accountAttemptStarted_;
     this.accountAttemptStarted_ = 0;
     getTaskActivityOwner().recordSummary(ActivityCategory.ACCOUNT, name, status, errorMessage || accType, startedAt);
+    this.finishPlayerLogin_(status === ActivityStatus.SUCCESS ? 'ready' : (status === ActivityStatus.ABORTED ? 'cancelled' : 'failed'));
 
   }
 
   /** 离线账户：直接 create + add + select。 */
-  private async addOffline(): Promise<void> {
-    if (this.busy) return;
+  private async addOffline(): Promise<string> {
+    if (this.busy) return '';
     this.beginAccountAttempt_();
     this.busy = true;
     this.errorMsg = '';
@@ -908,10 +960,12 @@ export struct AddAccountSheet {
       AppLogger.info(TAG, `offline added: id=${acc.id} username=${acc.username}`, LOG_DOMAIN_ACCOUNT);
       this.recordAccountActivity_(acc.username, '离线账户', ActivityStatus.SUCCESS, '');
       this.onSuccess();
+      return acc.id;
     } catch (e) {
       this.errorMsg = '添加失败：' + (e as Error).message;
       AppLogger.error(TAG, 'addOffline failed', e, LOG_DOMAIN_ACCOUNT);
       this.recordAccountActivity_(this.offlineUsername.length > 0 ? this.offlineUsername : '离线账户', '离线账户', ActivityStatus.FAILED, (e as Error).message);
+      return '';
     } finally {
       this.busy = false;
     }
@@ -962,6 +1016,7 @@ export struct AddAccountSheet {
       } else {
         // 多角色：进入选角态
         this.authPickProfiles = session.availableProfiles.slice();
+        if (this.loginIntent_) this.onPlayerLoginPhase?.(this.loginIntent_,'chooseRole');
       }
     } catch (e) {
       this.errorMsg = '登录失败：' + (e as Error).message;

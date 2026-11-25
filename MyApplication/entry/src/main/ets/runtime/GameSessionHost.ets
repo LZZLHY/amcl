@@ -5,14 +5,15 @@
  * 共同维护只依赖Native维护scope，触控前端通过受限来源接口登记；因此desktop宿主
  * 不会因持有维护资格而把移动布局、触控组件或陀螺仪前端带入编译依赖闭包。
  */
-import { common, Want, appRecovery } from '@kit.AbilityKit'
+import { common, Want } from '@kit.AbilityKit'
 import { systemDateTime } from '@kit.BasicServicesKit'
+import deviceInfo from '@ohos.deviceInfo'
 import { AppLogger, ActivityLogger, LOG_DOMAIN_LAUNCH } from 'commons'
 import { GamepadManager, GamepadEmitter, GameInputRuntime, SourceControlClient,
   AmclInputSource, GLFW_PRESS, getInputSourceRegistry, getInputDeviceMonitor,
   getPointerVisibility, LayoutStore, InputConfigurationRuntime,
   InputDeviceConnectionReader, InputDeviceConnectionLease, InputDeviceConnectionChange } from 'gamecontrol'
-import { parseInputPlan } from 'launch'
+import { parseInputPlan, ResolvedInputPlan } from 'launch'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
 import { ProductGameWindowCoordinator, ProductGameWindowSnapshot } from 'entry/ProductGameWindowCoordinator'
 import { PreferenceManager } from 'feature_system'
@@ -26,8 +27,7 @@ import { EntryTouchInputMaintenanceLease, startEntryTouchInputMaintenance,
 import { GameLaunchGate } from './GameLaunchGate'
 import { GameDialogRuntime } from './GameDialogRuntime'
 import { GameWindowKeepScreenOn } from './GameWindowKeepScreenOn'
-import { GamepadOutputRoute, NativeGamepadRouteDecision, resolveNativeGamepadRoute,
-  NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY, NATIVE_GAMEPAD_CAPTURE_READY_KEY } from './NativeGamepadRoutePolicy'
+import { GamepadOutputRoute, NativeGamepadRouteDecision, nativeGamepadRouteNotice, resolveBoundGamepadRoute } from './NativeGamepadRoutePolicy'
 
 // 与原文本停资源同量级的有限安全预算；复用Host原250ms heartbeat槽，不新增生产时钟。
 const TOUCH_STOP_RETRY_BUDGET: number=5
@@ -35,6 +35,12 @@ const TOUCH_STOP_BUDGET_MS: number=2000
 // 前台交接与所有异步清理共用原来的一次3秒总期限，不能先等交接再追加清理期限。
 // Native hook仍有自己的强制退出兜底；OS强杀不保证ArkTS回调或本地收据正常完成。
 const EXIT_HANDOFF_BUDGET_MS: number=3000
+
+/** 仅真实手机启用共享进程重启。平板兼容模式即使共用进程仍沿用原退出路线。 */
+export function phoneGameRestartApi(): number {
+  const api: number = deviceInfo.sdkApiVersion
+  return deviceInfo.deviceType === 'phone' && api >= 20 ? api : 0
+}
 
 /** 前端只收状态和观察机会；去掉订阅不会停止输入维护或游戏退出检测。 */
 export interface GameSessionFrontend {
@@ -127,6 +133,8 @@ export class GameSessionHost {
   /** 期限或终态发布后，迟到原平台回调仍能结束资源，但不能把超时收据改回Clean。 */
   private exitReadinessFinalized: boolean = false
   private inputPlanWire: string = ''
+  private desktopSdlTextInput: boolean = false
+  private desktopSdlTextInputSubscribed: boolean = false
   private failureCounts: Map<string, number> = new Map<string, number>()
   private cleanup: GameSessionCleanupStep[] = []
   private grabSubscribed: boolean = false
@@ -145,9 +153,12 @@ export class GameSessionHost {
   /** 用户路由请求和平台采集事实按本局冻结；实际ABI出口与来源开关分别确认。 */
   private gamepadRouteFactsFrozen: boolean = false
   private gamepadNativeRequested: boolean = false
+  /** 同一会话只在输入计划确认有手柄出口后注册一次，设备以后插入由平台监听接手。 */
+  private gamepadCaptureAttempted: boolean = false
   private gamepadCaptureReady: boolean = false
   private gamepadRouteDecision: NativeGamepadRouteDecision | undefined = undefined
-  private gamepadRouteDescription: string = ''
+  /** bindPlan 已验证本局唯一计划；状态重试与前端观察复用解析结果。 */
+  private boundInputPlan: ResolvedInputPlan | undefined = undefined
   private coordinator: ProductGameWindowCoordinator = new ProductGameWindowCoordinator()
   private windowEntered: boolean = false
   // 首次实际运行时锁存用户偏好。同一局切前后台或重建页面仍使用同一个值。
@@ -258,6 +269,10 @@ export class GameSessionHost {
   isEnded(): boolean { return this.ended() }
   /** 无路由ID的同局重建复用已确认活动，不能重新用Date.now产生第二局身份。 */
   sessionActivity(): number { return this.activityId }
+  /** 只返回本局当前已绑定且获焦前端的真实鸿蒙窗口 ID，分离页面和旧活动都返回零。 */
+  runningWindow(activity: number): number {
+    return activity>0 && activity===this.activityId && this.isRunning() && this.active() ? this.windowId : 0
+  }
   /** 与现有活动账本共用身份；首次无路由ID时仍由既有启动入口生成，不另造主键。 */
   bindActivity(activityId: number): void {
     if (!Number.isSafeInteger(activityId) || activityId <= 0 || this.ended()) throw new Error('Invalid game activity')
@@ -493,8 +508,12 @@ export class GameSessionHost {
       // GLFW/SDL可提供原生出口时尊重用户“由游戏处理”选择，不从查询次数推定接管。
       if (!this.gamepadRouteFactsFrozen) {
         this.gamepadRouteFactsFrozen = true
-        this.gamepadNativeRequested = AppStorage.get<boolean>(NATIVE_GAMEPAD_ROUTE_REQUESTED_KEY) ?? false
-        this.gamepadCaptureReady = AppStorage.get<boolean>(NATIVE_GAMEPAD_CAPTURE_READY_KEY) ?? false
+        // 独立进程从已安装的启动快照读取；共享进程读取当前确认偏好。页面重建不再重读。
+        this.runStep('native-gamepad-preference', (): void => {
+          if (ProductInputProfile.canChooseNativeGamepad() && this.context !== undefined) {
+            this.gamepadNativeRequested = new PreferenceManager(this.context).desktopNativeGamepad
+          }
+        })
       }
       this.reconcileGamepadRoute()
       if (!this.launched) this.state = 'Bound'
@@ -512,9 +531,21 @@ export class GameSessionHost {
 
   /** 启动冻结计划只校验/保存，不表示游戏 consumer READY；真实注册继续由 Native 实例产生。 */
   bindPlan(wire: string): void {
-    if (this.ended() || parseInputPlan(wire) === undefined) throw new Error('Invalid or retired input plan')
+    const plan = parseInputPlan(wire)
+    if (this.ended() || plan === undefined) throw new Error('Invalid or retired input plan')
     if (this.inputPlanWire.length > 0 && this.inputPlanWire !== wire) throw new Error('Input plan already frozen')
     this.inputPlanWire = wire
+    this.boundInputPlan = plan
+    if (!this.desktopSdlTextInput && ProductInputProfile.selection().desktopWindow && plan.abi === 'SDL3') {
+      this.desktopSdlTextInput = true
+      this.textInputRuntime.bindPhysicalDemandReader((): string => this.readDesktopSdlTextInputDemand(this.active()))
+      this.syncDesktopSdlTextInput(this.active())
+      this.runStep('desktop-sdl-text-subscribe', (): void => {
+        this.desktopSdlTextInputSubscribed = testNapi.onSdlTextInputDemandChange((): void => {
+          if (!this.ended()) this.syncDesktopSdlTextInput(this.active())
+        })
+      })
+    }
     if (this.gamepadRouteFactsFrozen) this.reconcileGamepadRoute()
     this.runStep('input-plan-log', (): void => {
       this.logger().info('InputSession', 'input_plan activity=' + this.activityId + ' ' + wire, LOG_DOMAIN_LAUNCH)
@@ -691,13 +722,24 @@ export class GameSessionHost {
     this.connectionSubscribed = false
     this.cleanupStep('configuration-stop', (): void => { this.configuration.stop() })
     this.cleanupStep('source-unregister', (): void => { getInputSourceRegistry().unregister(this.inputRuntime) })
-    this.cleanupStep('native-gamepad-focus', (): void => { testNapi.desktopGamepadFocus(false) })
+    if (this.gamepadCaptureAttempted) {
+      this.cleanupStep('native-gamepad-focus', (): void => { testNapi.desktopGamepadFocus(false, false) })
+      this.cleanupStep('native-gamepad-capture', (): void => {
+        if (!testNapi.desktopSetGamepadNativeMode(false)) throw new Error('Native gamepad shutdown failed')
+      })
+    }
     if (this.windowId > 0) {
       this.cleanupStep('cursor-unlock', (): void => { testNapi.setCursorLocked(this.windowId, false) })
       this.cleanupStep('window-filter', (): void => { testNapi.uninstallWindowInputFilters(this.windowId) })
     }
     if (this.grabSubscribed) this.cleanupStep('grab-unsubscribe', (): void => { testNapi.onGrabChange() })
     this.grabSubscribed = false
+    if (this.desktopSdlTextInputSubscribed) {
+      this.cleanupStep('desktop-sdl-text-unsubscribe', (): void => {
+        if (!testNapi.onSdlTextInputDemandChange()) throw new Error('SDL text demand unsubscribe failed')
+      })
+      this.desktopSdlTextInputSubscribed = false
+    }
     this.cleanupStep('pointer-restore', (): void => { getPointerVisibility().restore() })
     // Window恢复为平台异步事务，回执先保持Pending；不能把未完成的Promise记为Clean。
     const windowStep: GameSessionCleanupStep = { name: 'window-restore', completed: false, reason: 'Pending' }
@@ -734,8 +776,8 @@ export class GameSessionHost {
   }
 
   /**
-   * 一次总期限覆盖stop同步前缀、并行平台交接和异步清理。失败也必须经过finally，
-   * 原Native兜底和共享进程restart不因日志、时钟或某个资源拒绝而丢失。
+   * 一次总期限覆盖stop同步前缀、隔离进程前台交接和异步清理。手机只在Native确认
+   * 正常退出且仍有交接资格时请求重启，其余情况交由原Native退出路径收尾。
    */
   private async performExit(): Promise<void> {
     const isolated: boolean = AppStorage.get<boolean>('desktopGameProcess') === true
@@ -756,9 +798,46 @@ export class GameSessionHost {
       this.logOutcome('exit-readiness')
       // mcForceExit会结束活动writer并ACK；必须先把最后一份资源回执真正flush。
       try { AppLogger.flush() } catch (error) { this.noteFault('exit-log-flush', error) }
-      try { testNapi.mcForceExit() } catch (error) { this.noteFault(isolated ? 'exit-ack' : 'shared-exit', error) }
-      if (!isolated) try { appRecovery.restartApp() } catch (error) { this.noteFault('shared-restart', error) }
+      if (isolated || !(await this.restartPhoneLauncher())) {
+        try { testNapi.mcForceExit() } catch (error) { this.noteFault(isolated ? 'exit-ack' : 'shared-exit', error) }
+      }
     }
+  }
+
+  /**
+   * 由主线程请求平台重启。Native 先提交正常退出事实并关闭写入端，接下来由系统
+   * 结束旧进程。失焦或其他平台拒绝时释放Native等待，保留已知的原退出状态。
+   */
+  private async restartPhoneLauncher(): Promise<boolean> {
+    const api: number = phoneGameRestartApi()
+    if (api === 0) return false
+    let pending: boolean = false
+    try {
+      pending = testNapi.mcLauncherRestartPending()
+      if (!pending) return false
+      const context: common.UIAbilityContext | undefined = this.context
+      if (context === undefined) throw new Error('LauncherRestartContextUnavailable')
+      const want: Want = { bundleName: 'com.amcl.launcher', abilityName: 'EntryAbility' }
+      try {
+        AppLogger.info('GameSession', 'PHONE_GAME_RESTART_REQUEST activity=' + this.activityId
+          + ' api=' + api + ' context=' + (api >= 22 ? 'UIAbility' : 'Application'), LOG_DOMAIN_LAUNCH)
+      } catch (error) { this.noteFault('phone-launcher-restart-log', error) }
+      if (!(await testNapi.mcPrepareLauncherRestart())) throw new Error('LauncherRestartHandoffUnavailable')
+      if (api >= 22) {
+        await context.restartApp(want)
+      } else {
+        context.getApplicationContext().restartApp(want)
+      }
+    } catch (error) {
+      this.noteFault('phone-launcher-restart', error)
+      if (pending) {
+        try { testNapi.mcDeclineLauncherRestart() } catch (declineError) {
+          this.noteFault('phone-launcher-restart-decline', declineError)
+        }
+      }
+    }
+    // Native 已拥有此事务时不要再调用强退，成功时由系统结束，失败时由有界等待结束。
+    return pending
   }
 
   /**
@@ -846,8 +925,8 @@ export class GameSessionHost {
     if (!this.gamepadRouteFactsFrozen) return undefined
     const applied: GamepadOutputRoute = this.gamepad.isMappedOutputEnabled()
       ? GamepadOutputRoute.Mapped : GamepadOutputRoute.Native
-    return resolveNativeGamepadRoute(this.gamepadNativeRequested, this.gamepadCaptureReady,
-      this.inputPlanWire, applied)
+    return resolveBoundGamepadRoute(this.gamepadNativeRequested, this.gamepadCaptureReady,
+      this.boundInputPlan, this.boundInputPlan !== undefined, applied)
   }
 
   /**
@@ -855,8 +934,12 @@ export class GameSessionHost {
    * 同编号对象均无读取资格；不取得current lease补旧调用，也不推进采集或来源切换。
    * 无前端时原250ms必要维护继续，撤销此观察资格不会撤销用户请求或停止生产路由。
    */
-  nativeGamepadRouteForFrontend(lease: GameFrontendLease | undefined): NativeGamepadRouteDecision | undefined {
+  nativeGamepadRouteForFrontend(lease: GameFrontendLease | undefined,
+    noticeOnly: boolean = false, previous?: GamepadOutputRoute): NativeGamepadRouteDecision | undefined {
     if (!this.accepts(lease)) return undefined
+    // 心跳和状态刷新可先后到达。无通知时不构造值副本；显式查询仍读取真实来源并隔离调用者修改。
+    if (noticeOnly && (this.gamepadRouteDecision === undefined ||
+      !nativeGamepadRouteNotice(this.gamepadRouteDecision, previous))) return undefined
     const decision: NativeGamepadRouteDecision | undefined = this.nativeGamepadRoute()
     // 生产读取为纯值；仍守住可能同步回入的依赖边缘，旧读回不能取得后来前端的结果。
     return this.accepts(lease) ? decision : undefined
@@ -867,17 +950,32 @@ export class GameSessionHost {
     if (!this.gamepadRouteFactsFrozen || this.ended()) return
     const before: GamepadOutputRoute = this.gamepad.isMappedOutputEnabled()
       ? GamepadOutputRoute.Mapped : GamepadOutputRoute.Native
-    const target: NativeGamepadRouteDecision = resolveNativeGamepadRoute(this.gamepadNativeRequested,
-      this.gamepadCaptureReady, this.inputPlanWire, before)
+    const last = this.gamepadRouteDecision
+    // 计划一经绑定不可替换。实际来源尚未交出时仍须重试，空设备枚举与路由有效性无关。
+    if (last !== undefined && last.planBound === (this.boundInputPlan !== undefined) &&
+        last.requestedNative === this.gamepadNativeRequested && last.platformCaptureReady === this.gamepadCaptureReady &&
+        last.applied === before && last.target === before) return
+    let target: NativeGamepadRouteDecision = resolveBoundGamepadRoute(this.gamepadNativeRequested,
+      this.gamepadCaptureReady, this.boundInputPlan, this.boundInputPlan !== undefined, before)
+    if (target.requestedNative && target.abiNativeOutlet && !this.gamepadCaptureAttempted && deviceInfo.sdkApiVersion >= 21) {
+      this.gamepadCaptureAttempted = true
+      // 按当前 ABI 启动 Game Controller Kit。采集成功仅表示已注册并完成枚举，零只设备也可等待热插入。
+      this.runStep('native-gamepad-capture', (): void => {
+        this.gamepadCaptureReady = testNapi.desktopSetGamepadNativeMode(true)
+      })
+      if (this.ended()) return
+      target = resolveBoundGamepadRoute(true, this.gamepadCaptureReady, this.boundInputPlan, true, before)
+    }
     this.gamepad.setMappedOutputEnabled(target.mappedOutputEnabled)
     const applied: NativeGamepadRouteDecision | undefined = this.nativeGamepadRoute()
-    this.gamepadRouteDecision = applied
     if (applied !== undefined) {
-      const description: string = JSON.stringify(applied)
-      if (description !== this.gamepadRouteDescription) {
-        this.gamepadRouteDescription = description
+      this.gamepadRouteDecision = applied
+      if (last === undefined || last.reason !== applied.reason || last.applied !== applied.applied ||
+          last.target !== applied.target || last.inputAbi !== applied.inputAbi ||
+          last.platformCaptureReady !== applied.platformCaptureReady || last.status !== applied.status ||
+          last.requestedNative !== applied.requestedNative) {
         this.runStep('gamepad-route-log', (): void => {
-          this.logger().info('InputSession', 'input_gamepad_route ' + description +
+          this.logger().info('InputSession', 'input_gamepad_route ' + JSON.stringify(applied) +
             ' consumer_ready=unconfirmed game_usage=unconfirmed', LOG_DOMAIN_LAUNCH)
         })
       }
@@ -898,13 +996,28 @@ export class GameSessionHost {
       getPointerVisibility().sync(active && this.grabbed, getInputDeviceMonitor().hasMouse())
     })
     this.runStep('desktop-gamepad-focus', (): void => {
-      if (ProductInputProfile.selection().desktopWindow) {
-        // 原映射持有未能释放时applied仍Mapped，不同时开启游戏原生出口焦点。
-        testNapi.desktopGamepadFocus(active && this.gamepadRouteDecision?.applied === GamepadOutputRoute.Native)
+      if (this.gamepadCaptureReady) {
+        // 真实来源交还之后才公开连接；普通失焦只将操作归零，游戏仍能识别已连接设备。
+        const routed = this.gamepadRouteDecision?.applied === GamepadOutputRoute.Native
+        testNapi.desktopGamepadFocus(active && routed, routed)
       }
     })
+    if (this.desktopSdlTextInput) this.syncDesktopSdlTextInput(active)
     const frontend: GameSessionFrontend | undefined = this.frontend
     if (frontend !== undefined) this.runStep('frontend-state', (): void => { frontend.onState(this.grabbed, active) })
+  }
+
+  /** 需求边沿主动唤醒，后台维护补偿漏通知；焦点和抓取仍合取原资格。 */
+  private syncDesktopSdlTextInput(active: boolean): void {
+    this.runStep('desktop-sdl-physical-ime', (): void => {
+      this.textInputRuntime.setPhysicalDemandIdentity(this.readDesktopSdlTextInputDemand(active))
+    })
+  }
+
+  /** 读回同时用于SDL物理回调的即时核验，焦点、抓取和查询失败均关闭准入。 */
+  private readDesktopSdlTextInputDemand(active: boolean): string {
+    if (!this.launched || !active || this.grabbed) return ''
+    try { return testNapi.peekSdlTextInputDemand() } catch (_) { return '' }
   }
 
   private applyGrab(grabbed: boolean): void {
@@ -926,10 +1039,11 @@ export class GameSessionHost {
       this.heartbeat = -1
       this.maintenanceExecuting = true
       this.runStep('grab-state', (): void => { this.applyGrab(testNapi.isGrabbed()) })
-      this.runStep('configuration', (): void => { this.configuration.reconcile() })
+      let maintainedStore: LayoutStore | undefined = undefined
+      this.runStep('configuration', (): void => { maintainedStore = this.configuration.reconcile() })
       this.runStep('game-dialog', (): void => { GameDialogRuntime.maintain() })
       this.runStep('gamepad-route', (): void => { this.reconcileGamepadRoute() })
-      this.runStep('mapped-runtime', (): void => { this.inputRuntime.reconcile() })
+      this.runStep('mapped-runtime', (): void => { this.inputRuntime.reconcile(maintainedStore) })
       this.runStep('text-session', (): void => { this.textInputRuntime.maintain() })
       this.runStep('reset-domains', (): void => { reconcileEntryInputSession() })
       this.runStep('touch-maintenance', (): void => {
@@ -1064,6 +1178,9 @@ export class GameSessionHost {
 }
 
 let processSession: GameSessionHost | undefined = undefined
+
+/** 只观察当前进程已存在的会话，不创建页面、资源或新 JVM。 */
+export function existingGameSessionHost(): GameSessionHost | undefined { return processSession }
 
 /** 同局页面复用宿主；已结束宿主保留墓碑，不凭 UI 重建恢复可创建 JVM 的资格。 */
 export function getGameSessionHost(): GameSessionHost {

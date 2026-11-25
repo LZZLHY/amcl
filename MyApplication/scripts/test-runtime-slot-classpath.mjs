@@ -50,7 +50,7 @@ const lwjglSlotClasspath = directory => slotClasspath(directory, 17);
 const lwjglRuntimeSlot = directory => selectSlot(directory, 17);
 const modernNames = LWJGL_MODERN_JARS.map((jar) => jar.name);
 assert.deepEqual(lwjglSlotJarNames(root + '/lwjgl-ohos'), modernNames);
-assert.equal(modernNames.includes('lwjgl-jemalloc.jar'), false, 'modern 必须保持已验证的 allocator 回退');
+assert.equal(modernNames.includes('lwjgl-jemalloc.jar'), true, 'modern 须交付与本槽 native 配对的 allocator JAR');
 const oldNames = ['lwjgl-glfw.jar', 'lwjgl-jemalloc.jar', 'lwjgl-openal.jar',
   'lwjgl-opengl.jar', 'lwjgl-stb.jar', 'lwjgl-tinyfd.jar', 'lwjgl.jar'];
 assert.deepEqual(lwjglSlotJarNames(root + '/lwjgl-ohos-322'), oldNames);

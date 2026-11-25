@@ -9,6 +9,8 @@
 namespace amcl::input {
 /** 以下平台入口自行持surface/mode/touch/schema事务；返回值仅为有界值对象，无私有指针。 */
 TouchPublicationReceipt QueryTouchPublication();
+/** 只在呈现状态/控制组变化时向观察者构造完整回执。stamp 由每个前端独立保存。 */
+bool ReadTouchPublicationChange(const uint64_t stamp[2], TouchPublicationReceipt& result);
 TouchPublicationReceipt BeginTouchPublication(const std::string& operation, const std::string& candidate,
     const TouchPublicationContext& expected);
 TouchPublicationReceipt PublishTouchSchema(const std::string& operation, const AmclCtrlEntry* entries,

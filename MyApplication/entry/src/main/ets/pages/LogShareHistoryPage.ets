@@ -3,6 +3,7 @@
  * 页面只重绘展示层，撤回后移除记录、产品网页门控及本地凭据恢复继续由既有流程处理。
  */
 import { applyNativeTheme } from '../components/AppTheme';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
@@ -40,6 +41,42 @@ struct LogShareHistoryPage {
   private context: common.UIAbilityContext = AppStorage.get<common.UIAbilityContext>('uiAbilityContext')!;
   private prefManager: PreferenceManager = new PreferenceManager(this.context);
 
+  /** 已发布链接的撤回只打开真实二次确认，令牌、URL 和本机路径不作为通用返回。 */
+  private async skillAction_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (!this.loaded || this.loading || this.busy) return { 'state': 'busy' };
+    if (method === 'readSharedLogs') {
+      await this.refresh_();
+      if (this.errorText) return { 'state': 'failed', 'reason': 'readFailed' };
+      const offset = Number(args['offset'] ?? 0);
+      if (!Number.isSafeInteger(offset) || offset < 0) return { 'state': 'failed', 'reason': 'invalidOffset' };
+      return { 'state': 'ready', 'total': this.records.length,
+        'records': this.records.slice(offset,offset+30).map((r: LogShareRecord): SkillFields => ({
+          'id': r.id, 'activityId': r.activityId ?? 0, 'createdAt': r.sharedAt, 'revocable': r.token.length > 0,
+          'status': this.recordStateLabel_(r), 'retention': this.recordRetentionLabel_(r) })) };
+    }
+    const matches = this.records.filter((r: LogShareRecord): boolean => r.id === args['shareId'] && r.sharedAt === args['createdAt']);
+    if (matches.length !== 1) return { 'state': 'failed', 'reason': 'shareChanged' };
+    const record = matches[0];
+    if (method === 'requestRevokeSharedLog' && record.token.length > 0) {
+      LauncherSkillBus.followUserDecision(method,this.confirmRevoke_(record));
+      return { 'state': 'needsUser', 'surface': 'revokeShare' };
+    }
+    if (method === 'viewSharedLog') {
+      LauncherSkillBus.followUserDecision(method,this.recordMenu_(record));
+      return { 'state': 'needsUser', 'surface': 'shareOptions' };
+    }
+    return { 'state': 'unavailable', 'reason': 'unsupportedAction' };
+  }
+
+  private bindSkill_(): void {
+    LauncherSkillBus.bind('shares', this, (method: string, args: SkillFields): Promise<SkillFields> => this.skillAction_(method,args), (): boolean => {
+      const page = this.getUIContext().getRouter().getState().name;
+      return page === 'LogShareHistoryPage' || page === 'pages/LogShareHistoryPage';
+    });
+  }
+
+  aboutToDisappear(): void { LauncherSkillBus.unbind('shares',this); }
+
   aboutToAppear(): void {
     this.applyTheme_();
     this.refresh_();
@@ -65,32 +102,35 @@ struct LogShareHistoryPage {
     catch (e) { this.errorText = '读取分享记录失败：' + (e as Error).message; }
     finally { this.loaded = true; this.loading = false; }
   }
-  private confirmRevoke_(record: LogShareRecord): void {
-    if (this.busy) return;
+  private async confirmRevoke_(record: LogShareRecord): Promise<void> {
+    if (this.busy || this.loading || !this.loaded || !this.records.includes(record)) return;
     // 去重只得到已有链接；没有首次上传的凭据时，不打开会承诺可撤回的确认框。
     if (record.token.length === 0) {
       this.errorText = '该链接复用了已有日志，本机没有撤回凭据；需要首次上传者撤回或等待到期。'; return;
     }
     try {
-      this.getUIContext().getPromptAction().showDialog({
+      await this.getUIContext().getPromptAction().showDialog({
         title: '撤回这条在线分享？',
         message: '撤回后链接将无法访问。本地活动日志不会受影响。已过期的链接也可以清理。',
         buttons: [
           { text: '取消', color: this.theme.actionText as string },
           { text: '撤回并清理记录', color: this.theme.errorText as string },
         ],
-      }).then((res: promptAction.ShowDialogSuccessResponse) => {
-        if (res.index === 1) this.revoke_(record);
+      }).then(async (res: promptAction.ShowDialogSuccessResponse): Promise<void> => {
+        if (res.index === 1) await this.revoke_(record);
       }).catch(() => { /* 点框外 = 取消 */ });
     } catch (e) { this.errorText = '无法打开确认框：' + (e as Error).message; }
   }
   /** 全页单请求防重入；成功后仅清理匹配链接的诊断引用，失败保留凭据及重试入口。 */
   private async revoke_(record: LogShareRecord): Promise<void> {
-    if (this.busy) return;
+    if (this.busy || this.loading || !this.loaded || !this.records.includes(record)) return;
     this.busy = true; this.busyId = record.url; this.errorText = ''; this.statusText = '';
     try {
       const result = await revokeShare(this.context, record);
       if (!result.ok) throw new Error(result.error);
+      // 服务已确认撤回。立即从当前可操作集合移除，后续凭据或页面刷新失败也不能复用旧链接。
+      this.records = this.records.filter((r: LogShareRecord): boolean =>
+        !(r.id === record.id && r.url === record.url && r.sharedAt === record.sharedAt));
       if (record.activityId !== undefined) {
         // 只取消绑定这条分享的任务，撤回旧链接不能影响同会话的新分析。
         if (getAiTaskSnapshot(record.activityId).shareId === record.id) cancelAiAnalysis(record.activityId);
@@ -102,6 +142,8 @@ struct LogShareHistoryPage {
     finally { this.busy = false; this.busyId = ''; }
   }
   private async copy_(record: LogShareRecord): Promise<void> {
+    if (this.busy || this.loading || !this.loaded || !this.records.includes(record)) return;
+    if (record.accepted === false) { this.errorText = '接收结果尚待核对，无法复制链接'; return; }
     try {
       await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, record.url));
       this.errorText = ''; this.statusText = '链接已复制';
@@ -110,39 +152,46 @@ struct LogShareHistoryPage {
   /** 历史内容不被当作任意外链执行，只打开已知分享服务，异步打开失败在页面提示。 */
   private async open_(record: LogShareRecord): Promise<void> {
     // 商店历史记录仍可复制和撤回；网页动作在函数边界拒绝，旧事件不能触发浏览器。
-    if (DistributionPolicy.isStore()) return;
+    if (DistributionPolicy.isStore() || record.accepted === false) return;
     if (logShareInstanceForUrl(record.url).length === 0) { this.errorText = '分享链接无效'; return; }
     const want: Want = { action: 'ohos.want.action.viewData', entities: ['entity.system.browsable'], uri: record.url };
     try { await this.context.startAbility(want); }
     catch (e) { this.errorText = '无法打开浏览器：' + (e as Error).message; }
   }
 
-  /** 每条记录只保留复制主动作，文件明细/网页核对/撤回在同一低频菜单。 */
-  private recordMenu_(record: LogShareRecord): void {
+  /** 具名入口与玩家“更多”共用同一菜单；返回索引只解释为实际展示过的按钮。 */
+  private async recordMenu_(record: LogShareRecord): Promise<void> {
     if (this.busy) return;
-    // 商店菜单不展示“网页查看”；两项索引独立映射，避免删除第一项后把撤回误接成打开。
-    if (DistributionPolicy.isStore()) {
-      this.getUIContext().getPromptAction().showActionMenu({ title: '分享选项', buttons: [
-        { text: this.expandedRecord === record.url ? '收起发送文件' : '查看发送文件', color: this.theme.actionText as string },
-        { text: record.token.length > 0 ? '撤回这条分享' : '为何不能撤回', color: this.theme.errorText as string },
-      ] }).then((result: promptAction.ActionMenuSuccessResponse): void => {
-        if (result.index === 0) this.expandedRecord = this.expandedRecord === record.url ? '' : record.url;
-        else if (result.index === 1) this.confirmRevoke_(record);
-      }).catch((): void => {});
-      return;
+    const files: promptAction.Button = {
+      text:this.expandedRecord === record.url ? '收起发送文件' : '查看发送文件', color:this.theme.actionText as string };
+    const revoke: promptAction.Button = {
+      text:record.token.length > 0 ? '撤回这条分享' : '为何不能撤回', color:this.theme.errorText as string };
+    const buttons: [promptAction.Button,promptAction.Button?,promptAction.Button?,promptAction.Button?] = [files,revoke];
+    let browser = -1;
+    let copy = -1;
+    if (record.accepted !== false) {
+      if (!DistributionPolicy.isStore()) {
+        browser = buttons.length;
+        const openButton: promptAction.Button = { text:'在网页中查看', color:this.theme.actionText as string };
+        buttons.push(openButton);
+      }
+      copy = buttons.length;
+      const copyButton: promptAction.Button = { text:'复制链接', color:this.theme.actionText as string };
+      buttons.push(copyButton);
     }
-    this.getUIContext().getPromptAction().showActionMenu({ title: '分享选项', buttons: [
-      { text: '在网页中查看', color: this.theme.actionText as string },
-      { text: this.expandedRecord === record.url ? '收起发送文件' : '查看发送文件', color: this.theme.actionText as string },
-      { text: record.token.length > 0 ? '撤回这条分享' : '为何不能撤回', color: this.theme.errorText as string },
-    ] }).then((result: promptAction.ActionMenuSuccessResponse): void => {
-      if (result.index === 0) this.open_(record);
-      else if (result.index === 1) this.expandedRecord = this.expandedRecord === record.url ? '' : record.url;
-      else if (result.index === 2) this.confirmRevoke_(record);
-    }).catch((): void => {});
+    const result = await this.getUIContext().getPromptAction().showActionMenu({title:'分享选项',buttons:buttons})
+      .catch((): undefined => undefined);
+    if (!result || result.index < 0 || result.index >= buttons.length || this.busy || this.loading || !this.loaded) return;
+    const current = this.records.find((r: LogShareRecord): boolean =>
+      r.id === record.id && r.url === record.url && r.sharedAt === record.sharedAt);
+    if (!current) { this.errorText = '分享记录已变化'; return; }
+    if (result.index === 0) this.expandedRecord = this.expandedRecord === record.url ? '' : record.url;
+    else if (result.index === 1) await this.confirmRevoke_(current);
+    else if (result.index === copy) await this.copy_(current);
+    else if (result.index === browser) await this.open_(current);
   }
   /** 缓存路由再次显示时补取确认主题，只更新显示快照。 */
-  onPageShow(): void { this.applyTheme_(); }
+  onPageShow(): void { this.bindSkill_(); this.applyTheme_(); }
 
   build() {
     Column() {

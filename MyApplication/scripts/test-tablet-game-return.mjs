@@ -4,14 +4,7 @@ import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 
-// 普通返回Want运行真实QA识别器；误入下载/文件业务时立即失败。
-const rejectedQa = new Proxy({}, {get: (_target, name) => assert.fail('普通返回Want误入整合包QA：' + String(name))});
-const modpackWant = makePureEtsLoader({
-  commons: rejectedQa, 'entry/ProductBuildProfile': {ProductBuildProfile: {product: 'default'}},
-  '@kit.AbilityKit': rejectedQa, '@kit.CoreFileKit': rejectedQa, feature_core: rejectedQa,
-  feature_system: rejectedQa, mods: rejectedQa, '../export/ExportArchiveIO': rejectedQa,
-  '../product/ProductIdentityCollector': rejectedQa,
-})('entry/src/main/ets/components/ModpackDownloadTestWant.ets');
+const rejectedQa = new Proxy({}, {get: (_target, name) => assert.fail('普通返回Want误入JDK资格探针：' + String(name))});
 const jdkWant = makePureEtsLoader({
   commons: {DiagnosticPolicy: {hasTestHooks: () => true}},
   '@kit.AbilityKit': rejectedQa, '@kit.CoreFileKit': rejectedQa, feature_system: rejectedQa,
@@ -121,9 +114,9 @@ console.log('PASS: production tablet dispatch returns immediately; result callba
   new Function('module', ...Object.keys(values), compiled)(module, ...Object.values(values));
   const subject = new module.exports();
   subject.tabletIndependentGameProcess = true;
-  subject.prefManager_ = { saveTabletIndependentGameProcess() {
+  subject.prefManager_ = { tabletIndependentGameProcess:true, saveTabletIndependentGameProcess(requested) {
     saves++;
-    return new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; });
+    return new Promise((resolve, reject) => { resolveSave = () => { this.tabletIndependentGameProcess=requested; resolve(); }; rejectSave = reject; });
   } };
   const first = subject.changeTabletProcess_(false);
   assert.equal(subject.tabletProcessSaving, true);
@@ -163,25 +156,18 @@ const entryCompiled = compiler.transpileModule('class Probe {\n' + entry.slice(e
 // 正式商店与侧载均经过原游戏退出身份守卫；只有侧载产品消费更新恢复参数。
 // 参数边界替身只记录真实调用，恢复结局仍由被抽取的生产onNewWant判定。
 for (const storeChannel of [false, true]) for (const value of [55, 0, -1, '55', 1.5, undefined]) {
-  const module = { exports: {} }; let recoveries = 0, updateRecoveries = 0, testWants = 0;
+  const module = { exports: {} }; let recoveries = 0, updateRecoveries = 0;
   const context = { filesDir: '/sandbox' };
   const want = { parameters: { gameExitActivityId: value,
     amclSideloadUpdateTransaction: 'fixture-transaction', amclSideloadUpdateNonce: 'fixture-nonce' } };
   const values = {
-    isInputObservationTestWant: () => false,
-    runModpackDownloadTestWant: modpackWant.runModpackDownloadTestWant,
-    runJdkQualificationWant: jdkWant.runJdkQualificationWant,
-    forwardInputObservationTestWant() { throw Error('ordinary game-return Want must not enter observation forwarding'); },
-    runLogShareConnectivityWant() {}, AppLogger: { info() {} }, TAG: 'test', LOG_DOMAIN_LAUNCH: 1,
+    ProductQa: { activate: () => false }, runJdkQualificationWant: jdkWant.runJdkQualificationWant,
+    AppLogger: { info() {} }, TAG: 'test', LOG_DOMAIN_LAUNCH: 1,
     AppStorage: { setOrCreate() {} }, ProductBuildProfile: { storeChannel },
     SideloadUpdateService: { get(actualContext) {
       assert.equal(actualContext, context);
       return { recover(id, nonce) { assert.equal(id, 'fixture-transaction'); assert.equal(nonce, 'fixture-nonce'); updateRecoveries++; } };
     } },
-    // TestWant是受控诊断入口，本fixture仅验证热启动传入原context/want，不代替其内部许可测试。
-    runSideloadUpdateTestWant(actualContext, actualWant) {
-      assert.equal(actualContext, context); assert.equal(actualWant, want); testWants++;
-    },
   };
   new Function('module', ...Object.keys(values), entryCompiled)(module, ...Object.values(values));
   const subject = new module.exports();
@@ -193,6 +179,5 @@ for (const storeChannel of [false, true]) for (const value of [55, 0, -1, '55', 
   subject.onNewWant(want, {});
   assert.equal(recoveries, value === 55 ? 1 : 0);
   assert.equal(updateRecoveries, storeChannel ? 0 : 1, '产品守卫必须实际隔离更新恢复');
-  assert.equal(testWants, 1, '热启动传递真实Want到受控诊断边界');
 }
 console.log('PASS: production Entry return Want invokes the existing guarded recovery entry');

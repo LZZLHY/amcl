@@ -3,7 +3,7 @@ import { ledgerManifestAsync, ledgerEndAsync, ledgerNextLaunchAtAsync, LedgerSta
   EvidenceFileRecord, EvidenceFileState, EvidenceRole, EvidenceTextCursor, listCrashMarkers } from 'commons';
 import { checkpointSessionCaptureAsync, readSessionCaptureAsync } from 'commons';
 import { SessionMarker } from './SessionMarker';
-import { readJvmExitEvidenceAsync } from './JvmExitEvidence';
+import { PHONE_JVM_EXIT_SOURCE, readJvmExitEvidenceAsync } from './JvmExitEvidence';
 
 /**
  * 归属字段只表示来源关系，不代表本局已捕获文件。SessionEvidence 会保留启动前旧
@@ -147,9 +147,11 @@ export async function prepareRecoveredSessionOutcome(filesDir: string, activityI
     outcome = { state: explicitOutcome.state, source: explicitOutcome.source,
       summary: explicitOutcome.summary, errorKind: explicitOutcome.errorKind };
   } else if (!unreadableCrash && exit !== undefined) {
+    // 手机记录只证明本局已请求正常退出，不能证明平台已经执行重启或首页已获焦。
+    const normalSummary = exit.source === PHONE_JVM_EXIT_SOURCE ? '手机游戏的 JVM 已请求正常退出（请求代码 0）'
+      : 'JVM 已请求正常退出（请求代码 0），独立游戏进程已结束；该记录不是操作系统退出状态证明';
     outcome = { state: exit.exitCode === 0 ? LedgerState.SUCCESS : LedgerState.FAILED,
-      source: 'session.jvm-exit', summary: exit.exitCode === 0
-        ? 'JVM 已请求正常退出（请求代码 0），独立游戏进程已结束；该记录不是操作系统退出状态证明'
+      source: 'session.jvm-exit', summary: exit.exitCode === 0 ? normalSummary
         : `JVM 已请求以非零代码 ${exit.exitCode} 退出，请查看本局日志` };
   } else if (!unreadableCrash && readable && stopAt >= 0 && stopAt > crashAt) {
     outcome = { state: LedgerState.SUCCESS, source: 'session.full-evidence', summary: '完整游戏日志记录了客户端正常关闭' };

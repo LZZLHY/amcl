@@ -65,7 +65,8 @@ def option_fragments(text):
     区块必须在同一生产函数内唯一且有序；结构变化时明确失败，不能从别处拼出测试替身。
     字符串所有者和最终 JavaVMInitArgs 一起进入夹具作用域，直到真实 CreateJavaVM 返回。
     """
-    body = function(text, 'int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,\n            const char* trustedAppFilesDir)')
+    # 四参重载只转发给拥有实际堆预检、选项装配及一次性认领的五参实现。
+    body = function(text, 'int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,\n            const char* trustedAppFilesDir, bool returnToLauncherOnExit)')
 
     def offset(marker):
         if body.count(marker) != 1:

@@ -3,6 +3,7 @@
  * 不静默削减每版本保留承诺；保留/删除仍由 ActivityLedger 的统一保护规则执行。
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { ledgerReadSnapshotAsync, LedgerState } from './ActivityLedger';
 import { acquireEvidenceLease, releaseEvidenceLease, writeEvidenceTextAtomic } from './EvidenceIo';
 
@@ -56,12 +57,18 @@ export async function readActivityStorage(filesDir: string, cancelled: () => boo
   return result;
 }
 
-/** 0 表示不提醒；配置损坏回到显式关闭，不据此删除任何内容。 */
-export function activityStorageAlert(filesDir: string): number {
+/** 明确缺少配置时按产品默认值处理；权限拒绝、损坏和无法核对的回读保留为未知。 */
+export function readConfirmedActivityAlert(filesDir: string, useDefaultIfMissing: boolean = true): number | undefined {
   try {
     const value = JSON.parse(fs.readTextSync(filesDir + '/logs/storage-alert.json')) as StorageAlert;
-    return Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : 0;
-  } catch (e) { return 0; }
+    return value && Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : undefined;
+  } catch (e) {
+    return useDefaultIfMissing && (e as BusinessError).code === 13900002 ? 0 : undefined;
+  }
+}
+/** 页面保留原显示偏好；严格查询与设置回执直接使用上面的读取方法。 */
+export function activityStorageAlert(filesDir: string): number {
+  return readConfirmedActivityAlert(filesDir) ?? 0;
 }
 export function setActivityStorageAlert(filesDir: string, bytes: number): void {
   if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('空间提醒阈值无效');

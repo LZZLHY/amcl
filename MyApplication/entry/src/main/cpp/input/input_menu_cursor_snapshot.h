@@ -34,6 +34,18 @@ AMCL_MENU_CURSOR_PUBLIC int inputBridge_getCommittedMenuCursorV1(AmclCommittedMe
 // GLFW产品wrapper显式报告actual游戏callback是否调用并返回；null callback只能更新current，不发布ACK。
 // 旧void回调前缀保持；追加receipt注册未启用时，既有直达callback继续按返回边界确认。
 typedef int (*AmclGlfwCursorReceiptCallbackV1)(void* window, double x, double y);
+// libentry 核真实承接鼠键，在原触点事务内用本次栈请求入队。整个准入调用同步完成，不保留request。
+typedef uint64_t (*AmclEnqueueMenuWarpV1)(void* request);
+typedef uint64_t (*AmclClaimMenuWarpV1)(AmclEnqueueMenuWarpV1 enqueue, void* request);
+AMCL_MENU_CURSOR_PUBLIC void inputBridge_setCarriedMenuWarpClaimV1(AmclClaimMenuWarpV1 claim);
+// 返回已入队定位的公共顺序，GLFW可在不重入回调的情况下用原有序泵派发到该处。
+AMCL_MENU_CURSOR_PUBLIC uint64_t inputBridge_requestGlfwMenuWarpV1(void* window, double x, double y);
+// 三种ABI共用触控准入。target为GLFW/L2实际窗口指针或SDL_WindowID，坐标为左上原点窗口像素。
+AMCL_MENU_CURSOR_PUBLIC uint64_t inputBridge_requestCarriedMenuWarpV1(uint32_t backend, uint64_t target, double x, double y);
+// SDL只在本次读取选择专用格式时，用1019标明承接指MOVE；普通有序Next仍返回1010。
+AMCL_MENU_CURSOR_PUBLIC int inputBridge_sdlNextCarriedThroughV1(int* type, int* a, int* b, int* c, int* d, uint64_t maxOrder);
+// L2同步设位只解算/交付到请求返回的order，普通nNext继续使用原帧边界。
+AMCL_MENU_CURSOR_PUBLIC int inputBridge_l2NextThroughV1(int* type, int* a, int* b, int* c, int* d, uint64_t maxOrder);
 AMCL_MENU_CURSOR_PUBLIC void inputBridge_setCursorReceiptCallbackV1(AmclGlfwCursorReceiptCallbackV1 callback);
 // typed absolute真实sink两阶段：begin在callback前同步current，complete在callback后才发布ACK。
 // cookie是consumer activation，logical/pub/WSI/order都用调用前已冻结值，禁止回调后解引用窗口。

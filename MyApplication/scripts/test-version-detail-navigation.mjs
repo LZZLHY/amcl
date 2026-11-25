@@ -50,7 +50,7 @@ const ast = compiler.createSourceFile(COMPONENT, source, compiler.ScriptTarget.L
 const owner = ast.statements.find(node => node.name?.getText(ast) === 'VersionManagerSheet');
 assert.ok(owner?.members, 'actual VersionManagerSheet must parse');
 const member = name => { const found = owner.members.find(node => node.name?.getText(ast) === name); assert.ok(found, 'actual member: ' + name); return found; };
-const methods = ['aboutToAppear', 'aboutToDisappear', 'mountStep_', 'managerNavigationBlocked_', 'requestManagerBack_',
+const methods = ['aboutToAppear', 'aboutToDisappear', 'closeRename', 'mountStep_', 'managerNavigationBlocked_', 'requestManagerBack_',
   'requestManagerClose_', 'openDetailEditor_', 'applyJdkChoice_', 'applyLanguageChoice_', 'filteredLanguages_',
   'backToDetail', 'backToList', 'openGameExport_', 'managerTitle_', 'managerContext_', 'handleSelectVersion', 'flashSwitched'];
 const fields = ['canRunGame', 'currentVersion', 'availableVersions', 'initialStep', 'initialResourceVersion', 'initialResourceKind',
@@ -129,8 +129,8 @@ function fixture(overrides = {}) {
     getPromptAction: () => ({ showToast: options => events.push(['prompt-toast', options.message]) }) };
   const coordinator = { subscribe: callback => { events.push(['subscribe']); return () => events.push(['unsubscribe']); } };
   const module = { exports: {} };
-  new Function('module', 'SheetPageMotion', 'ResourceKind', 'GAME_LANGUAGES', 'getGameExportCoordinator', subjectCode)(
-    module, SheetPageMotion, { MOD: 'mod' }, GAME_LANGUAGES, () => coordinator);
+  new Function('module', 'SheetPageMotion', 'ResourceKind', 'GAME_LANGUAGES', 'getGameExportCoordinator', 'LauncherSkillBus', subjectCode)(
+    module, SheetPageMotion, { MOD: 'mod' }, GAME_LANGUAGES, () => coordinator, makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets').LauncherSkillBus);
   const view = new module.exports();
   Object.assign(view, {
     initialStep: 'detail', initialResourceVersion: 'managed-instance', currentVersion: 'home-selected',
@@ -141,7 +141,7 @@ function fixture(overrides = {}) {
     onRegisterExportDismiss: callback => { registered.push(callback); index.register(callback); }, onClose: () => events.push(['close']),
     onSaveVersionJdk: (version, value) => events.push(['save-jdk', version, value]),
     onSaveVersionGameLang: (version, value) => events.push(['save-language', version, value]),
-    onSelectVersion: version => events.push(['select-version', version]),
+    onSelectVersion: async version => { events.push(['select-version', version]); return true; },
     safeToast: (...args) => events.push(['toast', ...args]), ...overrides,
   });
   view.aboutToAppear();
@@ -186,11 +186,11 @@ await group('新版编辑页保留主线紧凑标题与固定实例，列表计�
   }
 });
 
-await group('切换版本执行真实Toast反馈，不以旧副标题计时器代替选择事件', () => {
-  const f = fixture(); f.view.handleSelectVersion('home-selected');
+await group('切换版本执行真实Toast反馈，不以旧副标题计时器代替选择事件', async () => {
+  const f = fixture(); await f.view.handleSelectVersion('home-selected');
   assert.deepEqual(f.events.filter(event => event[0] === 'select-version'), []);
   assert.deepEqual(f.events.filter(event => event[0] === 'prompt-toast'), [['prompt-toast', '已是当前版本']]);
-  f.view.handleSelectVersion('managed-instance');
+  await f.view.handleSelectVersion('managed-instance');
   assert.deepEqual(f.events.filter(event => event[0] === 'select-version'), [['select-version', 'managed-instance']]);
   assert.deepEqual(f.events.filter(event => event[0] === 'prompt-toast'),
     [['prompt-toast', '已是当前版本'], ['prompt-toast', '已切换到 managed-instance ✓']]);
@@ -222,37 +222,37 @@ await group('无运行权限、空详情、非详情、已有转场及未知kind
 });
 
 for (const [kind, methodName, field, valid] of [['jdk', 'applyJdkChoice_', 'versionJdk', '21'], ['language', 'applyLanguageChoice_', 'versionGameLang', 'en_us']]) {
-  await group(kind + '选择真实详情owner立即保存一次后返回；动画结束才卸载临时槽并保留详情', () => {
-    const f = fixture(); enter(f, kind); f.view.currentVersion = 'changed-home'; f.view[methodName](valid);
+  await group(kind + '选择真实详情owner立即保存一次后返回；动画结束才卸载临时槽并保留详情', async () => {
+    const f = fixture(); enter(f, kind); f.view.currentVersion = 'changed-home'; await f.view[methodName](valid);
     assert.deepEqual(f.saves(), [['save-' + (kind === 'jdk' ? 'jdk' : 'language'), 'managed-instance', valid]]);
     assert.equal(f.view[field], valid); assert.equal(f.view.currentStep, 'detail');
     assert.equal(f.view.detailEditorMounted_, true); assert.equal(f.view.detailEditorKind_, kind);
     assert.equal(f.view.detailVersion, 'managed-instance'); assert.equal(f.view.detailMounted_, true);
-    f.view[methodName](valid); assert.equal(f.saves().length, 1); f.view.openDetailEditor_('jvm'); assert.equal(f.view.detailEditorKind_, kind);
+    await f.view[methodName](valid); assert.equal(f.saves().length, 1); f.view.openDetailEditor_('jvm'); assert.equal(f.view.detailEditorKind_, kind);
     f.finishMotion(); assert.equal(f.view.detailEditorMounted_, false); assert.equal(f.view.detailEditorKind_, '');
     assert.equal(f.view.detailMounted_, true); assert.equal(f.view.detailVersion, 'managed-instance');
     f.view.openDetailEditor_('jvm'); assert.equal(f.view.detailEditorKind_, 'jvm');
   });
-  await group(kind + '无效候选、错误页与动画中迟到选择不写；同值返回不重复保存', () => {
-    const f = fixture(); f.view[methodName](valid); assert.deepEqual(f.saves(), []);
-    f.view.openDetailEditor_(kind); f.view[methodName](valid); assert.deepEqual(f.saves(), []); f.finishMotion();
-    f.view[methodName]('unknown-value'); assert.equal(f.view.currentStep, kind); assert.deepEqual(f.saves(), []);
-    f.view[field] = valid; f.view[methodName](valid); assert.deepEqual(f.saves(), []); assert.equal(f.view.currentStep, 'detail');
+  await group(kind + '无效候选、错误页与动画中迟到选择不写；同值返回不重复保存', async () => {
+    const f = fixture(); await f.view[methodName](valid); assert.deepEqual(f.saves(), []);
+    f.view.openDetailEditor_(kind); await f.view[methodName](valid); assert.deepEqual(f.saves(), []); f.finishMotion();
+    await f.view[methodName]('unknown-value'); assert.equal(f.view.currentStep, kind); assert.deepEqual(f.saves(), []);
+    f.view[field] = valid; await f.view[methodName](valid); assert.deepEqual(f.saves(), []); assert.equal(f.view.currentStep, 'detail');
   });
-  await group(kind + '同步保存失败保留原确认值与子页，不误报返回', () => {
+  await group(kind + '同步保存失败保留原确认值与子页，不误报返回', async () => {
     const callback = kind === 'jdk' ? 'onSaveVersionJdk' : 'onSaveVersionGameLang';
     const f = fixture({ [callback]: () => { throw new Error('save failed'); } }); enter(f, kind); const old = f.view[field];
-    f.view[methodName](valid); assert.equal(f.view[field], old); assert.equal(f.view.currentStep, kind);
+    await f.view[methodName](valid); assert.equal(f.view[field], old); assert.equal(f.view.currentStep, kind);
     assert.equal(f.view.pageMotion_.moving, false); assert.equal(f.events.filter(event => event[0] === 'toast').length, 1);
   });
 }
 
-await group('JDK跟随全局/自动与语言跟随全局保持真实哨兵语义', () => {
+await group('JDK跟随全局/自动与语言跟随全局保持真实哨兵语义', async () => {
   for (const value of ['', 'auto']) {
-    const f = fixture(); f.view.versionJdk = '17'; enter(f, 'jdk'); f.view.applyJdkChoice_(value);
+    const f = fixture(); f.view.versionJdk = '17'; enter(f, 'jdk'); await f.view.applyJdkChoice_(value);
     assert.deepEqual(f.saves(), [['save-jdk', 'managed-instance', value]]);
   }
-  const f = fixture(); f.view.versionGameLang = 'en_us'; enter(f, 'language'); f.view.applyLanguageChoice_('');
+  const f = fixture(); f.view.versionGameLang = 'en_us'; enter(f, 'language'); await f.view.applyLanguageChoice_('');
   assert.deepEqual(f.saves(), [['save-language', 'managed-instance', '']]);
 });
 

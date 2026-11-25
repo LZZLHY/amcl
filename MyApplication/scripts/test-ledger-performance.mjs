@@ -27,7 +27,7 @@ const tests = [
   'test-version-panel-mount.mjs', 'test-activity-pin-async.mjs', 'test-activity-storage-async.mjs',
   'test-log-retention-async.mjs', 'test-activity-delete-async.mjs', 'test-launcher-startup-ready.mjs',
   'test-launcher-idle-work.mjs',
-  'test-ledger-stale-receipts.mjs', 'test-logshare-probe-async.mjs',
+  'test-ledger-stale-receipts.mjs',
   'test-session-runtime-protection.mjs',
 ];
 for (const test of tests) {

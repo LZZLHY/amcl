@@ -42,7 +42,7 @@ function sheetFixture(options = {}) {
   });
   Object.assign(p, { alive: true, generation: 0, advanced: options.advanced ?? false, context: {},
     draft: { selectedFileIds: ['one'], manifest: { title: 'fixture' } }, destination: 'logshare', requestAi: false,
-    phase: 'select', onBusyChanged() {}, onShared() {}, copy_: async () => { copies++; },
+    phase: 'select', onBusyChanged() {}, onShared() {}, onShareOutcome(state){ this.lastOutcome=state; }, copy_: async () => { copies++; },
     startAi_: () => { ai++; }, fail_(e) { throw e; },
   });
   return { p, counts: () => ({ sends, disposed, remembers, ai, copies }) };

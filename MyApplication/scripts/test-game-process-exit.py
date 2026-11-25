@@ -22,7 +22,10 @@ def main():
         for name in targets:
             binary = Path(directory) / (Path(name).stem + ('.exe' if os.name == 'nt' else ''))
             compile_cpp(root / 'entry/src/main/cpp/tests/host' / name, binary)
-            subprocess.run([str(binary)], check=True, timeout=30)
+            arguments = [str(binary)]
+            if name == 'game_process_exit_posix_test.cpp':
+                arguments.append(directory)
+            subprocess.run(arguments, check=True, timeout=30)
     if os.name == 'nt':
         print('SKIP POSIX fd/flock/exit integration on Windows; run this script on a POSIX host.', flush=True)
 

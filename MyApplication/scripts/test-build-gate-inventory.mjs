@@ -151,7 +151,9 @@ function inventoryIssues({ currentCatalog = catalog, currentSources = sources } 
 test('实际入口与catalog保留完整基线；只导出清单而不执行gate', () => {
   assert.equal(baseline.schema, 1);
   assert.equal(baseline.sourceCommit, '8ee89d352c13bfb40db9e92773578af3f454b67b');
-  assert.equal(baseline.preflightGroups.length, 42);
+  // 原始基线的 42 组中有一组随旧设备 QA 整体退役，其余入口和调用见证继续逐条比对。
+  assert.deepEqual(baseline.retiredPreflightGroups.map(group => group.id), ['device-automation']);
+  assert.equal(baseline.preflightGroups.length, 41);
   assert.equal(baseline.hvigorTasks.length, 5);
   const issues = inventoryIssues();
   assert.deepEqual(issues, [], issues.join('\n'));

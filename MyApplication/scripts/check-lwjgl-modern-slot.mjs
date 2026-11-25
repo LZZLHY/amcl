@@ -76,9 +76,8 @@ if (manifest.deploymentDirectory !== 'lwjgl-ohos' || manifest.nativeSuffix !== '
 }
 // 集合大小由模块配套 policy 精确核对，新增模块必须同时声明其提供方，不再保留会过期的数字。
 if (!Array.isArray(manifest.jars) || manifest.jars.length === 0) fail('modern slot must contain jars');
-if (manifest.jars.some((jar) => jar.name === 'lwjgl-jemalloc.jar')) {
-  fail('lwjgl-jemalloc.jar must stay out of the modern slot: no OHOS libjemalloc.so exists and LWJGL 3.4.2+ cannot fall back once the nested allocator instantiates');
-}
+// Java 绑定、部署清单和完整 OHOS 原生提供方须一起交付。
+if (!manifest.jars.some((jar) => jar.name === 'lwjgl-jemalloc.jar')) fail('modern slot must include lwjgl-jemalloc.jar');
 if (!manifest.jars.some((jar) => jar.name === 'lwjgl-sdl.jar')) fail('modern slot must include lwjgl-sdl.jar');
 if (!manifest.jars.some((jar) => jar.name === 'lwjgl-spng.jar')) fail('modern slot must include lwjgl-spng.jar');
 if (!manifest.jars.some((jar) => jar.name === 'lwjgl-nanovg.jar')) fail('modern slot must include lwjgl-nanovg.jar');

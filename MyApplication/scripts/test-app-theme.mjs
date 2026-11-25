@@ -384,9 +384,11 @@ try {
     const native = [];
     const Class = members(I, ['aboutToAppear'], { ThemeSelection, ThemeMode: M,
       ConfigurationConstant: { ColorMode: { COLOR_MODE_DARK: 0 } }, resolveTheme: theme.resolveTheme,
-      applyNativeTheme: value => native.push(value.accentId), UiMotion: { reduced: () => false } });
+      applyNativeTheme: value => native.push(value.accentId), UiMotion: { reduced: () => false },
+      ProductQa: {bindSurface(){},bind(){}} });
     const page = new Class(); Object.assign(page, { currentColorMode: 1, getPrefManager_: () => f.manager(),
-      onHomeTabVisibilityChanged_: () => {} });
+      // 首帧用例只读取真实偏好确认态；挂载时注册的独立业务宿主不触发主题读取。
+      bindShellSkills_(){}, bindSettingsSkill_(){}, bindLibrarySkill_(){}, onHomeTabVisibilityChanged_: () => {} });
     page.aboutToAppear();
     assert.equal(page.themeAccent, f.initial.accent);
     assert.equal(page.themeMode, f.initial.mode);

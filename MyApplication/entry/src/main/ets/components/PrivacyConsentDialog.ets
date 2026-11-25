@@ -26,6 +26,7 @@ const TAG = 'PrivacyConsentDialog';
 @Component
 export struct PrivacyConsentDialog {
   @Prop theme: ThemeColors = {} as ThemeColors;
+  @Prop saving: boolean = false;
   onAgree: () => void = () => {};
   onDisagree: () => void = () => {};
 
@@ -97,10 +98,12 @@ export struct PrivacyConsentDialog {
 
         Row({ space: 12 }) {
           Button('不同意并退出')
+            .enabled(!this.saving)
             .type(ButtonType.Capsule).height(42).fontSize(15).layoutWeight(1)
             .fontColor(this.theme.textSecondary).backgroundColor(this.theme.bgInput)
             .onClick(() => { this.onDisagree() })
-          Button('同意并继续')
+          Button(this.saving ? '正在保存…' : '同意并继续')
+            .enabled(!this.saving)
             .type(ButtonType.Capsule).height(42).fontSize(15).fontWeight(600).layoutWeight(1)
             .fontColor(this.theme.textOnPrimary).backgroundColor(this.theme.actionPrimary)
             .onClick(() => { this.onAgree() })

@@ -71,6 +71,8 @@ assert.ok(evaluateDesktopCompletionSources(callbacks.replace('window->positionCb
 assert.ok(evaluateDesktopCompletionSources(callbacks,page.replaceAll('await this.sessionHost.enterWindow(this.frontendLease, this.context)','Promise.resolve(new ProductGameWindowSnapshot())'),ability).length);
 assert.ok(evaluateDesktopCompletionSources(callbacks,page.replace('this.sessionHost.runLaunch(', 'this.otherGate.run('),ability).length);
 assert.ok(evaluateDesktopCompletionSources(callbacks,page,ability.replaceAll('testNapi.desktopGamepadFocus(false);','')).length);
+assert.ok(evaluateDesktopCompletionSources(callbacks,page,ability.replace('testNapi.desktopGamepadFocus(false, false);',
+  'testNapi.desktopGamepadFocus(false);')).some(issue => issue.includes('onDestroy()')));
 assert.deepEqual(evaluateMirror(header, patch), []);
 assert.ok(evaluateMirror(header.replace('int32_t connected', 'int64_t connected'), patch).length);
 assert.ok(evaluateMirror(header, '').length);

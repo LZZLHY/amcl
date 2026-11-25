@@ -259,3 +259,21 @@
 
 # 显式辅助SDL角色：合法呈现线程/实际实例准入，视频副作用拒绝，主SDL ABI1保持。
 0030-openharmony-auxiliary-sdl-role.patch
+
+# 手机主游戏 SDL 只向系统剪贴板同步非空纯文本。
+0031-openharmony-phone-clipboard-write.patch
+
+# 主游戏与辅助 SDL 共用 joystick 子系统，按宿主手柄路由在无视频窗口时也可枚举和更新。
+0034-mobile-gamepad-joystick-subsystem.patch
+
+# 电脑窗口按系统回执同步全屏，使用桌面坐标恢复菜单鼠标。
+0032-openharmony-desktop-fullscreen-sync.patch
+
+# 当前呈现窗口的 SDL 文本请求驱动桌面物理输入法。
+0033-openharmony-presented-text-input-demand.patch
+
+# 触控承接中的菜单主动设位同步SDL状态、移动事件和全局/窗口查询。
+0035-openharmony-carried-menu-cursor-position.patch
+
+# 主游戏和辅助 SDL 按各自已消费的版本接收手柄变化，稳定轮询免整槽查询。
+0036-openharmony-gamepad-change-query.patch

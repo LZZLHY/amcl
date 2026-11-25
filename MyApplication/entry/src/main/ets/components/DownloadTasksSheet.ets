@@ -30,11 +30,15 @@ import {
   DownloadTaskRegistry, RegistryListener, getDownloadTaskRegistry,
 } from 'feature_core';
 import { UnifiedTaskView, TaskCategory } from 'feature_core';
-import { ThemeColors } from 'commons';
+import { DistributionPolicy, ThemeColors } from 'commons';
+import { getGameExportCoordinator } from '../export/GameExportCoordinator';
 import { AppIconName } from 'commons';
 import { AppIcon } from './AppIcon';
 import { ImmersiveTitleScaffold } from './ImmersiveTitleScaffold';
 import { TaskCard } from './TaskCard';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { isQueuedRetry } from '../launcherskill/LibraryResult';
+import { TaskPanelSkill } from '../launcherskill/TaskPanelSkill';
 import { TaskDetailView } from './TaskDetailView';
 import { DownloadTaskSnapshot, makeDownloadTaskSnapshot } from './DownloadTaskSnapshot';
 
@@ -69,13 +73,21 @@ export struct DownloadTasksSheet {
 
   /** 关闭 sheet（用户点击 ✕ 或所有任务已 purge） */
   onClose: () => void = () => {}
-  /** 自更新嵌入宿主先退出原弹窗，再回完整检查入口；普通宿主使用下方缺省路由。 */
-  onAppUpdateRecovery?: () => void
 
   private registry_: DownloadTaskRegistry = getDownloadTaskRegistry()
   private listener_: RegistryListener = () => { this.refresh() }
 
+  private skillAlive_: boolean = false;
   aboutToAppear(): void {
+    this.skillAlive_=true
+    const active=():boolean=>this.skillAlive_ && AppStorage.get<boolean>('appInForeground')===true
+    const skill=new TaskPanelSkill(this.registry_,{active:active,detail:(id:string):void=>this.openDetail_(id),recover:(view:UnifiedTaskView):Promise<Record<string,Object>>=>this.recoverTask_(view),
+      confirm:async(label:string):Promise<boolean>=>{
+        const decision=await this.getUIContext().getPromptAction().showDialog({title:label,buttons:[
+          {text:'取消',color:this.theme.textSecondary as string},{text:'确认',color:this.theme.actionText as string}]}).catch(():undefined=>undefined)
+        return decision?.index===1 && active()
+      }})
+    LauncherSkillBus.bind('taskPanel',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>skill.run(method,args),active)
     this.registry_.addListener(this.listener_)
     this.refresh()
     this.openInitialTask_()
@@ -86,6 +98,8 @@ export struct DownloadTasksSheet {
   }
 
   aboutToDisappear(): void {
+    this.skillAlive_=false
+    LauncherSkillBus.unbind('taskPanel',this)
     this.registry_.removeListener(this.listener_)
   }
 
@@ -256,26 +270,48 @@ export struct DownloadTasksSheet {
     return this.snapshot.failed.length
   }
 
-  /** 此处仅发送用户明确恢复意图；Index重新核实候选，用户重新接受后才建立新Attempt。 */
-  /** 导出恢复回原活动页面重新检查/另存，绝不从下载卡片重用旧URI；更新仍沿原流程。 */
-  private recoverTask_(view: UnifiedTaskView): void {
-    if (view.category === TaskCategory.GAME_EXPORT) {
-      if (!view.exportTaskId || !view.exportMcRoot || !view.exportVersionId) return
-      this.onClose()
-      this.getUIContext().getRouter().pushUrl({ url: 'pages/GameExportPage', params: {
-        'taskId': view.exportTaskId, 'mcRoot': view.exportMcRoot, 'versionId': view.exportVersionId,
-        'versionIsolation': view.exportVersionIsolation,
-      } }).catch((): void => { /* 路由失败不创建新任务，原导出记录与失败事实继续保留。 */ })
-      return
-    }
-    this.recoverAppUpdate_()
-  }
+  /** 原任务卡交接给完整产品页面；不复用旧文档授权或直接重启安装。只以实际目标和参数签收。 */
+  private async recoverTask_(view: UnifiedTaskView): Promise<Record<string,Object>> {
+    const id = view.id, activity = view.startedAtMs, parent = view.parentActivityId;
+    const owner = this.registry_.getAdapter(id), queuedRetry = isQueuedRetry(view);
+    const current = (): boolean => owner !== null && this.registry_.getAdapter(id) === owner &&
+      owner.view === view && view.startedAtMs === activity && view.parentActivityId === parent && isQueuedRetry(view) === queuedRetry && view.canRecoverExternally;
+    if (!current() || !this.skillAlive_) return { 'state':'failed','reason':'taskChanged' };
+    let page: string;
+    let params: Record<string,Object>;
+    try {
+      if (view.category === TaskCategory.GAME_EXPORT) {
+        const taskId = view.exportTaskId, root = view.exportMcRoot, version = view.exportVersionId;
+        if (!/^[0-9]+-[a-zA-Z0-9-]+$/.test(taskId) || id !== 'export-prepare:' + taskId || !root || !version) {
+          return { 'state':'failed','reason':'missingExportIdentity' };
+        }
+        const exportOwner = getGameExportCoordinator();
+        const restored = await exportOwner.restoreTask(taskId);
+        const task = exportOwner.getTask();
+        if (!restored || !task || task.id !== taskId || task.request.mcRoot !== root || task.request.versionId !== version ||
+          !current() || !this.skillAlive_) return { 'state':'failed','reason':'originalExportUnavailable' };
+        page = 'pages/GameExportPage';
+        params = { 'taskId':taskId, 'mcRoot':root, 'versionId':version, 'versionIsolation':view.exportVersionIsolation };
+      } else if (view.category === TaskCategory.APP_UPDATE && !DistributionPolicy.isStore()) {
+        if (!/^app-update:[0-9a-f]{64}$/i.test(id) || !Number.isSafeInteger(parent) || parent <= 0) {
+          return { 'state':'failed','reason':'missingUpdateIdentity' };
+        }
+        page = 'pages/SoftwareUpdatePage';
+        params = { 'recoveryTaskId':id, 'recoveryActivityId':activity, 'recoveryParentId':parent };
+      } else return { 'state':'failed','reason':'recoveryUnavailable' };
 
-  private recoverAppUpdate_(): void {
-    if (this.onAppUpdateRecovery !== undefined) { this.onAppUpdateRecovery(); return }
-    this.onClose()
-    AppStorage.setOrCreate<number>('amclUpdateRecoveryRequested', Date.now())
-    this.getUIContext().getRouter().back({ url: 'pages/Index' })
+      const nav = this.getUIContext().getRouter();
+      this.onClose();
+      await nav.pushUrl({ url:page, params:params });
+      const target = nav.getState().name;
+      const actual = nav.getParams() as Record<string,Object> | undefined;
+      if ((target !== page && 'pages/' + target !== page) || !Object.keys(params).every((key:string): boolean => actual?.[key] === params[key]) ||
+        !current()) return { 'state':'unknown','reason':'destinationUnconfirmed' };
+      return { 'state':'needsUser','reason':'continueInLauncher','destinationReached':true,'destination':page,
+        'taskId':id,'activityId':activity,'parentActivityId':parent };
+    } catch (_) {
+      return { 'state':'unknown','reason':'destinationUnconfirmed','taskId':id,'activityId':activity };
+    }
   }
 
   @Builder

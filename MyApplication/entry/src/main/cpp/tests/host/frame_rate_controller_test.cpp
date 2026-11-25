@@ -5,10 +5,13 @@
  */
 #include "ohos_frame_rate_hint.h"
 #include <ace/xcomponent/native_interface_xcomponent.h>
+#include <native_vsync/native_vsync.h>
 #include <window_manager/oh_display_manager.h>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -21,6 +24,67 @@ static std::vector<int> graphicsForeground;
 static uint32_t displayRate = 60;
 static unsigned displayQueries = 0;
 static int nextSdkResult = 0;
+
+/** VSync替身记录句柄、一次性回调和故障，不模拟调度策略。 */
+struct VsyncSession {
+    OH_NativeVSync handle;
+    OH_NativeVSync_FrameCallback pendingFrame = nullptr;
+    void* frameToken = nullptr;
+    unsigned destroys = 0;
+};
+
+static std::deque<VsyncSession> vsyncSessions;
+static std::vector<std::array<int, 3>> vsyncRanges;
+static unsigned vsyncRequests = 0;
+static int nextVsyncRangeResult = 0;
+static int nextVsyncRequestResult = 0;
+static bool failNextVsyncCreate = false;
+
+static void dispatchVsyncFrame(VsyncSession& session) {
+    auto callback = session.pendingFrame;
+    session.pendingFrame = nullptr;
+    if (callback != nullptr) {
+        callback(0, session.frameToken);
+    }
+}
+
+extern "C" OH_NativeVSync* OH_NativeVSync_Create(const char*, unsigned int) {
+    if (failNextVsyncCreate) {
+        failNextVsyncCreate = false;
+        return nullptr;
+    }
+    const auto index = static_cast<int>(vsyncSessions.size());
+    vsyncSessions.push_back({{index}});
+    return &vsyncSessions.back().handle;
+}
+
+extern "C" void OH_NativeVSync_Destroy(OH_NativeVSync* vsync) {
+    auto& session = vsyncSessions.at(vsync->identity);
+    ++session.destroys;
+    // 模拟SDK销毁等待在途回调；毁点若仍持控制器锁，宿主用例会超时。
+    dispatchVsyncFrame(session);
+}
+
+extern "C" int32_t OH_NativeVSync_SetExpectedFrameRateRange(
+    OH_NativeVSync*, OH_NativeVSync_ExpectedRateRange* range) {
+    vsyncRanges.push_back({range->min, range->max, range->expected});
+    const int result = nextVsyncRangeResult;
+    nextVsyncRangeResult = 0;
+    return result;
+}
+
+extern "C" int32_t OH_NativeVSync_RequestFrame(
+    OH_NativeVSync* vsync, OH_NativeVSync_FrameCallback callback, void* token) {
+    ++vsyncRequests;
+    const int result = nextVsyncRequestResult;
+    nextVsyncRequestResult = 0;
+    if (result == 0) {
+        auto& session = vsyncSessions.at(vsync->identity);
+        session.pendingFrame = callback;
+        session.frameToken = token;
+    }
+    return result;
+}
 
 /** 外部SDK真实声明接缝：仅记录调用及事先指定的一次结果，不实现生产去重算法。 */
 extern "C" int32_t OH_NativeXComponent_SetExpectedFrameRateRange(
@@ -76,6 +140,7 @@ int main() {
     check(applications.empty() && !RefreshExpectedFrameRateHintForDisplayRate(60, "cold"), "COLD_NO_SDK");
     RegisterFrameRateComponent(&first); SetFrameRateSurfaceReady(&first, true, "surface-created");
     check(applications.size() == 1, "FIRST_READY_APPLIED"); expectRange(&first, 30, 60, 60);
+    check(vsyncSessions.empty() && vsyncRequests == 0, "AUTO_MODE_NO_PINNER");
     for (unsigned i = 0; i < 100; ++i) check(RefreshExpectedFrameRateHintForDisplayRate(60, "display-change"), "REFRESH_ACCEPTED");
     check(applications.size() == 1, "STABLE_REFRESH_SINGLE_SDK");
     check(logCount("frame-rate-hint-unchanged") == 0, "STABLE_REFRESH_DIAGNOSTIC_QUIET");
@@ -90,35 +155,157 @@ int main() {
     displayRate = 90;
     check(RefreshExpectedFrameRateHint("compat-default-display"), "COMPAT_QUERY_ACCEPTED");
     check(displayQueries > 0 && applications.size() == 4, "COMPAT_QUERY_STILL_RUNS");
-    check(SetRuntimeFrameRateCap(60, "runtime-cap"), "CAP_CHANGE"); expectRange(&first, 30, 60, 60);
+    check(SetRuntimeFrameRateCap(240, "legacy-cap-240"), "HIGH_LEGACY_CAP_ACCEPTED");
+    expectRange(&first, 30, 90, 90);
+    check(SetRuntimeFrameRateCap(60, "runtime-cap"), "CAP_CHANGE");
+    expectRange(&first, 30, 60, 60);
+    check(vsyncSessions.empty(), "LEGACY_CAP_NEVER_PINNED");
     const auto afterCap = applications.size();
-    check(SetRuntimeFrameRateCap(60, "runtime-cap"), "SAME_CAP"); check(applications.size() == afterCap, "SAME_CAP_QUIET");
-    SetFrameRateFocused(&first, false, "blur"); expectRange(&first, 30, 30, 30);
-    const auto afterBlur = applications.size(); SetFrameRateFocused(&first, false, "blur");
+    check(SetRuntimeFrameRateCap(60, "runtime-cap"), "SAME_CAP");
+    check(applications.size() == afterCap, "SAME_CAP_QUIET");
+    check(RefreshExpectedFrameRateHintForDisplayRate(90, "beyond-legacy-cap", 120),
+          "FIXED_VALUE_RECORDED");
+    expectRange(&first, 30, 60, 60);
+    check(vsyncSessions.empty(), "LEGACY_HARD_CAP_BLOCKS_FIXED_REQUEST");
+    check(RefreshExpectedFrameRateHintForDisplayRate(90, "clear-fixed", 0), "CLEAR_FIXED");
+    check(SetRuntimeFrameRateCap(0, "clear-legacy-cap"), "CAP_CLEARED");
+
+    // 显式 MAX 同时约束组件提示和面板投票，清除它以后恢复普通的固定档行为。
+#ifdef _WIN32
+    _putenv_s("AMCL_OHOS_FRAME_RATE_MAX", "60");
+#else
+    setenv("AMCL_OHOS_FRAME_RATE_MAX", "60", 1);
+#endif
+    check(RefreshExpectedFrameRateHintForDisplayRate(120, "explicit-maximum", 120), "MAX_APPLIED");
+    expectRange(&first, 30, 60, 60);
+    check(vsyncSessions.empty(), "MAX_BLOCKS_PANEL_VOTE");
+    clearEnvironment();
+    check(RefreshExpectedFrameRateHintForDisplayRate(90, "reset-explicit-maximum", 0), "MAX_CLEARED");
+
+    for (int invalid : {-1, 29, 145, 165, 240}) {
+        check(!RefreshExpectedFrameRateHintForDisplayRate(120, "invalid-fixed", invalid),
+              "NATIVE_FIXED_RANGE_REJECTED");
+    }
+    check(vsyncSessions.empty(), "INVALID_VALUES_NEVER_REACH_NATIVE_VSYNC");
+
+    failNextVsyncCreate = true;
+    check(RefreshExpectedFrameRateHintForDisplayRate(60, "create-failure", 144),
+          "CREATE_FAILURE_KEEPS_LEGACY_HINT");
+    expectRange(&first, 30, 60, 60);
+    check(vsyncSessions.empty(), "CREATE_FAILURE_HAS_NO_HANDLE");
+
+    nextVsyncRangeResult = -1;
+    check(RefreshExpectedFrameRateHintForDisplayRate(60, "range-failure", 144),
+          "RANGE_FAILURE_KEEPS_LEGACY_HINT");
+    expectRange(&first, 30, 60, 60);
+    check(vsyncSessions.size() == 1 && vsyncSessions.back().destroys == 1 && vsyncRequests == 0,
+          "RANGE_FAILURE_DESTROYS_CREATED_HANDLE");
+
+    nextVsyncRequestResult = -1;
+    check(RefreshExpectedFrameRateHintForDisplayRate(60, "request-failure", 144),
+          "REQUEST_FAILURE_KEEPS_LEGACY_HINT");
+    expectRange(&first, 30, 60, 60);
+    check(vsyncSessions.size() == 2 && vsyncSessions.back().destroys == 1 &&
+          vsyncRanges.back() == std::array<int, 3>{0, 0, 0},
+          "REQUEST_FAILURE_RESETS_VOTE_AND_DESTROYS_HANDLE");
+
+    check(RefreshExpectedFrameRateHintForDisplayRate(60, "retry-fixed", 144), "FIXED_RETRY");
+    expectRange(&first, 144, 144, 144);
+    check(vsyncSessions.size() == 3 && vsyncRanges.back() == std::array<int, 3>{144, 144, 144},
+          "EXACT_SUPPORTED_FIXED_RATE_CAN_EXCEED_INSTANTANEOUS_REFRESH");
+    auto& firstVote = vsyncSessions.back();
+    const auto beforeCallback = vsyncRequests;
+    dispatchVsyncFrame(firstVote);
+    check(vsyncRequests == beforeCallback + 1, "CALLBACK_REARMS_ONLY_ONE_NATIVE_REQUEST");
+
+    nextVsyncRequestResult = -1;
+    dispatchVsyncFrame(firstVote);
+    check(firstVote.destroys == 0 && vsyncRanges.back() == std::array<int, 3>{0, 0, 0},
+          "REARM_FAILURE_RESETS_VOTE_WITHOUT_DESTROYING_FROM_CALLBACK");
+    const auto beforeRearm = applications.size();
+    check(RefreshExpectedFrameRateHintForDisplayRate(60, "rearm-retry", 144), "REARM_RETRIED");
+    check(vsyncSessions.size() == 4 && firstVote.destroys == 1 && applications.size() == beforeRearm,
+          "SAME_XCOMPONENT_POLICY_DOES_NOT_SKIP_VSYNC_RECOVERY");
+
+    auto& focusedVote = vsyncSessions.back();
+    const auto beforeBlur = vsyncRequests;
+    SetFrameRateFocused(&first, false, "blur");
+    expectRange(&first, 30, 30, 30);
+    check(focusedVote.destroys == 1 && vsyncRequests == beforeBlur &&
+          vsyncRanges.back() == std::array<int, 3>{0, 0, 0},
+          "BLUR_DESTROYS_AFTER_UNLOCK_WITHOUT_REARMING_STALE_CALLBACK");
+    const auto afterBlur = applications.size();
+    SetFrameRateFocused(&first, false, "blur");
     check(applications.size() == afterBlur, "SAME_BLUR_QUIET");
-    SetFrameRateFocused(&first, true, "focus"); expectRange(&first, 30, 60, 60);
-    check(SetFrameRateForegroundSource(2, false, "ability-background"), "BACKGROUND_ACCEPTED"); expectRange(&first, 30, 30, 30);
-    check(inputForeground.back() == 0 && graphicsForeground.back() == 0, "BACKGROUND_NOTIFICATIONS_RETAINED");
-    const auto afterBackground = applications.size(); check(SetFrameRateForegroundSource(2, false, "ability-background"), "SAME_BACKGROUND");
+    SetFrameRateFocused(&first, true, "focus");
+    expectRange(&first, 144, 144, 144);
+    check(vsyncSessions.size() == 5, "PINNER_RESTARTED_ON_FOCUS");
+
+    check(SetFrameRateForegroundSource(2, false, "ability-background"), "BACKGROUND_ACCEPTED");
+    expectRange(&first, 30, 30, 30);
+    check(vsyncSessions.back().destroys == 1 &&
+          inputForeground.back() == 0 && graphicsForeground.back() == 0,
+          "BACKGROUND_STOPS_PINNER_AND_RETAINS_NOTIFICATIONS");
+    const auto afterBackground = applications.size();
+    check(SetFrameRateForegroundSource(2, false, "ability-background"), "SAME_BACKGROUND");
     check(applications.size() == afterBackground && inputForeground.back() == 0 && graphicsForeground.back() == 0,
-        "SAME_BACKGROUND_ONLY_NOTIFICATIONS");
-    check(SetFrameRateForegroundSource(2, true, "ability-foreground"), "RESTORE_FOREGROUND"); expectRange(&first, 30, 60, 60);
-    const auto beforeReplacement = applications.size(); RegisterFrameRateComponent(&second);
-    check(applications.size() == beforeReplacement + 1, "OLD_COMPONENT_INACTIVE_BEFORE_REPLACE"); expectRange(&first, 30, 30, 30);
-    SetFrameRateSurfaceReady(&second, true, "new-surface"); expectRange(&second, 30, 60, 60);
-    check(applications.size() == beforeReplacement + 2, "NEW_COMPONENT_SAME_POLICY_APPLIED");
+          "SAME_BACKGROUND_ONLY_NOTIFICATIONS");
+    check(SetFrameRateForegroundSource(2, true, "ability-foreground"), "RESTORE_FOREGROUND");
+    expectRange(&first, 144, 144, 144);
+    check(vsyncSessions.size() == 6, "PINNER_RESTARTED_ON_FOREGROUND");
+
+    auto& previousDisplay = vsyncSessions.back();
+    auto delayedCallback = previousDisplay.pendingFrame;
+    auto delayedToken = previousDisplay.frameToken;
+    check(RefreshExpectedFrameRateHintForDisplayRate(60, "screen-change-unavailable", 0),
+          "UNSUPPORTED_DISPLAY_WITHDRAWS_FIXED_REQUEST");
+    expectRange(&first, 30, 60, 60);
+    check(previousDisplay.destroys == 1, "OLD_DISPLAY_SESSION_DESTROYED");
+
+    check(RefreshExpectedFrameRateHintForDisplayRate(90, "new-display-supported", 90),
+          "NEW_DISPLAY_CONFIRMS_RATE");
+    expectRange(&first, 90, 90, 90);
+    const auto beforeStaleCallback = vsyncRequests;
+    delayedCallback(0, delayedToken);
+    check(vsyncRequests == beforeStaleCallback, "STALE_CALLBACK_CANNOT_REARM_REPLACEMENT");
+
+    const auto beforeReplacement = applications.size();
+    RegisterFrameRateComponent(&second);
+    check(applications.size() == beforeReplacement + 1, "OLD_COMPONENT_INACTIVE_BEFORE_REPLACE");
+    expectRange(&first, 30, 30, 30);
+    check(vsyncSessions.back().destroys == 1, "PINNER_STOPPED_ON_COMPONENT_REPLACE");
+    SetFrameRateSurfaceReady(&second, true, "new-surface");
+    expectRange(&second, 30, 90, 90);
+    check(vsyncSessions.size() == 7, "NEW_SURFACE_REQUIRES_FRESH_WINDOW_CONFIRMATION");
+    check(applications.size() == beforeReplacement + 2, "NEW_COMPONENT_POLICY_APPLIED");
     const auto beforeStale = applications.size();
-    SetFrameRateFocused(&first, false, "stale-focus"); SetFrameRateSurfaceReady(&first, false, "stale-destroy");
-    check(!ApplyExpectedFrameRateHint(&first, "stale-apply") && applications.size() == beforeStale, "STALE_COMPONENT_REJECTED");
-    SetFrameRateSurfaceReady(&second, false, "surface-destroyed"); expectRange(&second, 30, 30, 30);
+    SetFrameRateFocused(&first, false, "stale-focus");
+    SetFrameRateSurfaceReady(&first, false, "stale-destroy");
+    check(!ApplyExpectedFrameRateHint(&first, "stale-apply") && applications.size() == beforeStale,
+          "STALE_COMPONENT_REJECTED");
+
+    check(RefreshExpectedFrameRateHintForDisplayRate(90, "second-surface-confirmed", 90),
+          "SECOND_COMPONENT_FIXED_REQUEST_ACCEPTED");
+    SetFrameRateSurfaceReady(&second, false, "surface-destroyed");
+    expectRange(&second, 30, 30, 30);
+    check(vsyncSessions.back().destroys == 1, "PINNER_STOPPED_ON_SURFACE_DESTROYED");
     const auto beforeReopen = applications.size();
-    check(!RefreshExpectedFrameRateHintForDisplayRate(60, "surface-absent") && applications.size() == beforeReopen, "DETACHED_NO_REFRESH");
-    SetFrameRateSurfaceReady(&second, true, "surface-recreated"); expectRange(&second, 30, 60, 60);
+    check(!RefreshExpectedFrameRateHintForDisplayRate(60, "surface-absent", 60) &&
+          applications.size() == beforeReopen, "DETACHED_NO_REFRESH");
+    SetFrameRateSurfaceReady(&second, true, "surface-recreated");
+    expectRange(&second, 30, 90, 90);
+    check(vsyncSessions.size() == 8, "RECREATED_SURFACE_REQUIRES_FRESH_WINDOW_CONFIRMATION");
     check(applications.size() == beforeReopen + 1, "REOPEN_SAME_POLICY_FORCED");
-    const auto beforeExplicit = applications.size(); check(ApplyExpectedFrameRateHint(&second, "surface-changed-idempotent"), "EXPLICIT_LIFECYCLE_APPLY");
+    for (const auto& session : vsyncSessions) {
+        check(session.destroys == 1, "ALL_SUCCESSFUL_CREATES_DESTROYED_EXACTLY_ONCE");
+    }
+    const auto beforeExplicit = applications.size();
+    check(ApplyExpectedFrameRateHint(&second, "surface-changed-idempotent"), "EXPLICIT_LIFECYCLE_APPLY");
     check(applications.size() == beforeExplicit + 1, "EXPLICIT_SAME_POLICY_STILL_FORCED");
-    nextSdkResult = -1; check(!ApplyExpectedFrameRateHint(&second, "surface-change-failed"), "EXPLICIT_FAILURE");
-    const auto beforeRetry = applications.size(); check(RefreshExpectedFrameRateHintForDisplayRate(60, "retry"), "ORIGINAL_POLICY_RETRY");
+    nextSdkResult = -1;
+    check(!ApplyExpectedFrameRateHint(&second, "surface-change-failed"), "EXPLICIT_FAILURE");
+    const auto beforeRetry = applications.size();
+    check(RefreshExpectedFrameRateHintForDisplayRate(90, "retry"), "ORIGINAL_POLICY_RETRY");
     check(applications.size() == beforeRetry + 1, "EXPLICIT_FAILURE_NOT_CACHED");
     check(inputForeground.size() == graphicsForeground.size(), "NOTIFICATION_COUNTS_MATCH");
     std::cout << "PASS actual frame-rate controller SDK-calls=" << applications.size()

@@ -36,6 +36,7 @@
 #include "jvm_heap_backing_directory.h"
 #include "jvm_heap_backing_verification.h"
 #include "../platform/graphics_plan.h"
+#include "../platform/graphics_observation_abi.h"
 #include "../platform/env_publication.h"  // I27-05：JVM 创建认领时封存环境槽位登记表
 #include "../platform/jdk_font_resources.h"
 #include "../platform/jdk_install_store.h"
@@ -216,6 +217,12 @@ void __clear_cache(void* start, void* end) {
 /** JNI 使用其平台调用约定进入；实际退出核心不依赖 JNI，也不回调 Java/ArkTS。 */
 static void JNICALL isolatedGameExitHook(jint code) {
     amclGameJvmExitHook(static_cast<int>(code));
+}
+
+/** 手机仅接管已经进入正常 Java shutdown 的退出；其他退出由 HotSpot 继续原实现。 */
+static void JNICALL phoneGameExitHook(jint code) {
+    // shutdown observer 之后也可能出现 late renderer fatal；重新读取无锁呈现事实。
+    if (code == 0 && amclGraphicsHasUsablePresentationV1()) amclPhoneGameJvmExitHook(0);
 }
 
 // JNI_CreateJavaVM 函数签名
@@ -486,6 +493,12 @@ int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWor
 // 目录准备、环境发布、失败回滚及CreateVM边界只有此单一owner，NCP不另写TMPDIR。
 int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,
             const char* trustedAppFilesDir) {
+    return jvmInit(appFilesDir, jdkVersion, gameWorkingDirectory, trustedAppFilesDir, false);
+}
+
+// 最后一个参数只由游戏启动入口传递；安装器和其他 JVM 创建者不预备手机退出记录。
+int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWorkingDirectory,
+            const char* trustedAppFilesDir, bool returnToLauncherOnExit) {
     const int runtimeState = g_runtimeOnce.state();
     if (runtimeState == amcl::jvm::RuntimeOnce::ForkReserved) {
         g_status = "安装器正在创建子进程，请稍后重试";
@@ -709,7 +722,7 @@ int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWor
     g_jdkDirectoryLeaseFd = directoryLease.releaseToProcess();
 
     // 必须在一次性创建认领之后准备退出 fd，防止 processor fork 与宿主配置并发。
-    // 仅 native 持锁授权的当前游戏 PID 可安装；页面路线/安装器不继承此权限。
+    // 独立游戏的持锁授权与手机显式选择互斥，安装器不继承任何退出协议。
     // 已授权但准备失败就停止启动，不能退回会被 appspawn 中止的无记录退出路径。
     if (!g_forkChildMode) {
         const int exitPreparation = amclGameExitPrepare(appFilesDir, amclLedgerGetLaunchActivity());
@@ -717,6 +730,11 @@ int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWor
             g_status = "独立游戏退出记录通道准备失败，请重新启动游戏";
             AMCL_LOG_E(LOG_TAG, "isolated_game_exit_prepare_failed rc=%{public}d", exitPreparation);
             return -10;
+        }
+        if (exitPreparation == 1 && returnToLauncherOnExit &&
+            (amcl::jvm::HasImplicitInvocationOptions(getenv("JAVA_TOOL_OPTIONS"), getenv("_JAVA_OPTIONS")) ||
+                !amclPhoneExitPrepare(appFilesDir, amclLedgerGetLaunchActivity()))) {
+            AMCL_LOG_W(LOG_TAG, "phone_game_exit_restart_unavailable: options or journal preparation");
         }
     }
 
@@ -922,32 +940,9 @@ int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWor
         //       动态挂载，Forge/Fabric 的 custom CL 再从它继承。不要把游戏 jar
         //       放回 java.class.path，否则父优先委派会绕过兼容转换。
         //
-        // ⚠️ 曾尝试 -Dorg.lwjgl.system.allocator=system（移植自 Amethyst-iOS）：
-        //   在鸿蒙上会让 MC Render thread 进 Minecraft 主循环后卡死（Forge Initialized
-        //   之后静默无输出、窗口黑屏），疑似 OHOS libc malloc 在 LWJGL 小对象高并发分配下
-        //   与 JDK 分配器锁竞争。**不要作为 -D 启动参数加**（JavaVMOption.optionString 这一条）。
-        //   见 docs/ROADMAP.md 和 2026-04-19 验证日志。
-        //
-        //   2026-08-02 更新：上面那句「保留 LWJGL 默认分配器（rpmalloc/jemalloc）」已不成立，
-        //   本项目从未构建过 OHOS 版 librpmalloc.so / libjemalloc.so，实际生效的一直是 LWJGL
-        //   兜底的 StdlibAllocator（即 libc malloc）。理由可复核：LWJGL ≤3.4.1 的 allocator 实现
-        //   是顶层类 JEmallocAllocator，它带 `static { JEmalloc.getLibrary(); }`，缺 native 时
-        //   Class.forName 当场抛错并被 MemoryManage 的 catch(Throwable) 静默回退。也就是说
-        //   「-D system 会黑屏」与「StdlibAllocator 长期在跑且 26.1/26.2 可正常游玩」两条同时
-        //   为真，2026-04-19 那次黑屏的归因存疑（原注释本来也只写「疑似」）。若要再动这里，
-        //   请先重新取证，不要直接沿用旧结论。
-        //
-        //   3.4.2 起上游把实现类改成嵌套 JEmalloc$Allocator（无静态块，见 lwjgl3 2ea89788c），
-        //   实例化不再触发 native 加载 → 回退机制失效 → 缺 libjemalloc.so 会在第一次 malloc 时
-        //   抛 ExceptionInInitializerError 且不可恢复，MC 在 NativeLibrariesBootstrap 阶段直接崩。
-        //   因此 lwjgl-jemalloc 已从现代槽位移除，见 deps.lock [lwjgl-jars] 的说明。
-        //
-        //   注意：`mc_launcher.cpp:phase_setProperties` 里的 `System.setProperty()` 对这个属性
-        //   **无效**——Configuration.MEMORY_ALLOCATOR 是 StateInit.STRING，在 Configuration 类
-        //   <clinit> 时一次性读取并缓存，而 NativeLibrariesBootstrap.tryLoadingVulkan → VK.create
-        //   会在启动极早期就触发该 <clinit>，早于 phase_setProperties（与 vulkan libname 同一个坑，
-        //   见下方 org.lwjgl.vulkan.libname 的说明）。详见 ROADMAP "关于 org.lwjgl.system.allocator
-        //   =system 的重要澄清" 小节及 docs/archive/forge-analysis/forge-runtime-lwjgl-mismatch-20260328.md。
+        // 分配器跟随实际 LWJGL 槽。现代槽用 RuntimeBootstrapProperties 在 JVM 创建前
+        // 固定本包的 jemalloc 绝对路径；旧槽及安装器沿用自己的选择，勿在这里全局指定。
+        // 只提供 Java 绑定会在首次分配时才暴露缺库，绑定与原生库须成套验收。
         { (char*)"-Dlog4j2.formatMsgNoLookups=true", nullptr },
         // glfw.checkThread0 / java.system.class.loader 为游戏渲染/类加载专属：
         //   fork 子进程（安装器 processor）不能注入 system.class.loader（AmclClassLoader
@@ -1122,7 +1117,7 @@ int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWor
     }
 
     // 所有用户参数和 JDK8 过滤结束后才追加唯一的 native-owned hook；不能被后续
-    // 同名字符串以空 extraInfo 覆盖。没有授权的同进程/processor 路线完全不安装。
+    // 同名字符串以空 extraInfo 覆盖。未启用的同进程与 processor 路线不安装。
     if (!g_forkChildMode && amclGameExitArmedForCurrentProcess()) {
         if (amcl::jvm::HasImplicitInvocationOptions(getenv("JAVA_TOOL_OPTIONS"), getenv("_JAVA_OPTIONS"))) {
             g_status = "独立游戏不接受隐式 JVM 环境参数，请改用启动器的自定义 JVM 参数设置";
@@ -1132,6 +1127,10 @@ int jvmInit(const char* appFilesDir, const char* jdkVersion, const char* gameWor
         }
         optVec.push_back({ const_cast<char*>("exit"), reinterpret_cast<void*>(isolatedGameExitHook) });
         AMCL_LOG_I(LOG_TAG, "AMCL_JVM_EXIT_HOOK armed pid=%{public}d activity=%{public}lld",
+            getpid(), amclLedgerGetLaunchActivity());
+    } else if (!g_forkChildMode && amclPhoneExitArmed()) {
+        optVec.push_back({ const_cast<char*>("exit"), reinterpret_cast<void*>(phoneGameExitHook) });
+        AMCL_LOG_I(LOG_TAG, "AMCL_PHONE_JVM_EXIT_HOOK armed pid=%{public}d activity=%{public}lld",
             getpid(), amclLedgerGetLaunchActivity());
     }
 

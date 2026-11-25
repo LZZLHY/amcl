@@ -5,6 +5,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import {loader, ts, root} from './mod-install-test-runtime.mjs';
 import {parseJson5} from './product-contract.mjs';
+import {makePureEtsLoader} from './lib/load-pure-ets.mjs';
+import {verifySkillCases} from './lib/skill-business-check.mjs';
 
 const read=relative=>fs.readFileSync(path.join(root,relative),'utf8');
 const components='entry/src/main/ets/components/', pages='entry/src/main/ets/pages/';
@@ -83,15 +85,66 @@ browser.openInBrowser();assert.equal(wants[0].uri,'https://example.org/retained'
 
 // 生产可读记录要求token为字符串；两种资格都验证索引0/1仍分别是文件明细和
 // 撤回/原因说明入口，不能用缺少必需字段的旧夹具掩盖商店网页守卫或菜单索引回归。
-for(const token of ['fixture-token',''])for(const choice of [0,1]) {
-  let buttons=[],revoked=0;const history=method(pages+'LogShareHistoryPage.ets','recordMenu_',store);
-  history.busy=false;history.theme={actionText:'#000',errorText:'#f00'};history.expandedRecord='';
-  history.getUIContext=()=>({getPromptAction:()=>({showActionMenu(value){buttons=value.buttons;return Promise.resolve({index:choice});}})});
-  history.confirmRevoke_=()=>{revoked++;};history.recordMenu_({url:'https://example.org/record',token});
+const sharesBus=makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets').LauncherSkillBus;
+for(const [channel,allowBrowser] of [[store,false],[sideload,true]]) {
+  for(const accepted of [true,false])for(const choice of ['复制链接','网页','查看发送文件','撤回这条分享','cancel']) {
+    const writes=[],opened=[];let finishWrite,visible=[],revoked=0;
+    const history=method(pages+'LogShareHistoryPage.ets','recordMenu_',channel);
+    const realCopy=method(pages+'LogShareHistoryPage.ets','copy_',channel,{pasteboard:{MIMETYPE_TEXT_PLAIN:'text',
+      createData:(_mime,s)=>s,getSystemPasteboard:()=>({setData:s=>new Promise(done=>{writes.push(s);finishWrite=done;})})}});
+    const record={id:'share-1',sharedAt:7,url:'https://example.org/record',token:'fixture-token',accepted};
+    const skill=method(pages+'LogShareHistoryPage.ets','skillAction_',channel,{LauncherSkillBus:sharesBus});
+    Object.assign(history,{skillAction_:skill.skillAction_,loaded:true,busy:false,records:[record],theme:{actionText:'#000',errorText:'#f00'},expandedRecord:'',
+      copy_:realCopy.copy_,open_:async r=>opened.push(r.url),confirmRevoke_:async()=>{revoked++;}});
+    history.getUIContext=()=>({getPromptAction:()=>({showActionMenu:async({buttons})=>{
+      visible=buttons.map(b=>b.text);if(choice==='cancel')throw Error('dismissed');
+      return {index:visible.findIndex(s=>s.includes(choice))};
+    }})});
+    sharesBus.attach(history,()=>true,()=> 'fixture');sharesBus.bind('shares',history,(m,a)=>history.skillAction_(m,a));
+    let pending;
+    const denied=await sharesBus.call('shares','viewSharedLog',{shareId:'share-1',createdAt:8});
+    const openedMenu=await sharesBus.call('shares','viewSharedLog',{shareId:'share-1',createdAt:7},p=>{pending=p;});
+    assert.equal(denied.reason,'shareChanged');assert.equal(openedMenu.surface,'shareOptions');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(visible.includes('复制链接'),accepted);
+    assert.equal(visible.includes('在网页中查看'),accepted&&allowBrowser);
+    if(choice==='复制链接' && accepted){ assert.equal(pending(),true);assert.deepEqual(writes,[record.url]);assert.notEqual(history.statusText,'链接已复制');finishWrite(); }
+    else assert.deepEqual(writes,[]);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(pending(),false);sharesBus.detach(history);
+    if(choice==='复制链接' && accepted && channel===store)verifySkillCases('viewSharedLog',openedMenu,denied,'L097');
+    if(choice==='复制链接' && accepted)assert.equal(history.statusText,'链接已复制');
+    if(!accepted){await history.copy_(record);assert.deepEqual(writes,[]);}
+    assert.equal(opened.length,choice==='网页'&&accepted&&allowBrowser?1:0);
+    assert.equal(revoked,choice==='撤回这条分享'?1:0);
+    assert.equal(history.expandedRecord,choice==='查看发送文件'?record.url:'');checks++;
+  }
+}
+// 撤回已成功、刷新仍在等待时，先前弹出的分享菜单与列表上残留的复制事件都失去资格。
+for (const channel of [store,sideload]) {
+  const file=pages+'LogShareHistoryPage.ets';
+  const record={id:'old-share',sharedAt:7,url:'https://example.org/old',token:'token',accepted:true};
+  let choose,finishReload,startedReload=false,writes=0,copyIndex=-1;
+  const history=method(file,'recordMenu_',channel);
+  const clipboard={pasteboard:{MIMETYPE_TEXT_PLAIN:'text',createData:(_,url)=>url,
+    getSystemPasteboard:()=>({setData:async()=>{writes++;}})}};
+  Object.assign(history,{records:[record],loaded:true,loading:false,busy:false,theme:{},context:{},
+    copy_:method(file,'copy_',channel,clipboard).copy_,
+    revoke_:method(file,'revoke_',channel,{revokeShare:async()=>({ok:true})}).revoke_,
+    refresh_:method(file,'refresh_',channel,{flushPendingShareCredentials:()=>new Promise(resolve=>{startedReload=true;finishReload=resolve;}),
+      loadShareHistory:async()=>({records:[],warnings:[]})}).refresh_,
+    getUIContext:()=>({getPromptAction:()=>({showActionMenu:({buttons})=>new Promise(resolve=>{
+      copyIndex=buttons.findIndex(b=>b.text==='复制链接');choose=resolve;
+    })})})});
+  const menu=history.recordMenu_(record);
+  assert.ok(copyIndex>=0);
+  const revoke=history.revoke_(record);
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(buttons.length,2);assert.ok(!buttons.some(button=>button.text.includes('网页')));
-  assert.equal(buttons[1].text,token?'撤回这条分享':'为何不能撤回');
-  assert.equal(revoked,choice===1?1:0);assert.equal(history.expandedRecord,choice===0?'https://example.org/record':'');checks++;
+  assert.ok(startedReload && history.busy && history.loading);
+  choose({index:copyIndex});await menu;
+  await history.copy_(record);
+  finishReload();await revoke;await history.copy_(record);
+  assert.equal(writes,0);checks++;
 }
 // JIT 失败保留本地原因和确认，但商店不再露出“如何解决”网页按钮。
 const jit=method(components+'VersionConfigPanel.ets','promptJitUnavailableForForge',store);

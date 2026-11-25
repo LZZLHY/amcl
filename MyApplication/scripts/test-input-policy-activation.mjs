@@ -487,7 +487,7 @@ for(const [name,relative,mutate,run,expected] of [
     'this.touchSession.adoptConfirmedTouchBindings(candidate.profile,candidate.schema.touch,completedOperation,candidate.id,token)',
     'void candidate'),o=>savedPendingSequence(o),'REAL_UI_CONFIRMED_BINDING'],
   ['old-controller-cannot-borrow-new-progress',CONTROLS,s=>replaceOnce(s,
-    "'touch-controls', () => configurationSurface.status()","'touch-controls', () => this.touchSurface.status()"),
+    "=> configurationSurface.status(scratch)","=> this.touchSurface.status(scratch)"),
     o=>readerScopeSequence(o),'OLD_CONTROLLER_READER'],
   ['old-native-cannot-claim-new-op',RUNTIME,s=>replaceOnce(s,
     // 现在写后查询也核同一资格；撤回共同operation判据才能真实撤掉整个政策，

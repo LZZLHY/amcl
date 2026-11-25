@@ -9,6 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import compiler from './lib/ets-compiler.mjs';
 import { PROJECT_ROOT } from './lib/workspace-paths.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+import { randomUUID } from 'node:crypto';
+const {LauncherSkillBus} = makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets');
 
 const sheetPath = 'entry/src/main/ets/components/GameExportSheet.ets';
 const sheetSource = fs.readFileSync(path.join(PROJECT_ROOT, sheetPath), 'utf8');
@@ -85,6 +88,7 @@ function fixture({ shared = false, draft = null, tree = contentTree(), loader = 
   const coordinator = {
     async inspectSource() { state.scans++; if (state.scanGate) await state.scanGate; if (state.scanError) throw state.scanError; return source; },
     async loadDraft() { return draft; }, subscribe() { return () => {}; }, getTask() { return state.task; },
+    async pickAndStart(context, preview) { return state.pick(context, preview); },
     async saveDraft(request) { state.saved.push(request); if (state.saveGate) await state.saveGate; if (state.saveError) throw state.saveError; },
     async checkPlan(request) { state.checks.push(request); if (state.checkGate) await state.checkGate; return { id: 'preview', issues: core.exportContentSelectionIssues(request, tree),
       summary: [], files: 7, totalBytes: 123, tempBytes: 456, downloads: 0, downloadBytes: 0 }; },
@@ -93,13 +97,44 @@ function fixture({ shared = false, draft = null, tree = contentTree(), loader = 
   const exports = {};
   const names = Object.keys(core);
   new Function('exports', 'ThemeColors', 'SheetPageMotion', 'getGameExportCoordinator', 'shouldProjectExportTask',
-    'AppStorage', ...names, script)(exports, class {}, Motion, () => coordinator, projection.shouldProjectExportTask,
+    'LauncherSkillBus', 'util', 'AppStorage', ...names, script)(exports, class {}, Motion, () => coordinator, projection.shouldProjectExportTask,
+      LauncherSkillBus, { generateRandomUUID: randomUUID },
       { get() { return { filesDir: '/private' }; } }, ...names.map(name => core[name]));
   const sheet = new exports.Sheet();
   Object.assign(sheet, { mcRoot: '/mc', versionId: '1.20.1', versionIsolation: !shared, alive_: true,
     context_: { filesDir: '/private' }, onBack() { state.backs++; }, onClose() { state.closes++; } });
   return { sheet, state, base, source, tree, async initialize() { await sheet.initialize_(); return sheet; } };
 }
+
+test('官方导出入口核对实例、节点和一次预览，取消保存可读，重复调用不会二次拉起选择器', async () => {
+  const f = fixture({shared:true});
+  const host={};
+  LauncherSkillBus.attach(host,()=>true);
+  f.sheet.aboutToAppear();
+  await new Promise(resolve=>setImmediate(resolve));
+  const call=(method,args={})=>LauncherSkillBus.call('gameExport',method,{instance:f.base.versionId,...args});
+  assert.equal((await call('getExportPlan',{instance:'other'})).reason,'instanceChanged');
+  const root=await call('getExportPlan');
+  assert.equal(root.state,'ready'); assert.equal(root.shared,true);
+  const children=await call('getExportPlan',{group:root.nodes[0].id});
+  assert.ok(children.nodes.length);
+  assert.equal((await call('selectExportContent',{node:'group:media',selected:true})).reason,'noSelectableItems');
+  assert.equal((await call('selectExportContent',{node:'../../outside', selected:false})).reason,'nodeNotInInventory');
+  assert.equal((await call('selectExportContent',{node:children.nodes[0].id, selected:false})).state,'ready');
+  assert.equal((await call('saveExportDraft')).state,'ready');
+  const checked=await call('checkExportPlan');
+  assert.equal(checked.state,'ready'); assert.ok(checked.plan);
+  assert.equal((await call('startExport',{plan:'old'})).reason,'planChanged');
+  let pickerCalls=0, cancel;
+  f.state.pick=async()=>{pickerCalls++;return new Promise(resolve=>{cancel=resolve;});};
+  assert.equal((await call('startExport',{plan:checked.plan})).state,'needsUser');
+  assert.equal((await call('startExport',{plan:checked.plan})).state,'busy');
+  cancel(''); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal((await call('getExportTask')).picker,'cancelled');
+  assert.equal((await call('startExport',{plan:checked.plan})).reason,'planChanged');
+  assert.equal(pickerCalls,1);
+  f.sheet.aboutToDisappear(); LauncherSkillBus.detach(host);
+});
 
 test('full defaults include all current content including shared-world scope without hiding launcher adaptation', async () => {
   const f = fixture({ shared: true }); await f.initialize();

@@ -171,23 +171,31 @@ export function checkApplicationAbi(archive, { root, product, target = product }
     const basename = path.posix.basename(name);
     let sourcePath = path.join(root, 'entry/build', product, 'intermediates/cmake', target, 'obj/arm64-v8a', basename);
     let lockedSource;
+    let sourceFolder;
     if (['libamcl_zstdjni_std.so', 'libamcl_zstdjni_dh.so'].includes(basename)) {
-      // 这两项是锁定的独立预编译JNI，不伪装成CMake产物。必须提供真实未剥离原件，
-      // 随后仍执行相同载荷和private unwinder检查，不能因是C库就跳过应用ABI门。
-      const folder = path.join(root, 'prebuilt/mod-natives/zstd-jni');
-      const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'artifacts.json'), 'utf8'));
+      sourceFolder = path.join(root, 'prebuilt/mod-natives/zstd-jni');
+      const manifest = JSON.parse(fs.readFileSync(path.join(sourceFolder, 'artifacts.json'), 'utf8'));
       const matches = manifest.artifacts?.filter(item => item.filename === basename);
-      if (matches?.length !== 1 || matches[0].unstripped?.path !== `symbols/${basename}` ||
-          !/^[0-9a-f]{64}$/.test(matches[0].unstripped.sha256)) throw Error('zstd ABI requires a unique unstripped source');
-      lockedSource = matches[0].unstripped;
-      sourcePath = path.join(folder, lockedSource.path);
+      if (matches?.length === 1) lockedSource = matches[0].unstripped;
+    } else if (basename === 'libamcl_lwjgl_jemalloc.so') {
+      // jemalloc 是独立构建的 HAP 私有提供方。加载节来自实际包，非公开符号来自同一链接产物。
+      sourceFolder = path.join(root, 'prebuilt/jemalloc');
+      const manifest = JSON.parse(fs.readFileSync(path.join(sourceFolder, 'build-provenance.json'), 'utf8'));
+      if (manifest.elf?.soname === basename) lockedSource = manifest.unstripped;
+    }
+    if (sourceFolder) {
+      if (lockedSource?.path !== `symbols/${basename}` || !Number.isSafeInteger(lockedSource.size) ||
+          lockedSource.size <= 0 || !/^[0-9a-f]{64}$/.test(lockedSource.sha256))
+        throw Error(`${basename} ABI requires a unique unstripped source`);
+      sourcePath = path.join(sourceFolder, lockedSource.path);
     }
     const source = fs.readFileSync(sourcePath);
     if (lockedSource && (source.length !== lockedSource.size || hash(source) !== lockedSource.sha256))
-      throw Error('zstd ABI unstripped source identity mismatch');
+      throw Error(`${basename} ABI unstripped source identity mismatch`);
     assertSameLoadImage(source, bytes);
     const records = elfAbiSymbolRecords(source, true);
-    if (lockedSource && !records.some(record => record.tableKind === 2)) throw Error('zstd ABI source lacks private symbol table');
+    if (lockedSource && !records.some(record => record.tableKind === 2 && record.name && record.sectionIndex !== 0))
+      throw Error(`${basename} ABI source lacks private symbol table`);
     const privateCopies = records.filter(symbol => symbol.sectionIndex !== 0 && unwind(symbol.name)).map(symbol => symbol.name);
     if (privateCopies.length) throw Error(`${name}: private static unwinder duplicates: ${privateCopies.slice(0, 4).join(', ')}`);
     if (path.posix.basename(name) === 'libentry.so') authoritativeTls = assertAuthoritativeTls(source, records);

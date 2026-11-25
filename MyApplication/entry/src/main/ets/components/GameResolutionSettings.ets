@@ -1,3 +1,5 @@
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { settingFailure, settingKeys, settingText, SettingsSkillData } from '../launcherskill/SettingsSkillValues';
 import { common } from '@kit.AbilityKit';
 import { ThemeColors, splitJvmArguments, resolveResolutionPercent, normalizeResolutionPreference, formatError } from 'commons';
 import { PreferenceManager } from 'feature_system';
@@ -47,15 +49,52 @@ export struct GameResolutionSettings {
   private savingGeneration_: number = -1;
 
   /** 挂载时只读取确认政策，不写偏好或更改游戏会话。 */
-  aboutToAppear(): void { this.active = true; this.reload(); }
+  aboutToAppear(): void {
+    if (!this.versionScope) {
+      LauncherSkillBus.bind('settingsResolution',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+        this.skillAction_(method,args), (): boolean => !this.versionScope && this.active && this.visible &&
+          AppStorage.get<boolean>('appInForeground') === true && AppStorage.get<boolean>('amclSettingsTabVisible') === true);
+    }
+    this.active = true;
+    this.reload();
+  }
 
   /** 已交给偏好 owner 的保存仍会完成，卸载只撤销旧续体更新 UI 的资格。 */
-  aboutToDisappear(): void { this.active = false; this.generation++; }
+  aboutToDisappear(): void {
+    LauncherSkillBus.unbind('settingsResolution',this);
+    this.active = false;
+    this.generation++;
+  }
 
   /** 保留的版本详情槽位切到列表/资源页时同样退休显示权，重新可见再读确认值。 */
   private onVisibilityChanged_(): void { this.reload(); }
 
   /** 全局宿主沿用现有 Preferences owner；版本宿主通过回调注入同一个业务入口。 */
+  /** 全局脚本复用同一保存事务，避免绑定到版本面板或改变当前游戏分辨率。 */
+  private async skillAction_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (this.versionScope || !this.ready || this.saving) return settingFailure('notAvailable');
+    if (method === 'getGlobalResolution' && settingKeys(args,[])) {
+      return this.strictGlobalResolution_();
+    }
+    const percent = args['percent'];
+    if (method !== 'setGlobalResolution' || !settingKeys(args,['percent']) || typeof percent !== 'number' ||
+      !Number.isInteger(percent) || (percent !== 0 && normalizeResolutionPreference(percent) !== percent)) return settingFailure('invalidPercent');
+    await this.save(percent);
+    if (!this.active || !this.ready || this.error || this.savedPreference !== percent) return settingFailure('saveNotConfirmed');
+    const result=this.strictGlobalResolution_();
+    return result['state'] === 'ready' && result['percent'] !== percent ? settingFailure('selectionChanged') : result;
+  }
+
+  /** 普通编辑器的容错快照保留原样；系统查询须直接核对全局偏好及旧 JVM marker。 */
+  private strictGlobalResolution_(): SettingsSkillData {
+    try {
+      const prefs=this.manager();
+      const percent=prefs.strictLauncherField('resolutionScalePercent') as number;
+      const args=prefs.strictLauncherField('customJvmArgs') as string;
+      return {'state':'ready','percent':percent,'effective':resolveResolutionPercent(percent,splitJvmArguments(args))};
+    } catch (_) { return {'state':'unknown','reason':'resolutionUnreadable'}; }
+  }
+
   private manager(): PreferenceManager {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     if (context === undefined) throw new Error('设置上下文不可用');

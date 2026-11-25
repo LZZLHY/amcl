@@ -47,6 +47,7 @@ prefix=f'''
 #include "{(cpp/'input/input_trace.h').as_posix()}"
 #include "{(cpp/'input/delivery/look_transport.h').as_posix()}"
 #include "{(cpp/'platform/source_control_client.h').as_posix()}"
+#include "{(cpp/'platform/window_host_core.h').as_posix()}"
 #include <memory>
 '''+r'''
 using namespace amcl::input;
@@ -81,12 +82,18 @@ TouchPublicationReceipt QueryTouchPublication(){TouchPublicationContext context;
 // 下方逐字带入生产thin proxy与真实Port，断言使用SourceSnapshot复制的当前事实。
 std::recursive_mutex s_inputTransactionMutex;
 void reconcileLegacyRingDiscontinuity(){}void resolveBridge(){}bool bridgeReady(){return true;}
+// 该可执行目标跑真实legacy路由；如果误把请求带入scoped通道，由真实未激活WindowHost拒绝。
+amcl::window::WindowHostCore noSdlPresentedWindow(amcl::window::NativeReferenceDriver{});
+extern "C" int amclWindowHostRunTextInputCommand(uint64_t demand, AmclWindowTextInputCommandFn command, void* context) {
+ return noSdlPresentedWindow.runTextInputCommand(demand, command, context);
+}
 '''
 production='\n'.join(definition(native,name) for name in ['static AmclInputSource normalizeInputSource(',
  'static OwnerToken nextOwnerToken(', 'static amcl::input::SourcePhysicalProxy& physicalEdgeRouter(',
  'static amcl::input::SourceExternalProxy& externalHeldEdgeRouter(',
  'static bool externalHeldActionFromGlfw(', 'static bool routerKey(', 'extern "C" bool ohos_send_source_key_event_checked('])
 production+='\n// 原测试读held，只观察已准入source值快照，不建第二生产账本。\nSourceLedgerProxy ledger;\n'
+production+='\ntemplate<typename Command>\n'+definition(napi,'bool RunForSdlTextDemand(')
 production+='\n'+'\n'.join(definition(napi,name) for name in ['static bool ReadInputSourceArg(',
  'bool TouchSourceAdmission(', 'napi_value SendSourceKeyEvent(', 'napi_value TextInputKeyTap('])
 production+=r'''
@@ -101,6 +108,7 @@ sources=['input/platform_input_ingress.cpp','input/input_shadow_consumer.cpp','i
  'input/amcl_input_host_descriptor.cpp',
  'input/input_state_core.cpp','input/adapters/glfw_input_adapter.cpp','input/adapters/backend_input_bridge.cpp',
  'input/adapters/backend_keymaps.cpp','input/adapters/lwjgl2_event_translate.cpp','input/input_interaction_order.cpp',
+ 'platform/window_host_core.cpp',
  'platform/physical_wheel_quantizer.cpp','platform/source_look_processor.cpp','platform/look_delta_math.cpp',
  'platform/look_pipeline_stats.cpp','platform/input_source.cpp','platform/input_ledger.cpp',
  'platform/external_held_registry.cpp','platform/external_held_edge_router.cpp','glfw/input_bridge_ohos.c']

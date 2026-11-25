@@ -67,6 +67,91 @@ function fixture(options={}){
   return {env,runtime,state,calls,warnings,traces,callbacks,contexts,create,pendingAttach,pendingDetach,napi,module};
 }
 
+// SDL桌面菜单的物理组件保持挂载，但没有游戏文本需求时不取得系统IME。
+{
+  const f=fixture(); let wanted='';
+  f.runtime.bindPhysicalDemandReader(()=>wanted); f.runtime.setPhysicalDemandIdentity(''); f.runtime.start();
+  const hard=f.create(); await flush();
+  assert.equal(f.calls.filter(call=>call.kind==='attach').length,0);
+  wanted='1'; f.runtime.setPhysicalDemandIdentity(wanted); await flush();
+  assert.equal(f.calls.filter(call=>call.kind==='attach').length,1);
+  const originalInsert=f.callbacks.get('insertText');
+  wanted=''; originalInsert('late-before-heartbeat');
+  assert.equal(f.calls.filter(call=>call.kind==='commit').length,0,'SDL停止立即拦旧提交，无需等心跳');
+  f.state.delayDetach=true; f.runtime.setPhysicalDemandIdentity(''); originalInsert('late');
+  assert.equal(f.calls.filter(call=>call.kind==='commit').length,0,'离开真实文本控件当场退休旧回调');
+  wanted='2'; f.runtime.setPhysicalDemandIdentity(wanted); await flush();
+  assert.equal(f.calls.filter(call=>call.kind==='attach').length,1,'等待原OS detach，不能并行attach');
+  f.state.delayDetach=false; f.pendingDetach[0].resolve(); await flush();
+  assert.equal(f.calls.filter(call=>call.kind==='attach').length,2);
+  assert.equal(f.state.maxOwners,1);
+  hard.aboutToDisappear(); await flush();
+}
+{
+  const f=fixture(); f.runtime.setPhysicalDemandIdentity(''); f.runtime.start();
+  const hard=f.create(), field=f.create('field'); await flush();
+  assert.equal(f.calls.filter(call=>call.kind==='attach'&&call.show).length,1,'显式软键盘保留自己的请求');
+  field.aboutToDisappear(); hard.aboutToDisappear(); await flush();
+}
+{
+  const f=fixture(); f.state.delayAttach=true; f.runtime.start();
+  const hard=f.create(); await flush();
+  f.runtime.setPhysicalDemandIdentity(''); f.runtime.setPhysicalDemandIdentity('2');
+  f.state.delayAttach=false; f.pendingAttach[0].resolve(); await flush();
+  assert.equal(f.calls.filter(call=>call==='detach').length,1,'旧attach完成必须清理，不能复活');
+  assert.equal(f.calls.filter(call=>call.kind==='attach').length,2,'同一资源可重新请求真实系统IME');
+  assert.equal(f.state.maxOwners,1);
+  hard.aboutToDisappear(); await flush();
+}
+{
+  const f=fixture(); let wanted='A';
+  f.runtime.bindPhysicalDemandReader(()=>wanted); f.runtime.setPhysicalDemandIdentity(wanted); f.runtime.start();
+  const hard=f.create(); await flush();
+  const old=f.callbacks.get('insertText');
+  wanted='B'; old('A-before-wake');
+  assert.equal(f.calls.filter(call=>call.kind==='commit').length,0,'真→真时旧A在合并唤醒之前已不能往B提交');
+  f.runtime.setPhysicalDemandIdentity(wanted); await flush();
+  assert.equal(f.calls.filter(call=>call.kind==='attach').length,2,'合并的Stop/Start旋转实际系统会话');
+  old('A-after-wake'); f.callbacks.get('insertText')('B-current');
+  assert.deepEqual(f.calls.filter(call=>call.kind==='commit').map(call=>call.text),['B-current']);
+  assert.equal(f.state.maxOwners,1);
+  hard.aboutToDisappear(); await flush();
+}
+// 在最后一次ArkTS回调身份检查之后、真正Native入口之前换SDL需求。旧Native host lease本身仍有效。
+{
+  const f=fixture();
+  let wanted='11258999068426248';
+  const next='11258999068426249';
+  const nativeLeaseIdentity=new Map();
+  const nativeBegin=f.napi.beginTextInputSession;
+  f.napi.beginTextInputSession=(lease, demand)=>{
+    if(demand!==wanted) return false;
+    nativeLeaseIdentity.set(lease,demand);
+    return nativeBegin(lease);
+  };
+  const nativeCommit=f.napi.commitTextInput;
+  const rejected=[];
+  f.napi.commitTextInput=(lease,text)=>{
+    if(nativeLeaseIdentity.get(lease)!==wanted) {rejected.push(text);return false;}
+    return nativeCommit(lease,text);
+  };
+  f.runtime.bindPhysicalDemandReader(()=>wanted); f.runtime.setPhysicalDemandIdentity(wanted); f.runtime.start();
+  const hard=f.create(); await flush();
+  const old=f.callbacks.get('insertText');
+  assert.equal(nativeLeaseIdentity.get(f.state.nativeGeneration),wanted,'冻结原始全宽需求身份送Native begin');
+  const readEpoch=f.napi.getInputResetEpoch;
+  f.napi.getInputResetEpoch=()=>{wanted=next;return readEpoch();};
+  old('old-after-check');
+  assert.deepEqual(rejected,['old-after-check'],'同旧host号在真实写入边缘被拒绝');
+  assert.equal(f.calls.filter(call=>call.kind==='commit').length,0);
+  f.napi.getInputResetEpoch=readEpoch;
+  f.runtime.setPhysicalDemandIdentity(wanted); await flush();
+  f.callbacks.get('insertText')('new-native-lease');
+  assert.deepEqual(f.calls.filter(call=>call.kind==='commit').map(call=>call.text),['new-native-lease']);
+  hard.aboutToDisappear(); await flush();
+}
+console.log('PASS physical SDL demand: idle menu, text input, serial detach/reopen, stale callbacks, native interleaving, independent soft input');
+
 /** API20/21/22保原legacy，23/26两route捕获原UIContext与原show意图；不把Host mock当系统origin证明。 */
 for(const api of [20,21,22,23,26])for(const role of ['physical','field','chat']) {
   const f=fixture({api});f.runtime.start();const component=f.create(role);await flush();

@@ -31,6 +31,7 @@ with workspace_temporary_directory(prefix='amcl-aux-input-') as temp:
 struct GLFWwindow {
     bool auxiliary=false, cursorModeAssigned=false; int cursorMode=GLFW_CURSOR_NORMAL; double cursorX=0,cursorY=0;
     amcl::input::GlfwBackendCaptureState inputCapture{};
+    GLFWcursorposfun cursorPosCb=nullptr;
     GLFWcharfun charCb=nullptr; GLFWcharmodsfun charModsCb=nullptr; GLFWcursorenterfun cursorEnterCb=nullptr;
     bool charCallbackAssigned=false,charModsCallbackAssigned=false,cursorEnterCallbackAssigned=false;
 };
@@ -50,6 +51,8 @@ void* inputBridge_replaceCharModsCallback(void* value){auto old=characterMods;ch
 void* inputBridge_replaceCursorEnterCallback(void* value){auto old=cursorEnter;cursorEnter=value;++bridgeWrites;return old;}
 void inputBridge_setGrabState(int){++bridgeWrites;}
 void inputBridge_setLookCursor(double,double){++lookWrites;}
+int warpRequests=0;
+void glfwOHOS_WarpCarriedMenuCursor(GLFWwindow*,double,double){++warpRequests;}
 bool api26RawMouseMotionSupported(){return true;}
 int SetTestEnvironment(const char*,const char*,int){++envWrites;return 0;}
 #define setenv SetTestEnvironment
@@ -78,6 +81,17 @@ int main(){
     glfwSetInputMode(&presented,GLFW_CURSOR,GLFW_CURSOR_DISABLED); glfwSetCursorPos(&presented,2,3);
     // I27-05：光标模式翻转在游戏线程上发生，只经 bridge 原子发布，任何窗口都不得写环境变量。
     assert(envWrites==0 && lookWrites==1 && presented.inputCapture.requested && bridgeWrites==4);
+    // 辅助窗、非呈现窗及抓取态仅记各自基准；呈现窗在普通菜单且已注册回调才请求触控设位。
+    presented.cursorPosCb=auxiliary.cursorPosCb=[](GLFWwindow*,double,double){};
+    glfwSetCursorPos(&presented,10,20);
+    GLFWwindow hiddenMenu; hiddenMenu.auxiliary=true; hiddenMenu.cursorPosCb=presented.cursorPosCb;
+    glfwSetCursorPos(&hiddenMenu,20,30);
+    GLFWwindow other; other.cursorPosCb=presented.cursorPosCb;
+    glfwSetCursorPos(&other,30,40);
+    assert(warpRequests==0);
+    presented.cursorMode=GLFW_CURSOR_NORMAL;
+    glfwSetCursorPos(&presented,20,34);
+    assert(warpRequests==1);
     // 调用实际promotion所用setter组合：取得呈现权后才发布隐藏阶段保存的callback/grab。
     g_currentWindow=&auxiliary; auxiliary.auxiliary=false;
     glfwSetCharCallback(&auxiliary,auxiliary.charCb); glfwSetCharModsCallback(&auxiliary,auxiliary.charModsCb);

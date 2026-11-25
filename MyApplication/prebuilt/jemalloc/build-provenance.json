@@ -1,0 +1,61 @@
+{
+  "source": "https://github.com/jemalloc/jemalloc/releases/download/5.3.1/jemalloc-5.3.1.tar.bz2",
+  "commit": "81034ce1f1373e37dc865038e1bc8eeecf559ce8",
+  "sourceSha256": "3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92",
+  "license": "COPYING",
+  "licenseSha256": "94aa2caa98c25d942f58b956c71dba6a99ff98fc3a31cbc669fe2a4cd0268b53",
+  "recipe": "prebuilt/jemalloc/build-ohos.sh",
+  "apiVersion": "20",
+  "sdkVersion": "6.0.0.47",
+  "compiler": "OHOS (dev) clang version 15.0.4 (llvm-project bb5cdf0f93bfb5316dd3cc2a80d12ab829e49b43)",
+  "toolSha256": {
+    "clang": "70f8ecd180d0ba95763c8a3023622799434ab499f8752bb064edd7ba6824bd9a",
+    "ld.lld": "a68ec56bc6affc79ec1bb7856632b6dfe2ea395d25e8f0bd21c8be207cffbd83",
+    "llvm-strip": "d448944535a202b2c19de0658090e23015b72664769ed7f42d0d0e7c5442b730",
+    "llvm-readelf": "5fd73e362b2981bc674a039503a167424ac207cde9555a0c42f163cb3ffbaf0d"
+  },
+  "libcStubSha256": "1f6f9c9de2514eb74a3a70b32ced1ad7d92b23e5e6ca421d7da429903504ef35",
+  "unstripped": {
+    "path": "symbols/libamcl_lwjgl_jemalloc.so",
+    "size": 419640,
+    "sha256": "8a2c2e9eda3209571ac9182493ffb6a24e9d35ce6b8a7ff2bb86fd13a52b88e0"
+  },
+  "elf": {
+    "soname": "libamcl_lwjgl_jemalloc.so",
+    "needed": [
+      "libc.so"
+    ],
+    "machine": "AArch64",
+    "tls": "TLSDESC",
+    "loadAlignment": [
+      65536
+    ],
+    "exports": {
+      "je_aligned_alloc": "FUNC",
+      "je_calloc": "FUNC",
+      "je_dallocx": "FUNC",
+      "je_free": "FUNC",
+      "je_free_aligned_sized": "FUNC",
+      "je_free_sized": "FUNC",
+      "je_mallctl": "FUNC",
+      "je_mallctlbymib": "FUNC",
+      "je_mallctlnametomib": "FUNC",
+      "je_malloc": "FUNC",
+      "je_malloc_message": "OBJECT",
+      "je_malloc_stats_print": "FUNC",
+      "je_malloc_usable_size": "FUNC",
+      "je_mallocx": "FUNC",
+      "je_nallocx": "FUNC",
+      "je_posix_memalign": "FUNC",
+      "je_rallocx": "FUNC",
+      "je_realloc": "FUNC",
+      "je_sallocx": "FUNC",
+      "je_sdallocx": "FUNC",
+      "je_xallocx": "FUNC"
+    },
+    "ownExportNamedDynamicRelocations": [],
+    "mallocMessageSize": 8,
+    "size": 322072,
+    "sha256": "12026c1f4170e46db2234639ee695dfd2d49fee3e1ec385d07af6755af1ec21c"
+  }
+}

@@ -19,6 +19,11 @@ export function storeManagerAction(input: StoreManagerUiInput): string {
   return input.hasCandidates ? 'check' : 'download';
 }
 
+/** 检查中只展示文件核验进度；首页点击与具名调用共享当前动作的准入。 */
+export function canPerformStoreManagerAction(action: string): boolean {
+  return ['progress','export','choose','session','downloads','repair','check','storage','download'].includes(action);
+}
+
 export function storeManagerActionLabel(action: string): string {
   if (action === 'progress') return '查看导出进度';
   if (action === 'export') return '导出游戏包';

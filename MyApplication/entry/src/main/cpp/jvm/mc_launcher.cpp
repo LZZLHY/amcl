@@ -1106,9 +1106,33 @@ static bool phase_publishPlatformRuntime(uint64_t session) {
     return true;
 }
 
+/** Java shutdown hook 线程只打标，等待 JVM 完成 shutdown 后由 Invocation exit 接管。 */
+static void JNICALL markPhoneJavaShutdown(JNIEnv*, jclass) {
+    if (!rendererRestartMarkerPresent() && amclGraphicsHasUsablePresentationV1()) {
+        amclPhoneExitMarkJavaShutdown();
+    }
+}
+
+/** 只绑定宿主刚解析的 AMCL 启动类。旧/不匹配的启动器 jar 仍可正常开游戏。 */
+static bool installPhoneExitObserver(JNIEnv* env, jclass launcher) {
+    if (!amclPhoneExitArmed()) return false;
+    const jmethodID install = env->GetStaticMethodID(launcher, "installExitObserver", "()V");
+    if (install && !env->ExceptionCheck()) {
+        const JNINativeMethod observer{const_cast<char*>("markJavaShutdown"), const_cast<char*>("()V"),
+            reinterpret_cast<void*>(markPhoneJavaShutdown)};
+        if (env->RegisterNatives(launcher, &observer, 1) == JNI_OK) {
+            env->CallStaticVoidMethod(launcher, install);
+            if (!env->ExceptionCheck()) return true;
+        }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    AMCL_LOG_W(LOG_TAG, "phone_game_shutdown_observer_unavailable");
+    return false;
+}
+
 // 只挂载游戏 classpath，不初始化游戏平台库。AmclLauncher.main 在同一 attached 线程消费
 // prepared state，随后上游加载器按照自己的拓扑选择各个平台绑定类的定义者。
-static bool phase_prepareJavaLaunch(JNIEnv* env, const std::string& launchConfigJson) {
+static bool phase_prepareJavaLaunch(JNIEnv* env, const std::string& launchConfigJson, bool& phoneExitObserver) {
     AMCL_LOG_I(LOG_TAG, "[Phase 1.5] PREPARE_JAVA_CLASSPATH");
     jclass launcher = env->FindClass("com/amcl/launcher/AmclLauncher");
     if (!launcher || env->ExceptionCheck()) {
@@ -1148,6 +1172,8 @@ static bool phase_prepareJavaLaunch(JNIEnv* env, const std::string& launchConfig
         env->ExceptionDescribe();
         env->ExceptionClear();
         g_mcStatus = "❌ 游戏 classpath 所有权检查失败";
+    } else {
+        phoneExitObserver = installPhoneExitObserver(env, launcher);
     }
     env->DeleteLocalRef(json);
     env->DeleteLocalRef(launcher);
@@ -1491,7 +1517,7 @@ static bool phase_initJvmWithClasspath(const std::string& filesDir,
                                        const std::string& gameDir,
                                        const std::string& classpath,
                                        int xmx, const char* jdkVersion,
-                                       const std::string& delivery) {
+                                       const std::string& delivery, bool returnToLauncherOnExit) {
     AMCL_LOG_I(LOG_TAG, "[Phase 1] INIT_JVM (profile classpath, %zu chars)", classpath.size());
     // 在动态加载 JVM 和 Java bootstrap 之前固定原始输出；此失败不能被“启动就绪”掩盖。
     if (!amcl::sessionlog::prepare(filesDir.c_str(), amclLedgerGetLaunchActivity())) {
@@ -1578,7 +1604,7 @@ static bool phase_initJvmWithClasspath(const std::string& filesDir,
     }
     // 两条游戏 profile 共用此入口：在 CreateJavaVM 前固定 cwd，保证早期编译日志与游戏一致。
     // 音频 owner 的失败回收继续由下方分支负责，不用旧两参数入口丢失 R12 的目录合同。
-    int rc = jvmInit(filesDir.c_str(), jdkVersion, gameDir.c_str());
+    int rc = jvmInit(filesDir.c_str(), jdkVersion, gameDir.c_str(), nullptr, returnToLauncherOnExit);
     if (rc != 0) {
         amclModAudioEnd();
         g_mcStatus = std::string("❌ JVM 初始化失败: ") + jvmGetStatus();
@@ -1621,6 +1647,22 @@ static std::vector<std::string> toArgVector(int argc, const char* const* argv) {
 // ⚰️ 2026-08-27（加载链审查修复批次）：这里曾有 legacy 的 mcLaunchThread()
 //   （硬编码 mainClass/mcArgs、不经 AmclLauncher），随 mcLaunch 退役删除。
 
+/** 已呈现且成功返回的手机游戏走同一 Java shutdown 链收尾，运行已注册的 hooks。 */
+static void finishReturnedPhoneGame(JNIEnv* env) {
+    jclass system = env->FindClass("java/lang/System");
+    if (system && !env->ExceptionCheck()) {
+        const jmethodID exit = env->GetStaticMethodID(system, "exit", "(I)V");
+        if (exit && !env->ExceptionCheck()) env->CallStaticVoidMethod(system, exit, 0);
+    }
+    if (system) env->DeleteLocalRef(system);
+    // 正常 System.exit 不返回。访问失败时走原生 main 返回收尾，保留本局诊断。
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+    AMCL_LOG_W(LOG_TAG, "phone_game_normal_return_shutdown_unavailable");
+}
+
 // 数据驱动启动线程（v3 架构：从 profile 读取所有参数）
 // 通过 AmclLauncher Java 中间层启动 MC（动态 classpath + Forge 预处理）
 static void mcLaunchThreadWithProfile(std::string filesDir, std::string gameDir,
@@ -1651,6 +1693,7 @@ static void mcLaunchThreadWithProfile(std::string filesDir, std::string gameDir,
     }
 
     uint64_t preparedInputSession=0;
+    bool phoneExitObserver = false;
     // 构建 JSON 配置传给 AmclLauncher
     {
         std::string json = buildLaunchConfigJson(
@@ -1664,7 +1707,7 @@ static void mcLaunchThreadWithProfile(std::string filesDir, std::string gameDir,
         preparedInputSession=session;
         if (!phase_publishPlatformRuntime(session))                            goto cleanup;
         if (!phase_verifyRuntimeProperties(env))                                goto cleanup;
-        if (!phase_prepareJavaLaunch(env, json))                                goto cleanup;
+        if (!phase_prepareJavaLaunch(env, json, phoneExitObserver))              goto cleanup;
         std::vector<std::string> launcherArgs = { json };
         amcl::sessionlog::gameReady();
         const bool mainOk = phase_launchMain(
@@ -1674,6 +1717,8 @@ static void mcLaunchThreadWithProfile(std::string filesDir, std::string gameDir,
         } else if (!mainOk) {
             AMCL_LOG_W(LOG_TAG,
                        "MC main returned failure without renderer taint marker");
+        } else if (phoneExitObserver && amclGraphicsHasUsablePresentationV1()) {
+            finishReturnedPhoneGame(env);
         }
     }
 
@@ -1703,7 +1748,8 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
                                  const char* jdkVersion, int xmxMb,
                                  const char* mainClass, const char* classpath,
                                  std::vector<std::string> mcArgs,
-                                 const std::vector<std::string>& extraJvmArgs) {
+                                 const std::vector<std::string>& extraJvmArgs,
+                                 bool returnToLauncherOnExit) {
     mcClearGraphicsLaunchFailure();
     if (g_rendererProcessTainted.load(std::memory_order_acquire) ||
         rendererRestartMarkerPresent()) {
@@ -1840,6 +1886,19 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
     AMCL_LOG_I(LOG_TAG, "AMCL_INPUT_PLAN v=%{public}s abi=%{public}s slot=%{public}s window=%{public}s binding=%{public}s policy=%{public}s legacy=%{public}d ready=0",
         inputPlan.version.c_str(), inputPlan.abi.c_str(), inputPlan.slot.c_str(), inputPlan.window.c_str(),
         inputPlan.binding.c_str(), inputPlan.policy.c_str(), legacyInputPlan ? 1 : 0);
+    const auto allocatorSlot = amcl::jvm::AllocatorRuntimeSlot(graphicsPlanMarkers == 1, graphicsPlan.slot, classpath);
+    // 3.4.2 的分配器类会延迟打开动态库；在任何图形初始化和 JVM 启动之前报告缺件。
+    if (!amcl::jvm::CheckModernAllocatorFile(allocatorSlot, hapNativeDir, [](const std::string& path) {
+            struct stat file{};
+            return stat(path.c_str(), &file) == 0 && S_ISREG(file.st_mode);
+        })) {
+        recordGraphicsLaunchFailure(-5, "artifacts", "hap_native_provider_missing:libamcl_lwjgl_jemalloc.so",
+                graphicsPlan.profile);
+        g_mcStatus = "现代 LWJGL 分配器缺失：libamcl_lwjgl_jemalloc.so";
+        AMCL_LOG_E(LOG_TAG, "hap_native_provider_missing:libamcl_lwjgl_jemalloc.so");
+        g_mcRunning = false;
+        return -5;
+    }
     if (!amcl::graphics::ActivateGraphicsPlan(graphicsPlan, graphicsError)) {
         recordGraphicsLaunchFailure(-5, "activation", graphicsError, graphicsPlan.profile);
         g_mcStatus = std::string("图形计划无法激活: ") + graphicsError;
@@ -2357,7 +2416,8 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
         jnaBootstrap.bootLibraryName.c_str(), jnaBootstrap.reason.c_str());
     g_runtimeBootstrapProperties = amcl::jvm::RuntimeBootstrapProperties(
         hapNativeDir, gameDirStr, graphicsPlan.profile,
-        nativeVulkanPlan ? glLibrary : "libamcl_graphics_runtime.so", graphicsPlan.window == "SDL3", jnaBootstrap);
+        nativeVulkanPlan ? glLibrary : "libamcl_graphics_runtime.so", graphicsPlan.window == "SDL3", jnaBootstrap,
+        allocatorSlot);
     // 游戏入口显式决定Java业务临时根，不能仅凭AMCL_GAME_DIR推断：processor也会设置
     // 该环境变量。用户自定义值仍由HotSpot按原参数顺序处理，不改原生TMPDIR或清理旧文件。
     const bool customJavaTemp = amcl::jvm::PreserveExplicitJavaTempDirectory(finalJvmArgs, g_runtimeBootstrapProperties);
@@ -2569,7 +2629,7 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
 
     // Phase 1: INIT_JVM（使用 ArkTS 传入的 classpath 与世代契约的 delivery）
     if (!phase_initJvmWithClasspath(filesDir, gameDirStr, std::string(classpath),
-                                     xmx, jdkVersion, classpathDelivery)) {
+                                     xmx, jdkVersion, classpathDelivery, returnToLauncherOnExit)) {
         g_mcRunning = false;
         return -4;
     }
@@ -2606,18 +2666,18 @@ extern "C" int mcLaunchWithProfile(const char* appFilesDir, const char* gameDir,
     std::vector<std::string> mcArgs = splitString(mcArgsStr ? std::string(mcArgsStr) : "", ',');
     std::vector<std::string> extraArgs = splitString(extraJvmArgs ? std::string(extraJvmArgs) : "", ',');
     return launchWithProfileImpl(appFilesDir, gameDir, jdkVersion, xmxMb,
-                                 mainClass, classpath, mcArgs, extraArgs);
+                                 mainClass, classpath, mcArgs, extraArgs, false);
 }
 
 extern "C" int mcLaunchWithProfileV2(const char* appFilesDir, const char* gameDir,
                                      const char* jdkVersion, int xmxMb,
                                      const char* mainClass, const char* classpath,
                                      int mcArgc, const char* const* mcArgv,
-                                     int extraJvmArgc, const char* const* extraJvmArgv) {
+                                     int extraJvmArgc, const char* const* extraJvmArgv, int returnToLauncherOnExit) {
     std::vector<std::string> mcArgs = toArgVector(mcArgc, mcArgv);
     std::vector<std::string> extraArgs = toArgVector(extraJvmArgc, extraJvmArgv);
     return launchWithProfileImpl(appFilesDir, gameDir, jdkVersion, xmxMb,
-                                 mainClass, classpath, mcArgs, extraArgs);
+                                 mainClass, classpath, mcArgs, extraArgs, returnToLauncherOnExit != 0);
 }
 
 extern "C" const char* mcGetStatus() {
@@ -2637,8 +2697,9 @@ extern "C" int mcIsRunning() {
     if (!g_mcRunning) return 0;
     // 窗口销毁可能早于 System.exit/shutdown hooks，不能凭它抢先 _exit(0)。
     // 授权覆盖 Prepared→记录写盘→Pending 的整个区间；只查 Armed 会在写盘期间出现
-    // 空窗。隔离会话只接受上方真实退出请求或主函数已返回，旧页面路线仍消费原 marker。
+    // 空窗。登记交接的会话只接受真实退出请求或主函数已返回，旧页面路线仍消费原 marker。
     if (amclGameExitAuthorizedForCurrentProcess()) return 1;
+    if (amclPhoneExitAuthorized()) return 1;
     struct stat st;
     if (stat(g_markerPath.c_str(), &st) == 0) {
         AMCL_LOG_I(LOG_TAG, "Window destroy marker found! MC has exited.");
@@ -2661,8 +2722,19 @@ extern "C" void mcForceExit() {
         amcl::sessionlog::finish();
     }
     if (amclGameExitAcknowledgeRequested()) return;
+    if (amclPhoneRestartDecline()) return;
     AMCL_LOG_I(LOG_TAG, "mcForceExit: _exit(0) called");
     _exit(0);
+}
+
+/** 唯一一次 UI 重启请求开始前封口活动日志；若期间超时则交给已在运行的兜底。 */
+extern "C" int mcPrepareLauncherRestart() {
+    if (!amclPhoneRestartClaim()) return 0;
+    if (!amclLedgerEndChecked(amclLedgerGetLaunchActivity())) {
+        AMCL_LOG_W(LOG_TAG, "phone_game_exit_ledger_close_timeout");
+    }
+    amcl::sessionlog::finish();
+    return amclPhoneRestartPending();
 }
 
 // 读取文件最后 N 字节

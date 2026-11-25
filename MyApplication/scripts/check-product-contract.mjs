@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { PRODUCT_ROOT, productDefinition, readProductRegistry, productMetadataSource, parseJson5, assertPublishable } from './product-contract.mjs';
 import { readUniqueZipEntry } from './zip-entry-buffer.mjs';
 import { checkDiagnosticSources } from './diagnostic-source-policy.mjs';
+import { packagedLauncherSkill } from './check-launcher-skill-hap.mjs';
 import { auditGraphicsManifest } from './graphics-artifact-manifest.mjs';
 import { graphicsBootstrapIssues } from './graphics-bootstrap-contract.mjs';
 import { assertRuntimeHostMirror, validateRuntimeHostMetadata } from './runtime-host-contract.mjs';
@@ -86,6 +87,10 @@ export function evaluateProductHap(buffer, name, publishing = false) {
   const metadata = JSON.parse(readUniqueZipEntry(buffer, 'resources/rawfile/product-profile.json').toString('utf8'));
   const { schemaVersion, build, sourceRevision, releaseKind, runtimeHostProtocols, runtimePlanProtocol, runtimeCatalogProtocol, runtimeRequiredCapabilities, runtimeRequiredMajors, ...observed } = metadata;
   const issues = auditGraphicsManifest(buffer, name);
+  try {
+    const skillDir = resolve(PRODUCT_ROOT, 'entry/skills/amcl-launcher');
+    packagedLauncherSkill(buffer, module.module, readFileSync(resolve(skillDir, 'SKILL.md'), 'utf8'), skillDir);
+  } catch (error) { issues.push('HAP launcher Skill: ' + error.message); }
   try { validateRuntimeHostMetadata(metadata, module.app.versionName); }
   catch (error) { issues.push(error.message); }
   if(publishing&&(metadata.runtimeRequiredMajors??[]).length){

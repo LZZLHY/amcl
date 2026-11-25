@@ -82,6 +82,15 @@ AMCL_WINDOW_EXPORT int amclWindowHostPublishOwner(void);
 // 返回 1：owner 已接受；0：owner/broker 描述符畸形（失败关闭，调用方记录）。
 // 进程内初值为 0（与首个 surface 发布前的门禁计算结果一致）；fork 子进程从 0 重新开始。
 AMCL_WINDOW_EXPORT int amclWindowHostSetInputForeground(int foreground);
+// 唤醒只表示SDL文本需求发生变化；回调在窗口账本锁外执行，调用方按当前事实对账。
+typedef void (*AmclWindowTextInputWakeFn)(void);
+AMCL_WINDOW_EXPORT int amclWindowHostSetTextInputWake(AmclWindowTextInputWakeFn wake);
+// 0 表示当前无需求；正数唯一标识本进程当前的一次SDL文本需求。
+AMCL_WINDOW_EXPORT uint64_t amclWindowHostTextInputDemandIdentity(void);
+// 在原SDL需求和真实发布同一事务内完成一次Native命令。命令不能再进入WindowHost写入口。
+typedef int (*AmclWindowTextInputCommandFn)(void* context);
+AMCL_WINDOW_EXPORT int amclWindowHostRunTextInputCommand(uint64_t demand, AmclWindowTextInputCommandFn command, void* context);
+
 
 #if defined(AMCL_WINDOW_HOST_TESTING)
 typedef int (*AmclWindowHostReferenceFn)(void*, void*);

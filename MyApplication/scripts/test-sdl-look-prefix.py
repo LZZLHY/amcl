@@ -51,13 +51,7 @@ def fixture(sdl):
     event=re.search(r'typedef struct\s*\{[^}]*\}\s*AMCL_BackendInputEvent;',sdl).group(0)
     context='\n'.join(re.search(r'typedef struct '+name+r'\s*\{[^}]*\}\s*'+name+';',sdl).group(0)
         for name in ['OPENHARMONY_ControlContext','OPENHARMONY_LookContext'])
-    names=['OPENHARMONY_MouseIDFromHost','OPENHARMONY_ValidPointerIdentity','OPENHARMONY_ValidateTypedEvent',
-        'OPENHARMONY_CloseControl','OPENHARMONY_ControlCurrent','OPENHARMONY_ControlCacheApplied','OPENHARMONY_DeliverControl','OPENHARMONY_RetireControls',
-        'OPENHARMONY_ControlReady','OPENHARMONY_SendKeyFromPlane','OPENHARMONY_SendButtonFromPlane',
-        'SDL_AMCL_ObserveKeyboardPoll','SDL_AMCL_ObserveMousePoll','OPENHARMONY_LookCurrent','OPENHARMONY_LookCacheApplied',
-        'OPENHARMONY_DeliverLookForMouse','OPENHARMONY_DeliverLook','SDL_AMCL_ObserveLookPoll','OPENHARMONY_DisableRelativeModeForHostLoss','OPENHARMONY_ApplyTypedFocus',
-        'OPENHARMONY_PumpHostEvents','OPENHARMONY_PumpTypedEvents','OPENHARMONY_PumpHostCursor','OPENHARMONY_PumpOrderedEvents']
-    body='\n\n'.join(control.production(sdl,name) for name in names)
+    body=control.input_consumer_body(sdl)
     prelude=prelude.replace('@CONSTANTS@',constants).replace('@EVENT@',event).replace('@CONTEXT@',context)
     prelude+='\n'+body+'''
 static OPENHARMONY_HostBridge bridge={nextLegacy,getCursor,isGrabbing,frameFence,nextTypedThrough,peekLegacyOrder,nextLegacyThrough,UINT64_MAX,0,false};

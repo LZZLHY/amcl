@@ -2,6 +2,12 @@
  * 浏览页的普通错误文字与图标使用错误前景色，原生缺失清单按钮使用主题操作文字色；
  * 只调整显示角色，不改变搜索、安装恢复、排序和复制清单的原有判断及回调。
  */
+import { ProductQaResources } from 'entry/ProductQaResources';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { BrowseSkill } from '../launcherskill/BrowseSkill';
+import { ResourceOperation } from '../launcherskill/ResourceOperation';
+import { util } from '@kit.ArkTS';
+import { ResourceBrowseAccess, ResourceDetailSelection, ResourceEnqueued, ResourceDependencyChoice, LocalPackDraft } from '../runtime/ResourceBrowseAccess';
 import { DiagnosticPolicy, DistributionPolicy } from 'commons';
 /**
  * ModBrowsePage.ets — 模组、光影、资源包与整合包的共享下载浏览页。
@@ -74,8 +80,9 @@ import { ModpackNameInput } from '../components/ModpackNameInput';
 import { createModpackFileResolver, scanModpackRecovery, LocalModScanControl, ModpackRecoveryItem, CurseForgeFileSourceMode,
   resolveModrinthSourcePreference, resolveCurseForgeFileSourcePreference } from 'mods';
 import { isIsolatedModpackInstance } from 'commons';
-import { UnifiedTaskState, newVersionInstallOwner } from 'feature_core';
+import { UnifiedDownloadAdapter, UnifiedTaskState, newVersionInstallOwner } from 'feature_core';
 import { ModpackMissingItem } from 'mods';
+import { ArchiveDirectory, ArchiveSource } from '../components/ArchiveSelectionScope';
 import { GameArchiveIO } from '../components/GameArchiveIO';
 import { LocalModScanner } from 'mods';
 import { InstalledModIndex } from 'mods';
@@ -216,9 +223,12 @@ export struct ModBrowsePage {
   @State private detailModpackName_: string = '';
   @State private detailModpackNameError_: string = '';
   /** 本地文件选择结束后的安装前详情。原根在打开文件选择器之前快照。 */
-  @State private showLocalModpackDetail_: boolean = false;
+  @State @Watch('onLocalModpackVisibility_') private showLocalModpackDetail_: boolean = false;
   @State private localModpackName_: string = '';
   @State private localModpackNameError_: string = '';
+  private localImportPending_: boolean = false;
+  private localPickerGeneration_: number = 0;
+  private localArchiveOwner_: ((discard: boolean) => void) | undefined = undefined;
   private localModpackArchive_: string = '';
   private localModpackRoot_: string = '';
   private localModpackFilesDir_: string = '';
@@ -362,6 +372,10 @@ export struct ModBrowsePage {
   private initialSearchDone_: boolean = false;
 
   aboutToAppear() {
+    ProductQaResources.bind(this, (): ResourceBrowseAccess => this.resourceAccess_());
+    const operations = new BrowseSkill(():ResourceBrowseAccess=>this.resourceAccess_());
+    LauncherSkillBus.bind('browse',this,(method:string,args:Record<string,Object>):Promise<Record<string,Object>>=>this.handleBrowseSkill_(operations,method,args),
+      ():boolean=>this.inited_ && this.hostVisible && !this.detailDisposed_ && AppStorage.get<boolean>('appInForeground')===true && AppStorage.get<boolean>('amclHostPageVisible')===true);
     this.detailDisposed_ = false;
     this.retreatHostActive_ = this.hostVisible;
     this.resetRetreat_();
@@ -476,6 +490,11 @@ export struct ModBrowsePage {
   }
 
   aboutToDisappear() {
+    this.localPickerGeneration_++;
+    // 卸载沿用草稿 owner 的一次性清理，绑定的可见性状态由原生容器退场。
+    this.dismissLocalDraft_();
+    LauncherSkillBus.unbind('browse',this);
+    ProductQaResources.unbind(this);
     this.retreatHostActive_ = false;
     this.retreatReturning_ = false;
     this.retreatTouchActive_ = false;
@@ -500,6 +519,7 @@ export struct ModBrowsePage {
     }
     // 释放服务引用，让 controller 持有的 hits 数组（可能数百个 RemoteProject）可被 GC
     this.ctrl_ = null;
+    this.searchWork_ = null;
     this.router_ = null;
     this.resolver_ = null;
     // v6.5：installer_ 已下台。
@@ -1212,8 +1232,47 @@ export struct ModBrowsePage {
     this.detailModpackNameError_ = validateModpackVersionName(value);
   }
 
+  /** 私有副本在草稿和队列间只交接一次。撤回只删除本次落地的文件和仍为空的原目录。 */
+  private ownLocalArchive_(filesDir: string, directory: string, name: string): (discard: boolean) => void {
+    if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) throw new Error('选择器返回了无效文件名');
+    const folder = ArchiveDirectory.capture(directory, { root: filesDir + '/modpack-import', current: (): boolean => true });
+    const path = directory + '/' + name;
+    let file: ArchiveSource;
+    try { file = new ArchiveSource(path, false); }
+    catch (error) { folder.close(); throw error as Error; }
+    return (discard: boolean): void => {
+      try {
+        if (discard) {
+          folder.check(); file.check();
+          fs.unlinkSync(path);
+          folder.check();
+          if (fs.listFileSync(directory).length === 0) fs.rmdirSync(directory);
+        }
+      } catch (error) { AppLogger.warn(TAG, '本地整合包暂存副本已变化或无法清理', error as Error, LOG_DOMAIN_DOWNLOAD); }
+      finally { file.close(); folder.close(); }
+    };
+  }
+
+  private dismissLocalDraft_(): void {
+    const owner = this.localArchiveOwner_;
+    this.localArchiveOwner_ = undefined;
+    this.localModpackArchive_ = '';
+    owner?.(true);
+  }
+
+  /** 系统下拉、关闭按钮和返回手势最终都改变双向绑定的显示状态。 */
+  private onLocalModpackVisibility_(): void {
+    if (!this.showLocalModpackDetail_) this.dismissLocalDraft_();
+  }
+
+  /** 本地草稿名称由页面与文件选择完成后的确认动作共同校验。 */
+  private setLocalModpackName_(name: string): void {
+    this.localModpackName_ = name;
+    this.localModpackNameError_ = validateModpackVersionName(name);
+  }
+
   /** 本地开始按钮与在线入口一样，先校验并快照名称，再创建独立安装任务。 */
-  private confirmLocalModpack_(): void {
+  private confirmLocalModpack_(capture?: ResourceEnqueued): void {
     this.localModpackNameError_ = validateModpackVersionName(this.localModpackName_);
     if (this.localModpackNameError_.length > 0 || this.localModpackArchive_.length === 0) return;
     let task = new ModpackInstallTask({
@@ -1225,9 +1284,21 @@ export struct ModBrowsePage {
       resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta, this.onlyOfficialModpackFiles_(),
         this.resolveCurseForgeFileMode() === CurseForgeFileSourceMode.OFFICIAL_FIRST),
     });
-    this.showLocalModpackDetail_ = false;
-    this.localModpackArchive_ = '';
-    this.runModpackInstall_(task);
+    // 排队即交回草稿。调度器可能在真正登记 adapter 之前异步拒绝，届时仍由原副本负责收尾。
+    const owner = this.localArchiveOwner_;
+    this.runModpackInstall_(task, undefined, (adapter: UnifiedDownloadAdapter, completion: Promise<void>): void => {
+      this.localArchiveOwner_ = undefined;
+      this.localModpackArchive_ = '';
+      this.showLocalModpackDetail_ = false;
+      const registry = getDownloadTaskRegistry();
+      if (owner) {
+        if (registry.getAdapter(adapter.view.id) === adapter) owner(false);
+        else completion.then((): void => owner(false), (): void => {
+          owner(registry.getAdapter(adapter.view.id) !== adapter && adapter.view.startedAtMs <= 0 && !task.getSession());
+        });
+      }
+      if (capture) capture(adapter, completion);
+    });
   }
 
   /** 只有恢复面板可见才读取候选。分类浏览和后台安装终态不为预先统计名单做扫描。 */
@@ -1287,21 +1358,34 @@ export struct ModBrowsePage {
     this.retireModpackRecoveryScan_();
   }
 
-  private resumeModpack_(item: ModpackRecoveryItem): void {
-    if (this.modpackDismissId_ === item.id) return;
-    let ctx = this.uiCtx();
-    if (ctx === undefined) return;
+  private resumeModpack_(item: ModpackRecoveryItem, observe: boolean = false): Record<string,Object> {
+    if (this.modpackDismissId_ === item.id) return { 'state':'unavailable','reason':'recoveryChanged' };
+    const ctx = this.uiCtx();
+    if (ctx === undefined) return { 'state':'unavailable','reason':'contextUnavailable' };
+    const registry = getDownloadTaskRegistry();
     this.closeModpackRecovery_();
     let id = 'modpack:' + item.id;
-    if (getDownloadTaskRegistry().getAdapter(id) !== null) {
-      this.onOpenDownloadTask(id); return;
+    if (registry.getAdapter(id) !== null) {
+      this.onOpenDownloadTask(id);
+      return { 'state':'needsUser','reason':'existingTaskRequiresReview','taskId':id };
     }
     let task = new ModpackInstallTask({ title: item.title, sessionId: item.id,
       filesDir: ctx.filesDir, mcDir: item.mcDir, existingVersions: this.availableVersions,
       requireConfirmation: true, officialFilesOnly: this.onlyOfficialModpackFiles_(),
       resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta, this.onlyOfficialModpackFiles_(),
         this.resolveCurseForgeFileMode() === CurseForgeFileSourceMode.OFFICIAL_FIRST) });
-    this.runModpackInstall_(task);
+    // 只有实际登记的本次 adapter 能签发受理；同号旧卡或异步拒绝均不能充当成功。
+    const ref = observe ? util.generateRandomUUID() : '';
+    if (observe) {
+      ResourceOperation.claim(ctx.filesDir, ref);
+      this.runModpackInstall_(task, undefined, (adapter, completion): void =>
+        ResourceOperation.watch(ctx.filesDir, ref, adapter, completion));
+    } else {
+      this.runModpackInstall_(task);
+    }
+    const owned = registry.getAdapter(id) === task;
+    return { 'state':owned ? 'accepted' : 'unknown','reason':owned ? 'originalTaskAdmitted' : 'admissionUnconfirmed',
+      'taskId':id,'activityId':owned ? task.view.startedAtMs : 0,'operationRef':ref };
   }
 
   /** 同一面板关闭或切出分类后，迟到结果不能弹窗或刷新离屏列表。 */
@@ -1310,16 +1394,16 @@ export struct ModBrowsePage {
   }
 
   /** 只为选中的会话读取提交状态。确认后交给任务层重验并持久化，UI 不直接操作文件。 */
-  private async confirmDismissModpack_(item: ModpackRecoveryItem): Promise<void> {
-    if (!this.modpackRecoveryVisible_() || this.modpackDismissId_.length > 0) return;
+  private async confirmDismissModpack_(item: ModpackRecoveryItem): Promise<string> {
+    if (!this.modpackRecoveryVisible_() || this.modpackDismissId_.length > 0) return 'unknown';
     const ctx = this.uiCtx();
-    if (ctx === undefined) return;
+    if (ctx === undefined) return 'unknown';
     const epoch = this.modpackRecoveryEpoch_;
     const name = item.versionName.length > 0 ? item.versionName : item.title;
     this.modpackDismissId_ = item.id;
     try {
       const kind = await readModpackRecoveryKind(ctx.filesDir, item.id);
-      if (epoch !== this.modpackRecoveryEpoch_ || !this.modpackRecoveryVisible_()) return;
+      if (epoch !== this.modpackRecoveryEpoch_ || !this.modpackRecoveryVisible_()) return 'unknown';
       const repair = kind === 'repair';
       const action = repair ? '不再补齐' : '放弃安装';
       const choice = await this.getUIContext().getPromptAction().showDialog({
@@ -1331,15 +1415,17 @@ export struct ModBrowsePage {
           { text: action, color: this.theme.errorText as string },
         ],
       }).catch((): undefined => undefined);
-      if (choice?.index !== 1 || epoch !== this.modpackRecoveryEpoch_ || !this.modpackRecoveryVisible_()) return;
+      if (choice?.index !== 1) return 'cancelled';
+      if (epoch !== this.modpackRecoveryEpoch_ || !this.modpackRecoveryVisible_()) return 'unknown';
       const cleaned = await abandonModpackRecovery(ctx.filesDir, item.id, kind);
-      if (!this.modpackRecoveryVisible_()) return;
+      if (!this.modpackRecoveryVisible_()) return 'unknown';
       // 持久标记已经写入。先移除该条，再废弃可能早于放弃动作的扫描结果并重读。
       this.modpackRecovery_ = this.modpackRecovery_.filter((candidate: ModpackRecoveryItem): boolean => candidate.id !== item.id);
       this.refreshModpackRecovery_();
       if (epoch === this.modpackRecoveryEpoch_) {
         this.toast((repair ? '已停止补齐' : '已放弃安装') + (cleaned ? '' : '，部分临时文件已保留'));
       }
+      return 'ready';
     } catch (e) {
       const error = e as Error;
       AppLogger.warn(TAG, '放弃整合包恢复失败', error, LOG_DOMAIN_DOWNLOAD);
@@ -1347,6 +1433,7 @@ export struct ModBrowsePage {
         this.refreshModpackRecovery_();
         if (epoch === this.modpackRecoveryEpoch_) this.toast('处理安装记录失败：' + error.message);
       }
+      return 'failed';
     } finally {
       if (!this.detailDisposed_) this.modpackDismissId_ = '';
     }
@@ -1743,7 +1830,7 @@ export struct ModBrowsePage {
    * 浏览不要求已经选择或安装 MC；安装目标和依赖仅参与推荐及安装准备。
    * 每次打开废弃上一轮异步回写；真实提交仍由 confirmInstallFromSheet 和安装服务复验。
    */
-  private openDetail(project: RemoteProject): void {
+  private async openDetail(project: RemoteProject): Promise<void> {
     // 原生 Sheet 退场不可被新打开打断；保持当前实例直到 onDisappear，避免显隐状态失配。
     if (this.detailDisposed_ || this.detailClosing_) return;
     if (!this.showDetailSheet_) {
@@ -1779,7 +1866,7 @@ export struct ModBrowsePage {
     this.showDetailSheet_ = true;
 
     // 异步预取
-    this.prefetchDetail(project, myEpoch).catch((e: Error) => {
+    return this.prefetchDetail(project, myEpoch).catch((e: Error) => {
       // 仅当本次 fetch 仍是最新一轮才提示（用户已点别的卡时不打扰）
       if (this.detailFetchEpoch_ !== myEpoch) return;
       let msg = e.message !== undefined ? e.message : String(e);
@@ -1889,14 +1976,14 @@ export struct ModBrowsePage {
     return rows;
   }
 
-  private toggleDetailDep(key: string): void {
+  private async toggleDetailDep(key: string): Promise<void> {
     if (!this.detailInteractionActive_()) return;
     if (this.detailPreparingInstall_ || !this.detailDependenciesResolved_) return;
     const row = this.detailDeps_.find((r: ModDetailDepRow): boolean => r.key === key);
     if (row === undefined || row.dependencyType !== DependencyType.OPTIONAL) return;
     this.detailOptionalIds_ = this.detailOptionalIds_.indexOf(key) >= 0
       ? this.detailOptionalIds_.filter((id: string): boolean => id !== key) : [...this.detailOptionalIds_, key];
-    if (this.detailSelectedVersion_ !== null) this.pickDetailVersion(this.detailSelectedVersion_);
+    if (this.detailSelectedVersion_ !== null) await this.pickDetailVersion(this.detailSelectedVersion_);
   }
 
   private selectAllDetailDeps(): void {
@@ -2002,30 +2089,30 @@ export struct ModBrowsePage {
 
 
   /** sheet 中点"网页"：拉起浏览器（默认打开项目自身页面；多源/百科由菜单分项走 openExternalUrl_） */
-  private openWebsiteFromSheet(): void {
+  private async openWebsiteFromSheet(): Promise<string> {
     // 商店不暴露资源网页，旧 Sheet 回调也不能恢复此动作；API 资源解析/下载不受影响。
-    if (DistributionPolicy.isStore()) return;
-    if (!this.detailInteractionActive_()) return;
+    if (DistributionPolicy.isStore()) return 'unavailableForProduct';
+    if (!this.detailInteractionActive_()) return 'detailChanged';
     let url = this.detailProject_.websiteUrl;
     if (!url || url.length === 0) {
       this.toast('该项目无可用网址');
-      return;
+      return 'websiteUnavailable';
     }
-    this.openExternalUrl_(url);
+    return this.openExternalUrl_(url);
   }
 
   /** 经系统 Want 拉起浏览器打开外部 URL。 */
-  private openExternalUrl_(url: string): void {
-    if (DistributionPolicy.isStore()) return;
-    if (!this.detailInteractionActive_()) return;
-    if (!url || url.length === 0) {
-      this.toast('网址为空');
-      return;
+  private async openExternalUrl_(url: string): Promise<string> {
+    if (DistributionPolicy.isStore()) return 'unavailableForProduct';
+    if (!this.detailInteractionActive_()) return 'detailChanged';
+    if (!url || !/^https?:\/\/[^/\s]+/i.test(url)) {
+      this.toast('项目没有可打开的网址');
+      return 'websiteUnavailable';
     }
     let ctx = this.uiCtx();
     if (ctx === undefined) {
       this.toast('无法打开浏览器');
-      return;
+      return 'contextUnavailable';
     }
     let want: Want = {
       action: 'ohos.want.action.viewData',
@@ -2033,11 +2120,13 @@ export struct ModBrowsePage {
       uri: url,
     };
     try {
-      ctx.startAbility(want);
+      await ctx.startAbility(want);
       if (DiagnosticPolicy.isDeveloperBuild()) hilog.debug(0x0000, TAG, 'openExternalUrl: %{public}s', url);
+      return 'browserOpened';
     } catch (e) {
       AppLogger.error(TAG, 'open url failed', e as Error, LOG_DOMAIN_DOWNLOAD);
       this.toast('无法打开浏览器：' + url);
+      return 'browserUnavailable';
     }
   }
 
@@ -2088,14 +2177,14 @@ export struct ModBrowsePage {
    * 切换详情页的下载源（双源资源）：解析另一源真实工程 → openDetail 重拉版本/依赖。
    * 用户随后点"一键安装"即从该源下载。
    */
-  private async switchDetailSource(source: ModSource): Promise<void> {
-    if (!this.detailInteractionActive_()) return;
+  private async switchDetailSource(source: ModSource): Promise<string> {
+    if (!this.detailInteractionActive_()) return '';
     let p = this.detailProject_;
     const epoch = this.detailFetchEpoch_;
-    if (p.source === source) return;
+    if (p.source === source) return p.id;
     if (p.altSource !== source) {
       this.toast('该源暂无此资源');
-      return;
+      return '';
     }
     this.toast('正在解析' + (source === ModSource.CURSEFORGE ? ' CurseForge ' : ' Modrinth ') + '工程…');
     let resolved: RemoteProject | null = null;
@@ -2105,19 +2194,20 @@ export struct ModBrowsePage {
       AppLogger.warn(TAG, 'resolveCounterpart failed', e as Object, LOG_DOMAIN_DOWNLOAD);
     }
     // 切源也是详情请求：关闭、换项目、换文件或页面销毁后，旧响应不能重新打开旧项目。
-    if (epoch !== this.detailFetchEpoch_ || !this.showDetailSheet_ || this.router_ === null) return;
+    if (epoch !== this.detailFetchEpoch_ || !this.showDetailSheet_ || this.router_ === null) return '';
     if (resolved === null) {
       this.toast((source === ModSource.CURSEFORGE ? 'CurseForge' : 'Modrinth') + ' 上未找到该资源');
-      return;
+      return '';
     }
-    this.openDetail(resolved);
+    await this.openDetail(resolved);
+    return this.detailInteractionActive_() && this.detailProject_.id === resolved.id && this.detailProject_.source === source ? resolved.id : '';
   }
 
   /** 网页菜单"打开另一源页面"：解析另一源真实工程 → 用其真实网址拉起浏览器（避免按分类猜 URL 404）。 */
-  private async openCrossSourceWeb(source: ModSource): Promise<void> {
+  private async openCrossSourceWeb(source: ModSource): Promise<string> {
     // 在任何“解析另一网站”网络请求之前拒绝商店的一般网页操作。
-    if (DistributionPolicy.isStore()) return;
-    if (!this.detailInteractionActive_()) return;
+    if (DistributionPolicy.isStore()) return 'unavailableForProduct';
+    if (!this.detailInteractionActive_()) return 'detailChanged';
     const epoch: number = this.detailFetchEpoch_;
     let p = this.detailProject_;
     this.toast('正在解析' + (source === ModSource.CURSEFORGE ? ' CurseForge ' : ' Modrinth ') + '页面…');
@@ -2128,15 +2218,15 @@ export struct ModBrowsePage {
       AppLogger.warn(TAG, 'openCrossSourceWeb resolve failed', e as Object, LOG_DOMAIN_DOWNLOAD);
     }
     // 网页解析与详情请求共享代次，旧菜单的迟到结果不能在新详情打开后拉起旧网页。
-    if (epoch !== this.detailFetchEpoch_ || !this.detailInteractionActive_()) return;
+    if (epoch !== this.detailFetchEpoch_ || !this.detailInteractionActive_()) return 'detailChanged';
     if (resolved === null || resolved.websiteUrl.length === 0) {
       this.toast((source === ModSource.CURSEFORGE ? 'CurseForge' : 'Modrinth') + ' 上未找到该资源');
-      return;
+      return 'counterpartWebsiteUnavailable';
     }
-    this.openExternalUrl_(resolved.websiteUrl);
+    return this.openExternalUrl_(resolved.websiteUrl);
   }
 
-  private confirmInstallFromSheet(): void {
+  private confirmInstallFromSheet(capture?: ResourceEnqueued): void {
     if (!this.detailInteractionActive_()) return;
     if (this.detailLoading_ || this.detailPreparingInstall_) { this.toast('正在准备安装，请等待完成'); return; }
     if (this.detailError_.length > 0) { this.toast(this.detailError_); return; }
@@ -2168,7 +2258,7 @@ export struct ModBrowsePage {
       if (this.detailModpackNameError_.length > 0) return;
       // sheet 的 onDisappear 会清空详情状态，必须在关闭前捕获名称，与来源/文件一起入队。
       const name = this.detailModpackName_.trim();
-      this.closeDetail(); this.installModpackFromSheet(project, picked, primary, name); return;
+      this.closeDetail(); this.installModpackFromSheet(project, picked, primary, name, capture); return;
     }
     if (!this.hasValidCurrentVersion()) { this.toast('安装目标已失效'); return; }
     if (project.kind === ResourceKind.MOD && !isModVersionCompatible(picked,
@@ -2177,7 +2267,7 @@ export struct ModBrowsePage {
     }
     const deps = this.detailResolvedDeps_.slice();
     this.closeDetail();
-    this.executeInstall(project, picked, primary, deps).catch((e: Error): void => { this.toast(e.message); });
+    this.executeInstall(project, picked, primary, deps, capture).catch((e: Error): void => { this.toast(e.message); });
   }
 
   /**
@@ -2185,7 +2275,7 @@ export struct ModBrowsePage {
    * 走 ModpackInstallTask（统一下载任务），在 DownloadTasksSheet 显示橙色卡片。
    */
   private installModpackFromSheet(project: RemoteProject, picked: RemoteVersion, primary: RemoteFile,
-    versionName?: string): void {
+    versionName?: string, capture?: ResourceEnqueued): void {
     let ctx = this.uiCtx();
     if (ctx === undefined) { this.toast('环境未就绪，无法安装整合包'); return; }
     let filesDir = ctx.filesDir;
@@ -2214,13 +2304,15 @@ export struct ModBrowsePage {
       resolveCfFile: createModpackFileResolver(this.cacheRemoteMeta, this.onlyOfficialModpackFiles_(),
         this.resolveCurseForgeFileMode() === CurseForgeFileSourceMode.OFFICIAL_FIRST),
     });
-    this.runModpackInstall_(task, project.id);
+    this.runModpackInstall_(task, project.id, capture);
   }
 
   /** 统一的整合包任务入队 + 完成处理（toast + 缺失清单对话框）。在线/本地导入共用。 */
-  private runModpackInstall_(task: ModpackInstallTask, lockId?: string): void {
+  private runModpackInstall_(task: ModpackInstallTask, lockId?: string, capture?: ResourceEnqueued): void {
     if (lockId !== undefined) this.downloadingProjectIds_.add(lockId);
-    getDownloadTaskRegistry().enqueue(task).then(() => {
+    const completion = getDownloadTaskRegistry().enqueue(task);
+    if (capture !== undefined) capture(task, completion);
+    completion.then(() => {
       if (lockId !== undefined) this.downloadingProjectIds_.delete(lockId);
       this.refreshModpackRecovery_();
       if (task.view.state !== UnifiedTaskState.DONE) {
@@ -2248,10 +2340,10 @@ export struct ModBrowsePage {
   }
 
   /** 绑定本次另存的详情会话和选中文件；系统窗口暂时隐藏宿主页时仍允许正常返回。 */
-  private async saveResourceFileFromSheet_(project: RemoteProject, version: RemoteVersion, file: RemoteFile): Promise<void> {
-    if (this.detailSavePickerPending_) return;
+  private async saveResourceFileFromSheet_(project: RemoteProject, version: RemoteVersion, file: RemoteFile): Promise<string> {
+    if (this.detailSavePickerPending_) return '';
     const context = this.uiCtx();
-    if (context === undefined) { this.toast('环境未就绪，无法选择保存位置'); return; }
+    if (context === undefined) { this.toast('环境未就绪，无法选择保存位置'); return ''; }
     const session = this.detailSession_;
     const epoch = this.detailFetchEpoch_;
     const isCurrent = (): boolean => this.detailInteractionActive_() && this.usesCustomResourceSave_(project.kind)
@@ -2260,11 +2352,13 @@ export struct ModBrowsePage {
     try {
       const id = await pickAndStartModFileSave(context, project, version, file, isCurrent);
       // 取消和过期均保留详情；已入队的任务交给 Registry，不依赖页面继续存活。
-      if (id.length === 0 || !isCurrent()) return;
+      if (id.length === 0 || !isCurrent()) return id;
       this.closeDetail();
       this.onOpenDownloadTask(id);
+      return id;
     } catch (error) {
       if (isCurrent()) this.toast((error as Error).message || '无法开始下载，请重试');
+      return '#failed';
     } finally {
       if (!this.detailDisposed_) this.detailSavePickerPending_ = false;
     }
@@ -2320,35 +2414,49 @@ export struct ModBrowsePage {
   }
 
   /** 从本地导入 .mrpack / CurseForge .zip 整合包并安装。 */
-  private async importLocalModpack_(): Promise<void> {
+  private async importLocalModpack_(stillCurrent?: () => boolean): Promise<string> {
     let ctx = this.uiCtx();
-    if (ctx === undefined) { this.toast('环境未就绪，无法导入整合包'); return; }
-    let filesDir = ctx.filesDir;
-    // 文件选择是异步操作；在入口快照设置中的全局根，避免等待期间被页面临时目标覆盖。
-    const installRoot = this.mcDir;
-    // 每次导入使用独占目录，排队期间再次选择同名 ZIP 不会替换前一任务输入。
-    let importDir = filesDir + '/modpack-import/' + newVersionInstallOwner();
-    let res = await GameArchiveIO.importResourceFile(ctx, importDir, ['.mrpack', '.zip']);
-    if (res.cancelled) return;
-    if (!res.ok) { this.toast(res.message); return; }
-    let archivePath = importDir + '/' + res.name;
-    let title = res.name;
-    let dot = title.lastIndexOf('.');
-    if (dot > 0) title = title.substring(0, dot);
-    // 本地没有在线项目详情可预填，使用文件名生成安全默认名；选完文件后仍先展示
-    // 下载详情，让用户像普通版本一样改名并点击开始。此时尚未入队，也未写实例目录。
-    this.localModpackArchive_ = archivePath;
-    this.localModpackRoot_ = installRoot;
-    this.localModpackFilesDir_ = filesDir;
-    this.localModpackName_ = sanitizeVersionName(title);
-    this.localModpackNameError_ = validateModpackVersionName(this.localModpackName_);
-    this.showLocalModpackDetail_ = true;
+    if (ctx === undefined) { this.toast('环境未就绪，无法导入整合包'); return 'failed'; }
+    if (this.localImportPending_ || this.showLocalModpackDetail_) return 'busy';
+    this.localImportPending_ = true;
+    try {
+      let filesDir = ctx.filesDir;
+      // 文件选择是异步操作；在入口快照设置中的全局根，避免等待期间被页面临时目标覆盖。
+      const installRoot = this.mcDir;
+      const generation = this.localPickerGeneration_;
+      // 每次导入使用独占目录，排队期间再次选择同名 ZIP 不会替换前一任务输入。
+      let importDir = filesDir + '/modpack-import/' + newVersionInstallOwner();
+      let res = await GameArchiveIO.importResourceFile(ctx, importDir, ['.mrpack', '.zip']);
+      if (res.cancelled) return 'cancelled';
+      if (!res.ok) { this.toast(res.message); return 'failed'; }
+      let archivePath = importDir + '/' + res.name;
+      const owner = this.ownLocalArchive_(filesDir, importDir, res.name);
+      // 页面重挂后即使重新可见，也不能接手旧选择器返回的文件。
+      if (this.detailDisposed_ || this.localPickerGeneration_ !== generation || (stillCurrent !== undefined && !stillCurrent())) {
+        owner(true);
+        return 'expired';
+      }
+      this.dismissLocalDraft_();
+      this.localArchiveOwner_ = owner;
+      let title = res.name;
+      let dot = title.lastIndexOf('.');
+      if (dot > 0) title = title.substring(0, dot);
+      // 本地没有在线项目详情可预填，使用文件名生成安全默认名；选完文件后仍先展示
+      // 下载详情，让用户像普通版本一样改名并点击开始。此时尚未入队，也未写实例目录。
+      this.localModpackArchive_ = archivePath;
+      this.localModpackRoot_ = installRoot;
+      this.localModpackFilesDir_ = filesDir;
+      this.localModpackName_ = sanitizeVersionName(title);
+      this.localModpackNameError_ = validateModpackVersionName(this.localModpackName_);
+      this.showLocalModpackDetail_ = true;
+      return 'selected';
+    } finally { this.localImportPending_ = false; }
   }
 
 
 
   private async executeInstall(project: RemoteProject, picked: RemoteVersion, primary: RemoteFile,
-    _dependencies: ResolvedDependency[]): Promise<void> {
+    _dependencies: ResolvedDependency[], capture?: ResourceEnqueued): Promise<void> {
     const router = this.router_;
     if (router === null) throw new Error('模组来源不可用');
     const mcDir = this.targetMcDir_;
@@ -2363,11 +2471,15 @@ export struct ModBrowsePage {
         const request: ModInstallRequest = { mcDir: mcDir, versionId: versionId, versionIsolation: isolation, root: picked,
           title: project.title, router: router, optionalIds: optionalIds, oldPath: old?.filePath, wasEnabled: old?.enabled };
         const task = new ModInstallTask(request);
-        await getDownloadTaskRegistry().enqueue(task);
+        const completion = getDownloadTaskRegistry().enqueue(task);
+        if (capture !== undefined) capture(task, completion);
+        await completion;
       } else {
         const task = new ResourceInstallTask({ projectTitle: project.title, iconUrl: project.iconUrl,
           request: { kind: project.kind, mcDir: mcDir, versionId: versionId, versionIsolation: isolation, primary: primary, dependencies: [] } });
-        await getDownloadTaskRegistry().enqueue(task);
+        const completion = getDownloadTaskRegistry().enqueue(task);
+        if (capture !== undefined) capture(task, completion);
+        await completion;
       }
       this.onStatusMessage(project.title + ' 安装完成');
       this.toast(project.title + ' 安装完成');
@@ -2557,6 +2669,149 @@ export struct ModBrowsePage {
     }, SEARCH_DEBOUNCE_MS);
   }
 
+  /** 每次操作重新读取当前页面。搜索与控件走相同的筛选顺序、源策略及结果同步。 */
+  private async handleBrowseSkill_(operations:BrowseSkill,method:string,args:Record<string,Object>):Promise<Record<string,Object>> {
+    const kind=this.currentBrowseKind_();
+    if (method==='listResourceTargets') {
+      if (args['kind'] !== kind) return { 'state':'failed','reason':'resourcePageChanged' };
+      if (this.showDetailSheet_ || this.showModpackRecovery_ || this.showLocalModpackDetail_) return {'state':'needsUser','reason':'panelBusy'};
+      this.openVersionPicker();
+      return {'state':'ready','kind':kind,'target':this.targetVersionId_,'location':this.targetLocation_,
+        'sandbox':this.sandboxVersions_,'external':this.externalVersions_,'customSave':supportsCustomResourceSave(kind)};
+    }
+    if (method==='selectResourceTarget') {
+      if (!this.showVersionPicker_ || args['kind']!==kind) return {'state':'failed','reason':'targetPickerChanged'};
+      const location=args['location'];
+      if (location==='custom' && supportsCustomResourceSave(kind)) {
+        this.onPickCustomResourceSave_(); return {'state':'ready','location':'custom'};
+      }
+      const version=args['instance'];
+      if (typeof version!=='string' || (location!=='external' && location!=='sandbox')) return {'state':'failed','reason':'invalidArguments'};
+      const actualRoot=location==='external'?GameStorage.externalMcDir():this.uiCtx()?GameStorage.sandboxMcDir(this.uiCtx()!):this.mcDir;
+      const listed=location==='external'?this.externalVersions_:this.sandboxVersions_;
+      if (!listed.includes(version) || !actualRoot || !this.scanRootVersions(actualRoot).includes(version)) return {'state':'failed','reason':'instanceChanged'};
+      this.onPickVersion(location as string,version as string);
+      return {'state':'ready','instance':this.targetVersionId_,'location':this.targetLocation_};
+    }
+    if (method==='listModpackRecovery' || method==='continueModpackRecovery' || method==='dismissModpackRecovery') {
+      if (kind!==ResourceKind.MODPACK || this.showDetailSheet_ || this.showVersionPicker_ || this.showLocalModpackDetail_) return {'state':'needsUser','reason':'modpackPageRequired'};
+      if (method==='listModpackRecovery') {
+        if (!this.showModpackRecovery_) this.openModpackRecovery_();
+        if (this.modpackRecoveryLoading_) return {'state':'initializing'};
+        if (this.modpackRecoveryFailed_) return {'state':'failed','reason':'recoveryScanFailed'};
+        return {'state':'ready','records':this.modpackRecovery_.map((r):Record<string,Object>=>({'id':r.id,'instance':r.versionName,'title':r.title,'missing':r.missingCount}))};
+      }
+      const item=this.modpackRecovery_.find(r=>r.id===args['id']);
+      if (!this.modpackRecoveryVisible_() || !item || this.modpackRecoveryLoading_ || this.modpackDismissId_) return {'state':'failed','reason':'recoveryChanged'};
+      if (method==='continueModpackRecovery') {
+        return this.resumeModpack_(item,true);
+      }
+      LauncherSkillBus.awaitingUser(method);
+      const dismissed=await this.confirmDismissModpack_(item);
+      return {'state':dismissed,'id':item.id};
+    }
+    if (method==='resourceProjectSource') {
+      const info=this.resourceAccess_().detail();
+      if (!info || !this.resourceAccess_().available() || info.project.id!==args['project'] || info.project.source!==args['source']) return {'state':'failed','reason':'detailChanged'};
+      if (DistributionPolicy.isStore()) return {'state':'failed','reason':'unavailableForProduct'};
+      const target=args['target'];
+      if (args['choice']==='website') {
+        const outcome = await this.openWebsiteFromSheet();
+        return { 'state':outcome === 'browserOpened' ? 'needsUser' : 'unavailable','reason':outcome };
+      }
+      if (target!==ModSource.MODRINTH && target!==ModSource.CURSEFORGE) return {'state':'failed','reason':'invalidSource'};
+      if (args['choice']==='crossSourceWeb') {
+        const outcome = await this.openCrossSourceWeb(target as ModSource);
+        return { 'state':outcome === 'browserOpened' ? 'needsUser' : 'unavailable','reason':outcome };
+      }
+      if (args['choice']==='switch') {
+        const projectId = await this.switchDetailSource(target as ModSource);
+        return projectId ? {'state':'ready','project':projectId,'source':target} : {'state':'unavailable','reason':'sourceUnavailable'};
+      }
+      return {'state':'failed','reason':'invalidArguments'};
+    }
+    return operations.run(method,args);
+  }
+
+  /** 真实筛选或目标换代会退休旧计划，即使用户随后又切回原值。翻译刷新沿用同一代。 */
+  private appliedResourceContext_: string = '';
+  private resourceContextRevision_: number = 0;
+  private searchWork_: Promise<void> | null = null;
+
+  private resourceContext_(): string {
+    return JSON.stringify([this.kindIdx_,this.mcDir,this.targetMcDir_,this.targetVersionId_,this.targetValid_,
+      this.usesCustomResourceSave_(this.currentBrowseKind_()),this.versionIsolation,this.modSource,this.cacheRemoteMeta,
+      this.resolveCurseForgeFileMode(),this.queryInput_,this.gameVersionInput_,this.activeLoaderFilter_(),this.sortInput_]);
+  }
+
+  private resourceAccess_(): ResourceBrowseAccess {
+    return {
+      available: (): boolean => this.inited_ && !this.detailDisposed_ && this.hostVisible
+        && AppStorage.get<boolean>('appInForeground') === true && AppStorage.get<boolean>('amclHostPageVisible') === true
+        && !this.showVersionPicker_ && !this.showModpackRecovery_,
+      kind: (): ResourceKind => this.currentBrowseKind_(),
+      filesDir: (): string => this.uiCtx()?.filesDir ?? '',
+      contextKey: (): string => JSON.stringify([this.resourceContextRevision_,this.resourceContext_()]),
+      view: (): ModSearchState => this.ctrl_?.getState() ?? this.view_,
+      search: async (query: string, loader: string | undefined, game: string | undefined, sort: SortBy | undefined): Promise<void> => {
+        if (this.debounceTimer_ !== 0) { clearTimeout(this.debounceTimer_); this.debounceTimer_ = 0; }
+        this.initialSearchDone_ = true;
+        this.queryInput_ = query;
+        if (loader !== undefined) this.setActiveLoaderFilter_(loader);
+        if (game !== undefined) this.gameVersionInput_ = game;
+        if (sort !== undefined) { this.sortInput_ = sort; this.sortExplicit_ = true; }
+        this.applyFiltersToController();
+        const revision=this.resourceContextRevision_, intent=this.resourceContext_();
+        await this.triggerSearch(true);
+        // 同语义的译名更新可能替换在途首搜，等待实际网络请求，不使用固定延时。
+        for (let attempt=0;attempt<2 && this.searchWork_ && this.resourceContextRevision_===revision &&
+          this.resourceContext_()===intent;attempt++) {
+          await this.searchWork_;
+        }
+      },
+      next: (): Promise<void> => this.triggerSearch(false),
+      open: (project: RemoteProject): Promise<void> => this.openDetail(project),
+      pick: (version: RemoteVersion): Promise<void> => this.pickDetailVersion(version),
+      toggle: (key: string): Promise<void> => this.toggleDetailDep(key),
+      rename: (name: string): void => this.updateDetailModpackName_(name),
+      dismiss: (): void => this.closeDetail(),
+      importLocal: (stillCurrent: () => boolean): Promise<string> => this.importLocalModpack_(stillCurrent),
+      local: (): LocalPackDraft | null => {
+        if (!this.showLocalModpackDetail_) return null;
+        const draft: LocalPackDraft = { archive:this.localModpackArchive_, root:this.localModpackRoot_,
+          name:this.localModpackName_,valid:this.localModpackRoot_===this.mcDir && !this.localModpackNameError_ };
+        return draft;
+      },
+      renameLocal: (name: string): void => this.setLocalModpackName_(name),
+      submitLocal: (capture: ResourceEnqueued): void => this.confirmLocalModpack_(capture),
+      submit: (capture: ResourceEnqueued): void => this.confirmInstallFromSheet(capture),
+      confirmDependencies: async (project:string,files:string[],target:string):Promise<boolean>=>{
+        const decision=await this.getUIContext().getPromptAction().showDialog({title:'安装「'+project+'」及所选依赖？',
+          message:'目标：'+target+'\\n依赖：'+files.join('、'),buttons:[
+          {text:'取消',color:this.theme.textSecondary as string},{text:'安装',color:this.theme.actionText as string}]}).catch(():undefined=>undefined);
+        return decision?.index===1;
+      },
+      saveSelectedFile: async ():Promise<string>=>{
+        if (!this.detailInteractionActive_() || !this.detailPreparedForResourceSave_ || !this.usesCustomResourceSave_(this.detailProject_.kind)
+          || !this.detailInstallReady_ || !this.detailSelectedVersion_ || !this.detailPrimaryFile_) throw new Error('planChanged');
+        return this.saveResourceFileFromSheet_(this.detailProject_,this.detailSelectedVersion_,this.detailPrimaryFile_);
+      },
+      detail: (): ResourceDetailSelection | null => {
+        if (!this.detailInteractionActive_()) return null;
+        const pack = this.detailProject_.kind === ResourceKind.MODPACK;
+        return { project: this.detailProject_, selected: this.detailSelectedVersion_, file: this.detailPrimaryFile_,
+          versions: this.detailAllVersions_, deps: this.detailDeps_.map((d: ModDetailDepRow): ResourceDependencyChoice =>
+            ({key:d.key, displayName:d.displayName, dependencyType:d.dependencyType, selected:d.selected,
+              alreadyInstalled:d.alreadyInstalled, versionNumber:d.versionNumber})), name: this.detailModpackName_,
+          ready: this.detailInstallReady_, loading: this.detailLoading_ || this.detailPreparingInstall_,
+          error: this.detailError_.length > 0 || this.detailInstallError_.length > 0 || (pack && this.detailModpackNameError_.length > 0),
+          saveOnly: this.usesCustomResourceSave_(this.detailProject_.kind), session: this.detailSession_, revision: this.detailFetchEpoch_,
+          root: pack ? this.mcDir : this.targetMcDir_, target: pack ? this.detailModpackName_ : this.targetVersionId_,
+          isolation: this.versionIsolation, sourcePolicy: JSON.stringify([this.modSource, this.cacheRemoteMeta, this.resolveCurseForgeFileMode()]) };
+      }
+    };
+  }
+
   private applyFiltersToController(): void {
     let ctrl = this.ctrl_;
     if (ctrl === null) return;
@@ -2573,20 +2828,28 @@ export struct ModBrowsePage {
     this.sortInput_ = this.sortExplicit_ ? this.sortInput_
       : (this.queryInput_.trim().length > 0 ? SortBy.RELEVANCE : SortBy.DOWNLOADS);
     ctrl.setSortBy(this.sortInput_);
+    const context=this.resourceContext_();
+    if (context!==this.appliedResourceContext_) {
+      this.appliedResourceContext_=context;
+      this.resourceContextRevision_++;
+    }
   }
 
-  private triggerSearch(first: boolean): void {
+  private async triggerSearch(first: boolean): Promise<void> {
     if (first) { this.resetRetreat_(); this.retreatScrollable_ = false; this.retreatAnchorInset_ = -1; }
     let ctrl = this.ctrl_;
-    if (ctrl === null) return;
-    let p = first ? ctrl.loadFirstPage() : ctrl.loadNextPage();
+    if (ctrl === null || (!first && ctrl.getState().loading)) return;
+    const pending=first ? ctrl.loadFirstPage() : ctrl.loadNextPage();
     this.syncViewFromController();
-    p.then(() => {
+    const work=pending.then((): void => {
       this.syncViewFromController();
-    }).catch((e: Error) => {
+    }).catch((e: Error): void => {
       AppLogger.warn(TAG, 'search error', e, LOG_DOMAIN_DOWNLOAD);
       this.syncViewFromController();
     });
+    this.searchWork_=work;
+    await work;
+    if (this.searchWork_===work) this.searchWork_=null;
   }
 
   private loadNextPage(): void {
@@ -2774,8 +3037,7 @@ export struct ModBrowsePage {
           Text('将在设置选择的位置创建独立版本').fontSize(12).fontColor(this.theme.textSecondary)
           ModpackNameInput({ theme: this.theme, value: this.localModpackName_, error: this.localModpackNameError_,
             onChange: (value: string): void => {
-              this.localModpackName_ = value;
-              this.localModpackNameError_ = validateModpackVersionName(value);
+              this.setLocalModpackName_(value);
             } })
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)

@@ -5,7 +5,7 @@
  */
 import { DownloadManager, DownloadTaskView, UnifiedTaskView, UnifiedTaskState, UnifiedDownloadAdapter,
   TaskCategory, getDownloadTaskRegistry } from 'feature_core';
-import { ModInstallRequest, ModInstallObserver, ModInstallService, ModInstallFile, MOD_INSTALL_COMMIT_PHASE } from './ModInstallService';
+import { ModInstallRequest, ModInstallObserver, ModInstallService, ModInstallFile, MOD_INSTALL_COMMIT_PHASE, updateFileIdentity } from './ModInstallService';
 import { RemoteVersion, resourceKindToInstallDir, ResourceKind } from './ModTypes';
 import { ResourceFileProvider, ResourceFileEntry } from './ResourceInstallTask';
 
@@ -38,7 +38,8 @@ export class ModInstallTask implements UnifiedDownloadAdapter, ResourceFileProvi
   constructor(request: ModInstallRequest) {
     this.request_ = { mcDir: request.mcDir, versionId: request.versionId, versionIsolation: request.versionIsolation,
       root: JSON.parse(JSON.stringify(request.root)) as RemoteVersion, title: request.title, router: request.router,
-      optionalIds: request.optionalIds.slice(), oldPath: request.oldPath, wasEnabled: request.wasEnabled };
+      optionalIds: request.optionalIds.slice(), oldPath: request.oldPath, wasEnabled: request.wasEnabled,
+      oldIdentity: request.oldPath === undefined ? undefined : (request.oldIdentity ?? updateFileIdentity(request.oldPath)) };
     const dir = resourceKindToInstallDir(ResourceKind.MOD, request.mcDir, request.versionId, request.versionIsolation);
     this.view.id = 'mod-plan:' + dir + ':' + request.root.source + ':' + request.root.projectId;
     this.view.title = request.title;

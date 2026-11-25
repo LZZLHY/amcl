@@ -95,6 +95,24 @@ function fixture() {
   return { state, model, load, env, skin, cape, legacy };
 }
 {
+  const f = fixture(), Subject = f.env.load(EDITOR, true).OfflineAppearanceEditor;
+  const subject = new Subject(); subject.accountId = 'one'; subject.aboutToAppear(); await settle();
+  const read = () => subject.skillAppearance_('readOfflineAppearance', {});
+  let draft = await read();
+  const args = d => ({editorRef:d.editorRef,revision:d.revision,playerName:'MachineName',skin:'',cape:'',model:'CLASSIC'});
+  for (const change of [()=>{subject.username='PlayerDraft';},()=>subject.choose_(f.skin),
+    ()=>subject.choose_(f.cape),()=>{subject.model='SLIM';}]) {
+    change();
+    assert.equal((await subject.skillAppearance_('saveOfflineAppearance',args(draft))).reason,'staleDraft');
+    assert.equal((await subject.skillAppearance_('discardOfflineAppearance',args(draft))).reason,'staleDraft');
+    const next=await read(); assert.notEqual(next.editorRef,draft.editorRef); draft=next;
+  }
+  assert.equal(f.state.saves.length,0);assert.equal(subject.username,'PlayerDraft');
+  assert.equal((await subject.skillAppearance_('saveOfflineAppearance',args(draft))).state,'ready');
+  assert.equal(f.state.saves.length,1);assert.equal(f.state.name,'MachineName');
+  pass('草稿中改名、换皮肤和披风或模型都会拒绝旧票保存和放弃，新票仍能提交');
+}
+{
   const f = fixture(), snapshot = await f.model.load({}, 'one');
   assert.equal(snapshot.appearance.revision, 3); assert.equal(snapshot.skins.length, 2); assert.equal(snapshot.capes.length, 1);
   assert.equal(await f.model.importFile({}, 'skin'), null); assert.equal(f.state.imports.length, 0); assert.equal(f.state.saves.length, 0);

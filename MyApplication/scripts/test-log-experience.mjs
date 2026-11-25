@@ -5,7 +5,44 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { evidenceRuntime } from './lib/evidence-test-runtime.mjs';
+import { loadActionComponent } from './lib/unified-actions-fixture.mjs';
+import { verifySkillCases } from './lib/skill-business-check.mjs';
 import ts from './lib/ets-compiler.mjs';
+
+test('readActivityEvents resumes inside a redacted exception and continues into the next event', async () => {
+  const f = evidenceRuntime();
+  try {
+    const owner = loadActionComponent('entry/src/main/ets/pages/ActivityLogPage.ets','ActivityLogWorkspace',{
+      methods:['skillEvents_','eventPage_'],dependencies:{
+        '../components/ActivityLogModel':f.load('entry/src/main/ets/components/ActivityLogModel.ets'),
+        commons:{...f.load('commons/src/main/ets/utils/EvidenceIo.ets'),
+          ...f.load('commons/src/main/ets/utils/EvidencePresentation.ets'),...f.load('commons/src/main/ets/utils/LogExport.ets')}
+      }});
+    const page = new owner();
+    const lines = ['[12:00:00] [main/ERROR]: ExampleException',
+      ...Array.from({length:39},(_,i)=>'  at test.line'+(i+1)),
+      '  at '+('x '.repeat(1220))+'Bearer ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+      '[12:00:01] [main/INFO]: done'];
+    const file = f.write('skill-events.log',lines.join('\n')+'\n');
+    Object.assign(page,{activityId:73,pageActive:true,context:f.context,evidenceFiles:[{
+      localPath:file,fileId:'log-A',path:'skill-events.log',bytes:fs.statSync(file).size,state:'available'
+    }]});
+    const read = args => page.skillEvents_({activityId:73,fileId:'log-A',...args},false);
+    const first = await read({}), bad = await read({rowOffset:999});
+    verifySkillCases('readActivityEvents', first, bad);
+    assert.equal(bad.reason,'invalidRowOffset');
+    assert.equal(first.events.length,30);
+    assert.deepEqual([first.hasMore,first.nextOffset,first.nextRowOffset],[true,0,30]);
+    const second = await read({offset:first.nextOffset,rowOffset:first.nextRowOffset});
+    assert.equal(second.hasMore,false);
+    const all = [...first.events,...second.events];
+    assert.deepEqual(all.slice(0,40).map(e=>e.line),lines.slice(0,40).map((_,i)=>i+1));
+    assert.equal(all.at(-1).text,lines.at(-1));
+    const long = all.filter(e=>e.line===41).map(e=>e.text).join('');
+    assert.ok(long.includes('x '.repeat(1220)));assert.ok(!long.includes('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'));
+    assert.deepEqual([second.nextOffset,second.nextRowOffset],[2,0]);
+  } finally { f.close(); }
+});
 
 // Native writer 使用 UTC 消除隐式 TZ 读取；读取器必须同时保留新旧日志事件和各自原始时间。
 test('UTC native timestamps and legacy local timestamps keep separate complete events', async () => {
@@ -255,8 +292,8 @@ test('legacy settings export waits for clipboard completion and only exports the
   const source = fs.readFileSync(file, 'utf8');
   const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const component = ast.statements.find(node => node.members?.some(member => member.name?.getText(ast) === 'exportLogToClipboard'));
-  const member = component.members.find(item => item.name?.getText(ast) === 'exportLogToClipboard');
-  const compiled = ts.transpileModule('export class Page {\n' + member.getText(ast) + '\n}', {
+  const methods=['launcherDiagnosticSummary_','exportLogToClipboard'].map(name=>component.members.find(item=>item.name?.getText(ast)===name).getText(ast));
+  const compiled = ts.transpileModule('export class Page {\n' + methods.join('\n') + '\n}', {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 },
   }).outputText;
   const exports = {}; const notices = []; const outputs = []; let resolve, reject;

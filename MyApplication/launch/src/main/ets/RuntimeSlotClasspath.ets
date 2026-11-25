@@ -11,7 +11,7 @@ import { LwjglRuntimeSlot, lwjglRuntimeSlot } from './LwjglRuntimeSlots';
 /**
  * 返回选定目录的固定 JAR 名单。目录必须精确匹配现役槽位，不接受相似前缀目录。
  * 返回新数组，调用方排序或追加元素不会污染下一次启动。322 的 jemalloc 是既有
- * 兼容模块；modern 则继续依照其清单省略 jemalloc，保留已验证的 StdlibAllocator 回退。
+ * 兼容模块；modern 按独立清单使用配套的 OHOS 分配器。
  */
 export function lwjglSlotJarNames(slotDirectory: string, javaFeature: number = 0): string[] {
   const slot: LwjglRuntimeSlot = lwjglRuntimeSlot(slotDirectory, javaFeature);

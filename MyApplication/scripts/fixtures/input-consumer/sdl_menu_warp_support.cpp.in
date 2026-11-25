@@ -1,0 +1,25 @@
+/* 保持宿主C++版bridge的链接名和真实API，只为实际SDL公共入口提供平台边缘。 */
+#include <cstdint>
+void inputBridge_publishAddress();
+void inputBridge_setLookCursor(double, double);
+void inputBridge_testSetMenuNowNs(uint64_t);
+void inputBridge_publishMenuCursor(double, double);
+void inputBridge_getCursorSnapshot(double*, double*);
+void inputBridge_sdlSetTargetV1(uint64_t, uint64_t, uint64_t);
+void inputBridge_sdlNotifyFramePresentedForTargetV1(uint64_t, uint64_t);
+void inputBridge_publishTouchMenuRelativeV1(int, uint32_t, double, double, double, double);
+
+extern "C" void sourceSdkWarpPresent() { inputBridge_sdlNotifyFramePresentedForTargetV1(61, 700); }
+extern "C" void sourceSdkWarpSetup(uint64_t target) {
+    inputBridge_testSetMenuNowNs(1000000000);
+    inputBridge_publishAddress();
+    inputBridge_sdlSetTargetV1(target, 6000, 61);
+    sourceSdkWarpPresent();
+}
+extern "C" void sourceSdkWarpPosition(double x, double y) { inputBridge_publishMenuCursor(x, y); }
+extern "C" void sourceSdkWarpSnapshot(double* x, double* y) { inputBridge_getCursorSnapshot(x, y); }
+extern "C" void sourceSdkWarpRelative(int phase, double dx, double dy) {
+    inputBridge_publishTouchMenuRelativeV1(phase, 0, dx, dy, phase == 5 ? 0 : 639, phase == 5 ? 0 : 479);
+}
+
+extern "C" void sourceSdkWarpLookCursor(double x, double y) { inputBridge_setLookCursor(x, y); }

@@ -18,6 +18,8 @@ constexpr std::size_t RecordCapacity = 320;
 constexpr std::int64_t MaxActivity = INT64_C(9007199254740991);
 constexpr int RetryLimit = 32;
 constexpr int HandoffTimeoutMs = 3000;
+// 手机必须等到 ArkTS 轮询发现退出、做原游戏资源清理、再把冷启动请求交给系统。
+constexpr int PhoneRestartTimeoutMs = 6000;
 constexpr int PollLimit = 64;
 // Pending 与 deferred ack 是两个独立 atomic。四个握手操作必须处于同一个 SC 总序，
 // 否则 release/acquire 的 store-buffering 允许双方同时读旧值，导致确认没有进入 pipe。
@@ -36,6 +38,7 @@ class Operations {
 public:
     virtual ~Operations() = default;
     virtual int pid() const noexcept = 0;
+    virtual int openFilesDirectory(const char* filesDir) noexcept = 0;
     virtual int openAuthority(const char* filesDir, int borrowedLockFd) noexcept = 0;
     virtual bool checkAuthority(int filesDirFd, int borrowedLockFd) noexcept = 0;
     virtual int openRecordDirectory(int filesDirFd) noexcept = 0;
@@ -109,26 +112,29 @@ private:
 
 // 只写可信数字和常量字符串，不拼接路径、用户文本或错误信息到退出 JSON。
 inline std::size_t Serialize(char* target, std::size_t capacity, std::int64_t activity,
-                             int pid, int parent, int code, std::int64_t timestamp) noexcept
+                             int pid, int parent, int code, std::int64_t timestamp, bool phone = false) noexcept
 {
     Buffer out(target, capacity);
     out.text("{\"schema\":1,\"activityId\":"); out.number(activity);
     out.text(",\"pid\":"); out.number(pid);
     out.text(",\"parentPid\":"); out.number(parent);
     out.text(",\"exitCode\":"); out.number(code);
-    out.text(",\"source\":\"jvm-exit\",\"timestamp\":"); out.number(timestamp < 0 ? 0 : timestamp);
+    out.text(phone ? ",\"source\":\"phone-jvm-exit\",\"timestamp\":" : ",\"source\":\"jvm-exit\",\"timestamp\":");
+    out.number(timestamp < 0 ? 0 : timestamp);
     out.text("}\n"); return out.finish();
 }
 
 // handoff 结果只作诊断；acknowledged 表示 UI 已发送确认，不等于系统证明启动器已在前台。
 inline std::size_t SerializeHandoff(char* target, std::size_t capacity, std::int64_t activity,
-                                    int pid, int code, const char* outcome, std::int64_t timestamp) noexcept
+                                    int pid, int code, const char* outcome, std::int64_t timestamp,
+                                    int waitBudgetMs = HandoffTimeoutMs) noexcept
 {
     Buffer out(target, capacity);
     out.text("{\"schema\":1,\"activityId\":"); out.number(activity);
     out.text(",\"pid\":"); out.number(pid); out.text(",\"exitCode\":"); out.number(code);
     out.text(",\"source\":\"jvm-exit-handoff\",\"outcome\":\""); out.text(outcome);
-    out.text("\",\"waitBudgetMs\":3000,\"timestamp\":"); out.number(timestamp < 0 ? 0 : timestamp);
+    out.text("\",\"waitBudgetMs\":"); out.number(waitBudgetMs);
+    out.text(",\"timestamp\":"); out.number(timestamp < 0 ? 0 : timestamp);
     out.text("}\n"); return out.finish();
 }
 
@@ -159,6 +165,27 @@ public:
         return 0;
     }
 
+    /**
+     * 仅由已独占 JVM 创建事务的共享游戏路线调用。它没有独立进程的借用锁，绑定
+     * 当前 PID 和本局已经登记的活动身份；记录和退出管道仍按同一协议预先准备。
+     */
+    bool preparePhone(Operations& ops, const char* filesDir, std::int64_t activity) noexcept
+    {
+        const int current = ops.pid();
+        if (current <= 0 || !ValidDirectory(filesDir) || activity <= 0 || activity > MaxActivity) return false;
+        int phase = Empty;
+        if (!phase_.compare_exchange_strong(phase, Authorizing, std::memory_order_acq_rel)) return false;
+        const int files = ops.openFilesDirectory(filesDir);
+        if (files < 0) { phase_.store(Empty, std::memory_order_release); return false; }
+        std::memcpy(path_, filesDir, std::strlen(filesDir) + 1);
+        owner_ = current; parent_ = current; files_ = files; phone_ = true;
+        phase_.store(Authorized, std::memory_order_release);
+        if (prepare(ops, filesDir, activity) == 0) return true;
+        ops.closeOwned(files);
+        phase_.store(Empty, std::memory_order_release);
+        return false;
+    }
+
     int prepare(Operations& ops, const char* filesDir, std::int64_t activity) noexcept
     {
         int phase = phase_.load(std::memory_order_acquire);
@@ -166,9 +193,9 @@ public:
         if (phase == Authorizing) return -4;
         if (owner_ != ops.pid()) return 1;
         if (!ValidDirectory(filesDir) || std::strcmp(path_, filesDir) != 0 || activity <= 0 || activity > MaxActivity) return -1;
-        if (phase == Prepared) return activity == activity_ && ops.checkAuthority(files_, lock_) ? 0 : -2;
+        if (phase == Prepared) return activity == activity_ && (phone_ || ops.checkAuthority(files_, lock_)) ? 0 : -2;
         if (phase != Authorized || !phase_.compare_exchange_strong(phase, Preparing, std::memory_order_acq_rel)) return -4;
-        if (!ops.checkAuthority(files_, lock_)) { phase_.store(Authorized, std::memory_order_release); return -3; }
+        if (!phone_ && !ops.checkAuthority(files_, lock_)) { phase_.store(Authorized, std::memory_order_release); return -3; }
         char temporary[48], finalName[48], handoffName[48];
         Buffer temp(temporary, sizeof(temporary)); temp.number(activity); temp.text(".json.tmp");
         Buffer finalBuffer(finalName, sizeof(finalName)); finalBuffer.number(activity); finalBuffer.text(".json");
@@ -216,6 +243,27 @@ public:
         return (phase == Pending || phase == Finished) && owner_ == ops.pid();
     }
 
+    // 由真实 Java shutdown hook 提交；直接 Runtime.halt 或启动早退缺少这项事实。
+    void markJavaShutdown(Operations& ops) noexcept
+    {
+        if (armed(ops) && phone_) javaShutdown_.store(true, std::memory_order_release);
+    }
+
+    bool phonePending(Operations& ops) const noexcept
+    {
+        if (phase_.load(std::memory_order_acquire) != Pending || owner_ != ops.pid() || !phone_ ||
+            ackStarted_.load(std::memory_order_acquire) || ackDeferred_.load(HandoffHandshakeOrder)) return false;
+        const auto now = ops.monotonicMs();
+        return now >= 0 && now < phoneDeadline_;
+    }
+
+    bool claimPhoneRestart(Operations& ops) noexcept
+    {
+        bool expected = false;
+        return phonePending(ops) && claimed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel) &&
+            phonePending(ops);
+    }
+
     /** 前台 UI 的非阻塞确认；不等待 VM 线程。重复调用不重复写 pipe。 */
     Acknowledgement acknowledge(Operations& ops, int& originalCode) noexcept
     {
@@ -246,15 +294,21 @@ public:
     bool emit(Operations& ops, int code) noexcept
     {
         if (!armed(ops)) return false;
+        if (phone_ && (code != 0 || !javaShutdown_.load(std::memory_order_acquire))) return false;
         int expected = Prepared;
         if (!phase_.compare_exchange_strong(expected, Exiting, std::memory_order_acq_rel)) return false;
         char json[RecordCapacity];
-        const std::size_t length = Serialize(json, sizeof(json), activity_, owner_, parent_, code, ops.nowMs());
+        const std::size_t length = Serialize(json, sizeof(json), activity_, owner_, parent_, code, ops.nowMs(), phone_);
         if (length == 0) return false;
         if (!writeAll(ops, record_, json, length) || !retry([&ops, this] { return ops.sync(record_); })) return false;
         if (!retry([&ops, this] { return ops.publish(directory_, temporary_, final_); })) return false;
         // 文件 rename 已成功后，即使目录 fsync 失败，final 仍是一份可解析的退出请求证据。
         if (!retry([&ops, this] { return ops.sync(directory_); })) return false;
+        if (phone_) {
+            const auto now = ops.monotonicMs();
+            if (now < 0 || now > INT64_MAX - PhoneRestartTimeoutMs) return false;
+            phoneDeadline_ = now + PhoneRestartTimeoutMs;
+        }
         exitCode_ = code;
         phase_.store(Pending, HandoffHandshakeOrder);
         return true;
@@ -273,14 +327,14 @@ public:
         }
         const std::int64_t start = ops.monotonicMs();
         if (start < 0 || start > INT64_MAX - HandoffTimeoutMs) return finishHandoff(ops, "clock-error");
-        const std::int64_t deadline = start + HandoffTimeoutMs;
+        const std::int64_t deadline = phone_ ? phoneDeadline_ : start + HandoffTimeoutMs;
         int interrupts = 0;
         for (int attempt = 0; attempt < PollLimit; ++attempt) {
             const std::int64_t now = ops.monotonicMs();
             if (now < start) return finishHandoff(ops, "clock-error");
             if (now >= deadline) return finishHandoff(ops, "timeout");
             const IoResult result = ops.pollAck(ackRead_, static_cast<int>(deadline - now));
-            if (result.value == 1) return finishHandoff(ops, "acknowledged");
+            if (result.value == 1) return finishHandoff(ops, phone_ ? "declined" : "acknowledged");
             if (result.value < 0) {
                 if (result.interrupted && interrupts++ < RetryLimit) continue;
                 return finishHandoff(ops, result.interrupted ? "interrupt-budget" : "io-error");
@@ -305,7 +359,8 @@ private:
     void reportHandoff(Operations& ops, const char* outcome) noexcept
     {
         char line[RecordCapacity];
-        const std::size_t length = SerializeHandoff(line, sizeof(line), activity_, owner_, exitCode_, outcome, ops.nowMs());
+        const std::size_t length = SerializeHandoff(line, sizeof(line), activity_, owner_, exitCode_, outcome,
+            ops.nowMs(), phone_ ? PhoneRestartTimeoutMs : HandoffTimeoutMs);
         // 诊断写失败不改变原始退出码，也不再等待 fsync；它不参与终态账本判定。
         if (length) writeAll(ops, handoffRecord_, line, length);
     }
@@ -328,9 +383,12 @@ private:
     std::atomic<int> phase_{Empty};
     std::atomic<bool> ackStarted_{false};
     std::atomic<bool> ackDeferred_{false};
+    std::atomic<bool> javaShutdown_{false};
+    std::atomic<bool> claimed_{false};
+    bool phone_ = false;
     int owner_ = 0, parent_ = 0, lock_ = -1, files_ = -1, directory_ = -1, record_ = -1;
     int handoffRecord_ = -1, ackRead_ = -1, ackWrite_ = -1, exitCode_ = 0;
-    std::int64_t activity_ = 0;
+    std::int64_t activity_ = 0, phoneDeadline_ = 0;
     char path_[PathCapacity]{}, temporary_[48]{}, final_[48]{};
 };
 

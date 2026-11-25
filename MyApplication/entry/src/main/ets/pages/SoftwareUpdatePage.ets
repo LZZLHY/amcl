@@ -1,4 +1,7 @@
 import { applyNativeTheme } from '../components/AppTheme';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { UpdatePackageSelection } from '../launcherskill/UpdatePackageSelection';
+import { SettingsSkillData, settingFailure, settingKeys, settingText } from '../launcherskill/SettingsSkillValues';
 /**
  * 软件更新的持久入口：选择 App 通道、检查推荐、下载与导入官方原始 HAP。
  * 本页持展示、文件选择和常驻账号入口的可见性；更新任务仍由既有Coordinator执行。
@@ -14,6 +17,7 @@ import { UpdateChecker, UpdateManifest } from 'update';
 import { ProductBuildProfile } from 'entry/ProductBuildProfile';
 import { SideloadUpdateService } from '../sideload/SideloadUpdateService';
 import { SideloadUpdatePageParams } from '../sideload/SideloadUpdateViewModel';
+import { getDownloadTaskRegistry, TaskCategory } from 'feature_core';
 
 @Entry
 @Component
@@ -46,9 +50,99 @@ struct SoftwareUpdatePage {
   /** 路由可见性同时交给独立账号入口，页面隐藏时撤销其网页登录和迟到检查。 */
   @State private visible: boolean = true;
 
+  private skillDialog_: boolean = false;
+  private recoveryTaskId_: string = '';
+  private recoveryActivity_: number = 0;
+  private recoveryParent_: number = 0;
+  private checkRecoveryOnShow_: boolean = false;
+  private skillActive_(): boolean {
+    return this.visible && !DistributionPolicy.isStore() && this.requirementValid &&
+      AppStorage.get<boolean>('appInForeground') === true;
+  }
+
+  /** 仅返回公开的版本身份和阶段；选择器 URI、开发者凭据及服务器响应不随回包外传。 */
+  private skillUpdateState_(): SettingsSkillData {
+    const installed=UpdateChecker.installedIdentity();
+    if (!installed) return {'state':'unknown','reason':'installedVersionUnavailable'};
+    try {
+      const stored=this.preferences.strictLauncherField('appUpdateChannel');
+      if (!this.developerExitRequested && stored !== this.channel) return {'state':'unknown','reason':'channelChanged'};
+    } catch (_) { return {'state':'unknown','reason':'channelUnreadable'}; }
+    const m = this.candidate;
+    return { 'state':'ready', 'current':installed.name,'currentCode':installed.code,
+      'channel':this.channel, 'developer':this.developerInstalled, 'checking':this.checking,
+      'recoveryTaskId':this.recoveryTaskId_, 'recoveryActivityId':this.recoveryActivity_, 'recoveryParentId':this.recoveryParent_,
+      'importing':this.importing, 'pending':this.pending, 'recommended':m?.versionName ?? '',
+      'target':m ? UpdateChecker.targetKey(m,ProductBuildProfile.product) : '',
+      'installable':!!m && UpdateChecker.canInstall(m,this.channel,installed) };
+  }
+
+  private async updateSkill_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (!this.skillActive_()) return settingFailure('notInteractive');
+    if (method === 'updateAccountAccess') return LauncherSkillBus.forward(this,'updateAccount',method,args);
+    if (method === 'getLauncherUpdate' && settingKeys(args,[])) return this.skillUpdateState_();
+    if (method === 'checkLauncherUpdate' || method === 'selectLauncherUpdateChannel' || method === 'installRecommendedUpdate') {
+      const state=this.skillUpdateState_();
+      if (state['state'] !== 'ready') return state;
+    }
+    if (this.skillDialog_ || this.checking || this.importing) return settingFailure('busy');
+    if (method === 'checkLauncherUpdate' && settingKeys(args,[])) {
+      if (this.developerInstalled && !this.developerExitRequested) return settingFailure('selectDeveloperExitChannel');
+      await this.check();
+      return this.candidate ? this.skillUpdateState_() : settingFailure('recommendationUnavailable');
+    }
+    if (method === 'selectLauncherUpdateChannel' && settingKeys(args,['channel'])) {
+      const channel = settingText(args,'channel');
+      if (channel !== 'stable' && channel !== 'preview') return settingFailure('invalidChannel');
+      if (this.developerInstalled) this.exitDeveloper(channel);
+      else await this.chooseChannel(channel);
+      if (!this.visible || channel !== this.channel) return settingFailure('selectionNotCommitted');
+      return this.skillUpdateState_();
+    }
+    if (method === 'openUpdateSource' && settingKeys(args,['source'])) {
+      const source = settingText(args,'source');
+      if (source === 'officialReleasePage') {
+        return await this.openGithub() ? { 'state':'needsUser', 'reason':'browser' } : settingFailure('browserUnavailable');
+      }
+      if (source === 'localPackage') {
+        return UpdatePackageSelection.begin(this.context.filesDir, (): Promise<SettingsSkillData> => this.importPackage());
+      }
+      if (source === 'previousAttempt' && this.pending) {
+        await this.getUIContext().getRouter().pushUrl({url:'pages/SideloadUpdatePage',params:{autoStart:false}});
+        return { 'state':'needsUser', 'reason':'existingUpdate' };
+      }
+      return settingFailure('sourceUnavailable');
+    }
+    if (method === 'installRecommendedUpdate' && settingKeys(args,['target'])) {
+      const expected = this.candidate;
+      if (!expected || !UpdateChecker.canInstall(expected,this.channel) ||
+        UpdateChecker.targetKey(expected,ProductBuildProfile.product) !== args['target']) return settingFailure('targetChanged');
+      this.skillDialog_ = true;
+      try {
+        LauncherSkillBus.awaitingUser(method);
+        const decision = await this.getUIContext().getPromptAction().showDialog({title:'安装推荐更新？',
+          message:'AMCL v'+expected.versionName+'（'+this.channel+'），将进入正常更新流程。',
+          buttons:[{text:'取消',color:this.theme.textSecondary as string},{text:'继续',color:this.theme.actionText as string}]});
+        if (decision.index !== 1) return {'state':'cancelled'};
+        const checked=this.skillUpdateState_();
+        if (checked['state'] !== 'ready') return checked;
+        if (!this.skillActive_() || this.candidate !== expected || this.checking || this.importing ||
+          checked['installable'] !== true) return settingFailure('targetChanged');
+        return await this.startUpdate() ? {'state':'needsUser','reason':'updatePageOpened','target':args['target']} :
+          settingFailure('updatePageUnavailable');
+      } finally { this.skillDialog_ = false; }
+    }
+    return settingFailure('invalidArguments');
+  }
+
   aboutToAppear(): void {
+    LauncherSkillBus.bindOpener('updateAccount',this,(): boolean => this.skillActive_());
+    LauncherSkillBus.bind('softwareUpdate',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.updateSkill_(method,args), (): boolean => this.skillActive_());
     this.channel=this.preferences.appUpdateChannel;this.applyTheme();
-    const params=this.getUIContext().getRouter().getParams() as SideloadUpdatePageParams;
+    const routeParams=this.getUIContext().getRouter().getParams();
+    const params=routeParams as SideloadUpdatePageParams;
+    this.bindRecoverySource_(routeParams as Record<string,Object> | undefined);
     this.runtimeIntentId=params?.runtimeIntentId;
     const required=params?.requiredHostProtocol;
     this.requiredHostProtocol=typeof required==='number' && Number.isInteger(required) && required>0 && required<=999 ? required : 0;
@@ -61,9 +155,22 @@ struct SoftwareUpdatePage {
     if(!this.requirementValid)this.status='JDK 更新要求无效，请返回运行时页重新选择。';
     if(this.requirementValid && this.requiredHostProtocols.length>0)this.status='所选 JDK 需要先更新 AMCL；将核对目标应用的兼容性。';
   }
-  onPageShow(): void { this.applyTheme(); this.visible=true;this.developerInstalled=!UpdateChecker.automaticAllowed();this.syncConfirmedChannel();this.pending=!DistributionPolicy.isStore() && SideloadUpdateService.get(this.context).needsAttention();}
+  /** 重查沿用完整的通道与安装资格判断。原失败下载仅提供归属信息，不会自动安装或重试旧包。 */
+  private bindRecoverySource_(params: Record<string,Object> | undefined): void {
+    if (DistributionPolicy.isStore() || !params || typeof params['recoveryTaskId'] !== 'string') return;
+    const owner = getDownloadTaskRegistry().getAdapter(params['recoveryTaskId'] as string);
+    if (!owner || owner.view.category !== TaskCategory.APP_UPDATE || !owner.view.canRecoverExternally ||
+      owner.view.startedAtMs !== params['recoveryActivityId'] || owner.view.parentActivityId !== params['recoveryParentId']) return;
+    this.recoveryTaskId_ = owner.view.id; this.recoveryActivity_ = owner.view.startedAtMs; this.recoveryParent_ = owner.view.parentActivityId;
+    this.checkRecoveryOnShow_ = true;
+  }
+  onPageShow(): void {
+    this.applyTheme(); this.visible=true; this.developerInstalled=!UpdateChecker.automaticAllowed(); this.syncConfirmedChannel();
+    this.pending=!DistributionPolicy.isStore() && SideloadUpdateService.get(this.context).needsAttention();
+    if (this.checkRecoveryOnShow_) { this.checkRecoveryOnShow_=false; this.check(); }
+  }
   onPageHide(): void {this.visible=false;this.generation++;this.checking=false;}
-  aboutToDisappear(): void {this.visible=false;this.generation++;}
+  aboutToDisappear(): void {LauncherSkillBus.unbindOpener('updateAccount',this);LauncherSkillBus.unbind('softwareUpdate',this);this.visible=false;this.generation++;}
   private applyTheme(): void {
     const mode=this.preferences.themeMode;
     this.theme=resolveTheme(mode,resolveIsDark(mode,this.colorMode===ConfigurationConstant.ColorMode.COLOR_MODE_DARK),this.preferences.themeAccent);
@@ -114,39 +221,42 @@ struct SoftwareUpdatePage {
     finally {if(generation===this.generation)this.checking=false;}
   }
   /** 当前候选在跳转前再次核对通道。路由只传公开清单，下载及安装仍复用既有流程。 */
-  private startUpdate(): void {
+  private async startUpdate(): Promise<boolean> {
     // store暂停应用自更新，旧页面或缓存候选不能绕过入口隐藏。
-    if (DistributionPolicy.isStore() || !this.requirementValid) return;
+    if (DistributionPolicy.isStore() || !this.requirementValid) return false;
     const manifest=this.candidate;
-    if(manifest===undefined || !UpdateChecker.canInstall(manifest,this.channel) || this.checking || this.importing) return;
+    if(manifest===undefined || !UpdateChecker.canInstall(manifest,this.channel) || this.checking || this.importing) return false;
     const params: SideloadUpdatePageParams={manifest:manifest,autoStart:true,requiredHostProtocol:this.requiredHostProtocol,requiredHostProtocols:this.requiredHostProtocols.slice(),runtimeIntentId:this.runtimeIntentId};
-    this.getUIContext().getRouter().pushUrl({url:'pages/SideloadUpdatePage',params:params});
+    try { await this.getUIContext().getRouter().pushUrl({url:'pages/SideloadUpdatePage',params:params}); return true; }
+    catch (_) { this.status='暂时无法打开更新流程，请稍后重试。'; return false; }
   }
-  private openGithub(): void {
+  private async openGithub(): Promise<boolean> {
     // 网页兜底也受渠道约束，不能因旧路由重入而恢复浏览器下载。
-    if (DistributionPolicy.isStore()) return;
+    if (DistributionPolicy.isStore()) return false;
     const url=this.candidate?.url || ('https://github.com/LZZLHY/amcl/releases'+(this.channel==='stable'?'/latest':''));
     const want: Want={action:'ohos.want.action.viewData',entities:['entity.system.browsable'],uri:url};
-    this.context.startAbility(want).catch((): void=>{this.status='暂时无法打开浏览器，请稍后重试。';});
+    try { await this.context.startAbility(want); return true; }
+    catch (_) { this.status='暂时无法打开浏览器，请稍后重试。'; return false; }
   }
   /** 系统选择器权限只用于读取；页面离开后即使预检完成也不自动签名或安装。 */
-  private async importPackage(): Promise<void> {
-    if(this.importing || this.checking || DistributionPolicy.isStore() || !this.requirementValid) return;
+  private async importPackage(): Promise<SettingsSkillData> {
+    if(this.importing || this.checking || DistributionPolicy.isStore() || !this.requirementValid) return settingFailure('notAvailable');
     const generation=++this.generation, channel=this.channel;
     this.importing=true;this.status='请选择从 GitHub 或官网开发者构建下载的原始未签名 HAP。';
     const owner=SideloadUpdateService.get(this.context);
     try {
       const document=new picker.DocumentViewPicker(this.context);
       const files=await document.select({maxSelectNumber:1,fileSuffixFilters:['HarmonyOS 安装包|.hap']});
-      if(files.length===0) {if(generation===this.generation)this.status='已取消选择安装包。';return;}
-      if(!this.visible || generation!==this.generation) return;
+      if(files.length===0) {if(generation===this.generation)this.status='已取消选择安装包。';return {'state':'cancelled'};}
+      if(!this.visible || generation!==this.generation) return settingFailure('ownerChanged');
       this.status='正在核对安装包与官方发布记录…';
       const prepared=await owner.preparePickedPackage(files[0],channel,this.requiredHostProtocol,this.requiredHostProtocols);
-      if(!this.visible || generation!==this.generation || channel!==this.channel) {owner.discardPreparedPackage(prepared.token);return;}
+      if(!this.visible || generation!==this.generation || channel!==this.channel) {owner.discardPreparedPackage(prepared.token);return settingFailure('ownerChanged');}
       const params: SideloadUpdatePageParams={manifest:prepared.manifest,importToken:prepared.token,autoStart:true,requiredHostProtocol:this.requiredHostProtocol,requiredHostProtocols:this.requiredHostProtocols.slice(),runtimeIntentId:this.runtimeIntentId};
       try {await this.getUIContext().getRouter().pushUrl({url:'pages/SideloadUpdatePage',params:params});}
       catch(error) {owner.discardPreparedPackage(prepared.token);throw error as Error;}
-    } catch(error) {if(this.visible && generation===this.generation)this.status=(error as Error).message;}
+      return {'state':'accepted','target':UpdateChecker.targetKey(prepared.manifest,ProductBuildProfile.product)};
+    } catch(error) {if(this.visible && generation===this.generation)this.status=(error as Error).message;return settingFailure('packageNotPrepared');}
     finally {this.importing=false;}
   }
 

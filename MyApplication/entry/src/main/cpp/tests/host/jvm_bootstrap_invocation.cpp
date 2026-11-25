@@ -54,6 +54,9 @@ struct State { const char* directory = ""; } state;
 bool owned() { return false; }
 }
 bool amclGameExitArmedForCurrentProcess() { return false; }
+// 普通宿主 JVM 没有设备的游戏退出所有者。
+bool amclPhoneExitArmed() { return false; }
+void JNICALL phoneGameExitHook(jint) { std::abort(); }
 long long amclLedgerGetLaunchActivity() { return 0; }
 void JNICALL isolatedGameExitHook(jint) {}
 std::string g_classpath, g_extraLibPath, g_status, g_mcStatus;
@@ -177,7 +180,10 @@ int Options(const std::string& jvm, const std::string& javaHomeDir, const std::s
         exactOption("-XX:ErrorFile=" + directory + "/hs_err_pid%p.log");
         std::cout << "OWNED_PATH_BYTES=" << directory.size() << " OWNED_OPTIONS=PASS" << std::endl;
     }
-    for (const auto& option : optVec) std::cout << "PRODUCTION_OPTION=" << option.optionString << std::endl;
+    for (const auto& option : optVec) {
+        Require(std::string(option.optionString) != "exit", "unarmed host JVM received a game exit hook");
+        std::cout << "PRODUCTION_OPTION=" << option.optionString << std::endl;
+    }
     optVec.erase(std::remove_if(optVec.begin(), optVec.end(), [](const JavaVMOption& option) {
         return std::string(option.optionString).rfind("-Djava.system.class.loader=", 0) == 0;
     }), optVec.end());

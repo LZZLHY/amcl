@@ -115,6 +115,50 @@ int main(){
     CHECK(api->submitEvent(&motion)==0);
     CHECK(failurePoints>0);
     std::printf("single MOVE allocations: light=%zu queued=%zu; failure points=%zu\n",thin,loaded,failurePoints);
+    // 建立另一只鼠标的流后，交替送入两只鼠标。积压变大不能导致逐样本复制历史 prefix。
+    auto second = motion; second.header.deviceId = 9;
+    CHECK(api->submitEvent(&second) == AMCL_INPUT_OK);
+    // 通过与真实 IME 两键/L2 单键共用的 batch 入口，独立计数并在每个分配点拒绝一次；
+    // 试验前后的 held、已接收数和队列应成组提交，不能泄露已入队的第一条。
+    auto down = event(AMCL_INPUT_EVENT_PHYSICAL_KEY,epoch);
+    down.header.source=AMCL_INPUT_SOURCE_KEYBOARD;down.header.deviceClass=AMCL_INPUT_DEVICE_CLASS_UNKNOWN;
+    down.payload.physicalKey.physicalKey=65;down.payload.physicalKey.action=AMCL_INPUT_ACTION_DOWN;
+    auto up=down;up.payload.physicalKey.action=AMCL_INPUT_ACTION_UP;
+    const AmclInputEvent tap[]={down,up};
+    allocations=0;counting=true;const int tapStatus=api->submitBatch(tap,2);counting=false;
+    CHECK(tapStatus==0);const size_t tapLight=allocations;
+    for(size_t point=0;point<tapLight+3;++point){
+        CHECK(HostInputStateCore().GetObservability(&coreBefore)==0);
+        failAfter=static_cast<int>(point);const int status=api->submitBatch(tap,2);
+        failAfter=-1;
+        if(status==0)break;
+        CHECK(status==AMCL_INPUT_ERROR_RESOURCE_EXHAUSTED);
+        CHECK(HostInputStateCore().GetObservability(&coreAfter)==0);
+        CHECK(coreBefore.lastSequence==coreAfter.lastSequence && coreBefore.accepted==coreAfter.accepted);
+        CHECK(coreBefore.heldControlCount==coreAfter.heldControlCount);
+    }
+    allocations=0;counting=true;const auto dualBefore=api->submitEvent(&motion);counting=false;
+    CHECK(dualBefore==0);const size_t dualLight=allocations;
+    for(int i=0;i<24;++i)CHECK(api->submitEvent(i%2?&second:&motion)==0);
+    allocations=0;counting=true;const auto dualAfter=api->submitEvent(&second);counting=false;
+    CHECK(dualAfter==0 && allocations<=dualLight+4);
+    std::printf("two physical streams MOVE allocations: first=%zu queued=%zu\n",dualLight,allocations);
+    allocations=0;counting=true;const int tapLoaded=api->submitBatch(tap,2);counting=false;
+    CHECK(tapLoaded==0 && allocations<=tapLight+4);
+    std::printf("two key edges allocations: first=%zu queued=%zu\n",tapLight,allocations);
+    // 三只实体指针交替输入，检查真实消费者每次收到当前设备的位移，覆盖不同归约顺序。
+    const AmclLookPolicyV1 neutral{sizeof(neutral),0,1,1,0};
+    CHECK(look->applyPolicy(3,&neutral)==0);
+    for (const uint64_t id : {10u,8u,9u,10u}) {
+        auto sample=motion;sample.header.deviceId=id;
+        sample.payload.pointerRelative.rawDx=static_cast<double>(id);
+        sample.payload.pointerRelative.rawDy=-static_cast<double>(id);
+        CHECK(api->submitEvent(&sample)==0);
+        CHECK(HostInputStateCore().GetObservability(&coreAfter)==0 && look->physicalPrefix(coreAfter.lastSequence,&token)==1);
+        AmclLookEmissionV1 output{};
+        CHECK(look->prepare(consumers[0],token,&output)==1 && output.dx==id && output.dy==-static_cast<double>(id));
+        CHECK(look->claim(&output)==1 && look->complete(&output,AMCL_CONTROL_STATE_FINAL)==0);
+    }
     // 新inactive surface即便保留metadata也不能登记新的look流，capture不代理活surface。
     surface.active=0;CHECK(api->publishSurface(&surface)==0);AmclInputLookCoreResourceV1 unavailable{};
     CHECK(amclInputOwnerReadLookResourceV1(&unavailable)==0);

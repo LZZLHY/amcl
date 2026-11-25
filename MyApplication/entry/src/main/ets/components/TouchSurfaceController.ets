@@ -27,6 +27,9 @@ export class TouchSurfaceCandidate {
   get key(): string { return this.semanticKey }
   /** 只读原候选的能力事实；不重新查页面profile、Native或当前资源。 */
   get capabilityIssue(): string { return this.capabilityIssueValue }
+  /** 进度观察只需要持久身份的两个标量，使用已冻结定义，不为心跳复制控件树。 */
+  get profileId(): string { return this.profileValue.profileId ?? '' }
+  get profileRevision(): number { return this.profileValue.profileRevision ?? 0 }
   /** 读取返回独立副本；等待/呈现期间外部草稿或UI修改都不能反写Native待发消息。 */
   get profile(): LayoutProfile { return cloneLayout(this.profileValue) }
   get layout(): RuntimeTouchLayout { return cloneRuntimeTouchLayout(this.layoutValue) }
@@ -64,6 +67,8 @@ export class TouchSurfaceController {
   private disposed: boolean = false
   private busy: boolean = false
   private acceptedToken: string = ''
+  private receiptStamp: ArrayBuffer = new ArrayBuffer(16)
+  private observedGroupRevision: string = ''
   /** 相同pending失败只报告一次；恢复后新故障可重新报告，不向每帧日志/界面刷屏。 */
   private lastFailure: string = ''
   /** 真实推进路径记录的阶段；只读status不查询Native、不数触点或推进发布。 */
@@ -115,13 +120,15 @@ export class TouchSurfaceController {
    * 在途（或已应用）候选冻结的保存身份，desiredCandidateId 另述最新目标；二者不同
    * 时明确等待上一发布，不把旧 UI ACK 拼接到新保存修订。读取不数触点、不访问 Native。
    */
-  status(): InputConfigurationProgress {
-    const state: InputConfigurationProgress = new InputConfigurationProgress()
+  status(state: InputConfigurationProgress = new InputConfigurationProgress()): InputConfigurationProgress {
+    // 可复用的同域草稿不能把上次终结拒绝带入下一次正常或等待回执。
+    state.terminalRejection = false; state.completedOperationId = ''; state.completedProfileId = ''
+    state.completedProfileRevision = 0; state.capabilityIssue = ''
     state.operationId = this.publication?.operationId ?? ''
     state.candidateId = this.publication?.candidate.id ?? this.desired?.id ?? ''
     state.token = this.publication?.token ?? this.acceptedToken
     state.desiredCandidateId = this.desired?.id ?? ''
-    const target: LayoutProfile | undefined = (this.publication?.candidate ?? this.applied ?? this.desired)?.profile
+    const target = this.publication?.candidate ?? this.applied ?? this.desired
     state.targetProfileId = target?.profileId ?? ''; state.targetProfileRevision = target?.profileRevision ?? 0
     if (this.disposed) { state.stage = 'Retired'; state.reason = 'FrontendRetired'; return state }
     if (!this.active) { state.stage = 'Waiting'; state.reason = 'FrontendInactive'; return state }
@@ -158,7 +165,18 @@ export class TouchSurfaceController {
     if (this.publication === undefined && this.rejectedKey === this.desired.key) return
     this.busy = true
     try {
-      let state: TouchPublicationReceipt = testNapi.touchPublicationState()
+      let state: TouchPublicationReceipt
+      if (this.publication === undefined && this.applied?.key === this.desired.key &&
+        typeof testNapi.touchPublicationStateIfChanged === 'function') {
+        const change: TouchPublicationReceipt | null = testNapi.touchPublicationStateIfChanged(this.receiptStamp)
+        if (change === null) {
+          // 组 ACK 可能仍待确认。沿原 tick 通知缓存修订，由组自身判断是否需要重读。
+          this.groupsChanged(this.observedGroupRevision)
+          return
+        }
+        state = change
+        if (this.validReceipt(state)) this.observedGroupRevision = state.groupRevision ?? ''
+      } else { state = testNapi.touchPublicationState() }
       if (!this.validReceipt(state)) throw new Error('触控发布状态不可用')
       // 原必要维护只追加标量通知；完整 mask 由变化/在途恢复分支按需读取。
       if (state.groupRevision !== undefined) this.groupsChanged(state.groupRevision)
@@ -238,6 +256,7 @@ export class TouchSurfaceController {
     const definition: LayoutProfile = publication.candidate.profile
     this.completedProfileId = definition.profileId ?? ''; this.completedProfileRevision = definition.profileRevision ?? 0
     this.acceptedToken = token; this.publication = undefined
+    this.receiptStamp = new ArrayBuffer(16)
     this.progressStage='Applied'; this.progressReason=''
     this.reconcile()
     return true

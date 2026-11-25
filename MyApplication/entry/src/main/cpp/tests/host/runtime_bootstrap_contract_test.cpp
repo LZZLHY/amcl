@@ -19,6 +19,30 @@ int main() {
     amcl::jvm::ApplyAudioMixerDefaults(audioArgs);
     REQUIRE(audioArgs == audioOnce);
     using namespace amcl::jvm;
+    const std::string modern = "/mc/.amcl-runtime/id/lwjgl-ohos/lwjgl-jemalloc.jar";
+    REQUIRE(AllocatorRuntimeSlot(false, "LWJGL3", "other:" + modern + ":last") == "LWJGL3");
+    REQUIRE(AllocatorRuntimeSlot(false, "LWJGL3", modern) == "LWJGL3");
+    REQUIRE(AllocatorRuntimeSlot(false, "LWJGL3", modern + ".bak:/mc/lwjgl-ohos-322/lwjgl-jemalloc.jar").empty());
+    REQUIRE(AllocatorRuntimeSlot(true, "LWJGL322", modern) == "LWJGL322");
+    // HAP 缺件在现代槽提前报告；旧槽即使没有对应库也继续启动，且不会去读它。
+    REQUIRE(CheckModernAllocatorFile("LWJGL3", "/hap/libs", [](const std::string& p) {
+        return p == "/hap/libs/libamcl_lwjgl_jemalloc.so";
+    }));
+    REQUIRE(!CheckModernAllocatorFile("LWJGL3", "/hap/libs", [](const auto&) { return false; }));
+    REQUIRE(CheckModernAllocatorFile("LWJGL322", "/hap/libs", [](const auto&) { std::abort(); return false; }));
+    // 三代槽使用同一游戏启动入口；只有明确的现代槽绑定本包的独立分配器。
+    for (const std::string slot : {"LWJGL3", "LWJGL322", "LWJGL2", ""}) {
+        const auto selected = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so",
+            false, JnaBootstrap{}, slot);
+        const auto allocator = std::find_if(selected.begin(), selected.end(), [](const auto& property) {
+            return property.first == "org.lwjgl.system.jemalloc.libname";
+        });
+        if (slot == "LWJGL3") {
+            REQUIRE(allocator != selected.end() && allocator->second == "/hap/libs/libamcl_lwjgl_jemalloc.so");
+        } else {
+            REQUIRE(allocator == selected.end());
+        }
+    }
     auto properties = RuntimeBootstrapProperties("/hap/libs", "/instance", "mobilegl", "libmobilegl.so", true);
     // 当前安装包映像是唯一目录来源：用户数据、路径穿越、别的DSO都不能冒充本包。
     std::string directory, ownerError;

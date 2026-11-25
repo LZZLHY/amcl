@@ -6,8 +6,8 @@ import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { SideloadUpdateCoordinator } from './SideloadUpdateCoordinator';
 import { SideloadUpdateSnapshot } from './SideloadUpdateSnapshot';
-import { SideloadUpdatePageParams } from './SideloadUpdateTestSession';
-export { SideloadUpdatePageParams } from './SideloadUpdateTestSession';
+import { SideloadUpdatePageParams } from './SideloadUpdatePromptPolicy';
+export { SideloadUpdatePageParams } from './SideloadUpdatePromptPolicy';
 
 @Observed
 export class SideloadUpdateViewModel {
@@ -108,7 +108,7 @@ export class SideloadUpdateViewModel {
     if (windowInteractive !== undefined) owner.setForeground(windowInteractive, this.runtimeGeneration);
     owner.retryConnection();
   }
-  openDebugSettings(): void { this.ownedCoordinator()?.openDebugSettings(); }
+  async openDebugSettings(): Promise<boolean> { const owner=this.ownedCoordinator(); return owner !== undefined && owner !== null && await owner.openDebugSettings(); }
   login(): void { this.ownedCoordinator()?.login(); }
   closeLogin(): void { this.ownedCoordinator()?.closeLogin(); }
   loginFailed(message: string): void { this.ownedCoordinator()?.loginFailed(message); }

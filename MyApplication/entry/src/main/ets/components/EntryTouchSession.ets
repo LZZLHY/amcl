@@ -26,10 +26,29 @@ class EntryTouchVisualSample {
   guiReads: number
   epoch: number
   values: number[] | undefined = undefined
-  constructor(lease: EntryTouchInputMaintenanceLease, guiReads: number, epoch: number) {
+  readonly frame: Float64Array | undefined
+  private buffered: number[] | undefined = undefined
+  private bufferedFull: boolean = false
+  constructor(lease: EntryTouchInputMaintenanceLease, guiReads: number, epoch: number, buffered: boolean = false) {
     this.lease = lease
     this.guiReads = guiReads
     this.epoch = epoch
+    if (buffered) this.frame = new Float64Array(26)
+  }
+  /** 只有数值变化时生成不可变数组。嵌套 UI 回调不会改写上一观察者持有的值。 */
+  maintain(full: boolean): boolean {
+    const frame = this.frame
+    if (frame === undefined) return false
+    frame[25] = -1
+    const maintained: boolean = testNapi.maintainTouchFrontend(frame.buffer as ArrayBuffer, full)
+    if (frame[25] >= 0) {
+      if (frame[25] !== 0 || this.buffered === undefined || full !== this.bufferedFull) {
+        this.buffered = Array.from(frame.subarray(0,full ? 25 : 2))
+        this.bufferedFull = full
+      }
+      this.values = this.buffered
+    }
+    return maintained
   }
 }
 
@@ -51,19 +70,6 @@ export class EntryTouchVisual {
   guide: TouchGuideFeedback=new TouchGuideFeedback()
 }
 
-/** 只读操作收据来自原会话的实际计数；读取不取得来源资格，也不推进任何时钟。 */
-export class EntryTouchObservationSnapshot {
-  sourceCurrent: boolean = false
-  timerActive: boolean = false
-  visualSubscribed: boolean = false
-  geometrySubscribed: boolean = false
-  guiSubscribed: boolean = false
-  guiReads: number = 0
-  geometryDeliveries: number = 0
-  visualDeliveries: number = 0
-  gyroStatus: string = ''
-}
-
 export class EntryTouchSession {
   private directory: string = ''
   private bindings: TouchBindingSnapshot = new TouchBindingSnapshot()
@@ -76,10 +82,9 @@ export class EntryTouchSession {
   private lastVisual: number[] = []
   /** 菜单面板位置是实际绘制/命中几何；它与可退订的光标、高亮、教学投影分别送达。 */
   private geometryReceive: ((x: number, y: number) => void) | undefined = undefined
-  private lastGeometry: string = ''
+  private lastGeometryX: number = NaN
+  private lastGeometryY: number = NaN
   private guiReads: number = 0
-  private geometryDeliveries: number = 0
-  private visualDeliveries: number = 0
   private warned: boolean = false
   private heartbeatWarned: boolean = false
   private active: boolean = false
@@ -259,15 +264,15 @@ export class EntryTouchSession {
     if (this.gyroStore!==store || this.gyroConfigurationEpoch!==epoch || this.sourceLease!==lease) {
       store.removeInputConfigurationDefinitionListener(definition); return
     }
-    store.addInputConfigurationListener(listener,'touch-gyro',(): InputConfigurationProgress => this.gyroConfigurationProgress())
+    store.addInputConfigurationListener(listener,'touch-gyro',
+      (scratch?: InputConfigurationProgress): InputConfigurationProgress => this.gyroConfigurationProgress(scratch))
     if (this.gyroStore!==store || this.gyroConfigurationEpoch!==epoch || this.sourceLease!==lease) {
       store.removeInputConfigurationListener(listener); store.removeInputConfigurationDefinitionListener(definition)
     }
   }
 
   /** 只读缓存副本；状态查询不推进retire/Native/sensor或原配置listener。 */
-  private gyroConfigurationProgress(): InputConfigurationProgress {
-    const copy: InputConfigurationProgress=new InputConfigurationProgress()
+  private gyroConfigurationProgress(copy: InputConfigurationProgress = new InputConfigurationProgress()): InputConfigurationProgress {
     copy.stage=this.gyroProgress.stage; copy.reason=this.gyroProgress.reason
     copy.operationId=this.gyroProgress.operationId; copy.targetProfileId=this.gyroProgress.targetProfileId
     copy.targetProfileRevision=this.gyroProgress.targetProfileRevision
@@ -279,7 +284,7 @@ export class EntryTouchSession {
     guiReceive?: (state: GameGuiState) => void,
     geometryReceive?: (x: number, y: number) => void): void {
     this.stop()
-    this.geometryReceive=geometryReceive; this.lastGeometry=''
+    this.geometryReceive=geometryReceive; this.lastGeometryX=NaN; this.lastGeometryY=NaN
     this.subscribeVisual(receive, guiReceive)
     this.startSources(active)
   }
@@ -385,6 +390,9 @@ export class EntryTouchSession {
     if (active && this.timer === -1) {
       const lease: EntryTouchInputMaintenanceLease | undefined = this.sourceLease
       const epoch: number = this.gyroConfigurationEpoch
+      // 缓冲归原时钟与原激活代次；重挂来源使用独立存储。
+      const buffered = lease !== undefined && typeof testNapi.maintainTouchFrontend === 'function' ?
+        new EntryTouchVisualSample(lease,this.guiReads,epoch,true) : undefined
       this.timer = setInterval(() => {
         if (!this.active || epoch !== this.gyroConfigurationEpoch || lease === undefined || this.sourceLease !== lease || !isEntryTouchInputMaintenanceCurrent(lease)) return
         try { this.heartbeat?.() }
@@ -397,9 +405,13 @@ export class EntryTouchSession {
         }
         // 同轮gyro和外观共用已取得的只读值；无UI订阅也照常维护Source，不以刷新节拍驱动输入。
         if (epoch !== this.gyroConfigurationEpoch) return
-        const sample: EntryTouchVisualSample | undefined = this.gyroOptions.gyroscopeMode !== 'off' &&
+        const wantsProjection = this.receive !== undefined || this.geometryReceive !== undefined ||
+          (this.gyroOptions.gyroscopeMode !== 'off' && this.touchAdmitted && this.grabbed)
+        const sample: EntryTouchVisualSample | undefined = buffered !== undefined && wantsProjection ? buffered :
+          this.gyroOptions.gyroscopeMode !== 'off' &&
           this.touchAdmitted && this.grabbed && (this.receive !== undefined || this.geometryReceive !== undefined)
           ? new EntryTouchVisualSample(lease, this.guiReads, epoch) : undefined
+        if (sample !== undefined) { sample.guiReads=this.guiReads; sample.values=undefined }
         this.maintainSources(sample)
         if (epoch !== this.gyroConfigurationEpoch) return
         this.refreshVisual(sample)
@@ -419,7 +431,9 @@ export class EntryTouchSession {
     this.gyroProgress.stage='Waiting'; this.gyroProgress.reason='SourceInactive'
     if (!this.active || lease === undefined || !isEntryTouchInputMaintenanceCurrent(lease)) return false
     try {
-      const reconciled: boolean = reconcileEntryTouchInputMaintenance(lease)
+      const reconciled: boolean = sample?.frame !== undefined ?
+        sample.maintain(this.receive !== undefined || (this.gyroOptions.gyroscopeMode !== 'off' && this.touchAdmitted && this.grabbed)) :
+        reconcileEntryTouchInputMaintenance(lease)
       if (epoch !== this.gyroConfigurationEpoch) return false
       if (!reconciled || typeof testNapi.touchInteractionVisual !== 'function') {
         this.gyro.stop(); return false
@@ -480,20 +494,19 @@ export class EntryTouchSession {
       const values: number[] = this.readVisualSample_(sample)
       // Native边缘同样可同步回入停止/换scope；返回数值不能给原续体重新授予发布资格。
       if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease)) return
-      if (values.length < 14 || values.some((value: number): boolean => !Number.isFinite(value))) {
-        return
-      }
-      const geometry: string=values[0].toString()+','+values[1].toString()
-      if (geometryReceive!==undefined && geometry!==this.lastGeometry &&
+      const geometryOnly = values.length === 2 && receive === undefined && sample?.frame !== undefined
+      if ((!geometryOnly && values.length < 14) ||
+        (values !== this.lastVisual && values.some((value: number): boolean => !Number.isFinite(value)))) return
+      if (geometryReceive!==undefined && (values[0]!==this.lastGeometryX || values[1]!==this.lastGeometryY) &&
         this.geometryReceive===geometryReceive && this.sourceLease===lease) {
-        this.lastGeometry=geometry; this.geometryDeliveries++
+        this.lastGeometryX=values[0]; this.lastGeometryY=values[1]
         try { geometryReceive(values[0],values[1]) } catch (_) { this.warnProjection_() }
       }
       // 必要几何接收器也可停源；其返回后不能继续构值/递送可选显示。
       if (epoch !== this.gyroConfigurationEpoch || !this.isCurrentProjectionSource_(lease) || receive===undefined || this.receive!==receive) return
       // 只比较数值，不为每帧构造/回收一整串文本；缓存只服务外观去重，不决定输入资格。
-      if (values.length === this.lastVisual.length &&
-        values.every((value: number, index: number): boolean => value === this.lastVisual[index])) return
+      if (values === this.lastVisual || (values.length === this.lastVisual.length &&
+        values.every((value: number, index: number): boolean => value === this.lastVisual[index]))) return
       this.lastVisual = values
       const state = new EntryTouchVisual()
       state.menuX=values[0]; state.menuY=values[1]; state.menuVisible=values[2] === 1
@@ -502,7 +515,7 @@ export class EntryTouchSession {
       state.joystickActive=values[10] === 1; state.aiming=values[11] === 1
       state.schemaGeneration=values[12]; state.joystickIndex=values[13]
       state.guide=parseTouchGuideFeedback(values)
-      this.visualDeliveries++; receive(state)
+      receive(state)
     } catch (error) {
       if (!this.warned) {
         this.warned=true
@@ -516,7 +529,8 @@ export class EntryTouchSession {
   private readVisualSample_(sample?: EntryTouchVisualSample): number[] {
     const reusable: boolean = sample !== undefined && sample.epoch === this.gyroConfigurationEpoch &&
       sample.lease === this.sourceLease && sample.guiReads === this.guiReads
-    if (reusable && sample !== undefined && sample.values !== undefined) return sample.values
+    if (reusable && sample !== undefined && sample.values !== undefined &&
+      (sample.values.length !== 2 || this.receive === undefined)) return sample.values
     const values: number[] = testNapi.touchInteractionVisual()
     if (reusable && sample !== undefined && sample.epoch === this.gyroConfigurationEpoch &&
       sample.lease === this.sourceLease && sample.guiReads === this.guiReads) sample.values = values
@@ -580,21 +594,8 @@ export class EntryTouchSession {
     try { hilog.warn(0x0000,'GameControls','Touch projection receiver unavailable') } catch (_) {}
   }
 
-  /** 原计数/原lease的只读快照；不调用Native getter或维护算法。 */
+  /** 只检查本会话持有的输入来源是否有效。 */
   hasCurrentSource(): boolean { return isEntryTouchInputMaintenanceCurrent(this.sourceLease) }
-
-  /** 状态字段只记录已取得的原Source与投影调用次数，不代替Native/UI完成回执。 */
-  observationSnapshot(): EntryTouchObservationSnapshot {
-    const snapshot: EntryTouchObservationSnapshot=new EntryTouchObservationSnapshot()
-    snapshot.sourceCurrent=isEntryTouchInputMaintenanceCurrent(this.sourceLease)
-    snapshot.timerActive=this.timer!==-1
-    snapshot.visualSubscribed=this.receive!==undefined
-    snapshot.geometrySubscribed=this.geometryReceive!==undefined
-    snapshot.guiSubscribed=this.guiReceive!==undefined
-    snapshot.guiReads=this.guiReads; snapshot.geometryDeliveries=this.geometryDeliveries
-    snapshot.visualDeliveries=this.visualDeliveries; snapshot.gyroStatus=this.gyro.currentStatus()
-    return snapshot
-  }
 
   /** 恢复属于本前端原来源；没有lease时明确未接受，不凭global current取得后来会话资格。 */
   restoreGui(scale: number, revision: number): number {
@@ -635,7 +636,7 @@ export class EntryTouchSession {
     try { this.stopSources() }
     finally {
       this.unsubscribeVisual()
-      this.guiReceive=undefined; this.geometryReceive=undefined; this.lastGeometry=''; this.lastGui=''
+      this.guiReceive=undefined; this.geometryReceive=undefined; this.lastGeometryX=NaN; this.lastGeometryY=NaN; this.lastGui=''
       this.heartbeat=undefined
     }
   }

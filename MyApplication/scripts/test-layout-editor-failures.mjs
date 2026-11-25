@@ -44,7 +44,7 @@ function method(source, name) {
 function subject(relative, methods, fieldNames, bindings) {
   const source = fs.readFileSync(path.join(root, relative), 'utf8');
   const fields = source.split(/\r?\n/).filter(line => fieldNames.some(name =>
-    new RegExp('^  (?:@State )?(?:@Watch\\([^\\n]*?\\) )?(?:private )?' + name + '\\s*:').test(line)))
+    new RegExp('^  (?:@State )?(?:@Watch\\([^\\n]*?\\) )?(?:private )?(?:readonly )?' + name + '\\s*:').test(line)))
     .map(line => line.replace(/@State\s*|@Watch\([^\n]*?\)\s*/g, ''));
   assert.equal(fields.length, fieldNames.length, '生产字段提取不完整：' + relative);
   const input = 'class Subject {\n' + fields.join('\n') + '\n' + methods.map(name => method(source, name)).join('\n')
@@ -125,23 +125,21 @@ function gameControls(store) {
     assert.ok(nativeModals.has(token),'只归还自己的Native模态token');nativeModals.delete(token);pause.push(false);order.push('modal-');return true;
   }};
   const modal=environment({imports:{'libentry.so':{default:napi}}}).load('entry/src/main/ets/components/EntryTouchModalBroker.ets');
-  // 直接装载当前只读观察登记端口；销毁执行真实解绑，不能补一个空函数隐藏资源清理遗漏。
-  const observation=makePureEtsLoader()('entry/src/main/ets/components/EntryInputObservationPort.ets');
   const instance = subject('entry/src/main/ets/components/GameControls.ets', [
-    'openEditor', 'closeEditorChoice_', 'releaseEditorLease_', 'restoreDisposedEditor_', 'resumeEditorInput_', 'showEditorError_',
+    'openEditor', 'recoverEditor_', 'openSettingsTool_', 'leaveResolutionFor_', 'returnToSettings_', 'releaseEditorLease_', 'restoreDisposedEditor_', 'resumeEditorInput_', 'showEditorError_',
     // 游戏内引导不再占有暂停；抽取保存反馈接线，销毁只停止进度观察。
     'finishEditor_', 'editorInitializationFailed_', 'aboutToDisappear', 'syncGuideBounds', 'guideToolbarX',
     // 生产销毁新增只读配置订阅回收；装载真实 helper/原字段，不能用 noop 绕过生产清理。
     'retireConfigurationStatus_',
   ], ['editing', 'editorOpening', 'editorLeaseHeld', 'editorInputPaused', 'editorDisposeTask', 'mounted', 'appearanceGeneration',
-    'configurationStatusSubscription', 'configurationStatusStore', 'observationRegistration', 'groupRegistration', 'pendingGroupCommands'], {
-    ...shared.values, ...modal, ...observation,testNapi:napi,
+    'configurationStatusSubscription', 'configurationStatusStore', 'groupRegistration', 'pendingGroupCommands'], {
+    ...shared.values, ...modal, testNapi:napi,
     getInputSourceRegistry: () => ({ unregister() {} }), getInputDeviceMonitor: () => ({ removeCapabilityListener() {} }),
     releaseEntryControlFeedback() {},
   });
   Object.assign(instance, { mounted: true, appearanceGeneration: 1, profile: copy(store.active), profileVer: 0,
     // 与其余平台边界一样隔离视觉会话；这里验证编辑器失败不漏掉输入/租约的释放。
-    touchSession: { stop() {} }, touchGuide:new TouchGuide(),tutorialOpen:false,
+    touchSession: { stop() {}, actionKeys:()=>[], gyroscopeStatus:()=>'inactive' }, touchGuide:new TouchGuide(),tutorialOpen:false,
     touchSurface:{dispose(){}},imeModal:undefined,editorModal:undefined,layoutObserverRegistered:false,
     runtimeLayout:{context:{key:''}},uiPublicationToken:'',
     onInputPause() {},
@@ -200,14 +198,15 @@ function editorPage(store) {
   return { instance, windowCalls, navigations, windowFault, errors: shared.errors };
 }
 
-// 选择页没有子编辑器，直接关闭仍必须结束Store快照；失败保持原租约可重试。
+// 子页无法初始化时宿主仍须恢复入场快照；失败保留最后一份租约，恢复成功才返回游戏。
 {
   const store=makeStore(),test=gameControls(store);await test.instance.openEditor();
-  assert.ok(store.snapshot);store.failures.set('restore',false);await test.instance.closeEditorChoice_();
+  assert.ok(store.snapshot);store.failures.set('restore',false);await test.instance.editorInitializationFailed_('无法读取方案');
+  assert.equal(test.instance.editorMode,'recovery');
   assert.equal(test.instance.editing,true);assert.equal(store.leases,1);assert.ok(store.snapshot);
-  store.failures.delete('restore');await test.instance.closeEditorChoice_();
+  store.failures.delete('restore');await test.instance.recoverEditor_();
   assert.equal(test.instance.editing,false);assert.equal(store.leases,0);assert.equal(store.snapshot,undefined);
-  check('选择页直接关闭先确认取消事务，失败不释放最后租约');
+  check('设置初始化失败后的恢复必须得到确认，失败保留租约且可重试');
 }
 {
   const store=makeStore(),test=editor(store);test.instance.targetProfileName='其他方案';
@@ -453,7 +452,7 @@ function pageSurfaceProps() {
   const result = compiler.transpileModule(input, {compilerOptions:{target:compiler.ScriptTarget.ES2020},reportDiagnostics:true});
   assert.equal((result.diagnostics ?? []).filter(item => item.category === compiler.DiagnosticCategory.Error).length, 0);
   const module = {exports:{}};
-  new Function('module', result.outputText)(module);
+  new Function('module', 'getImeActivationGate', result.outputText)(module, () => ({isActive:()=>false}));
   return module.exports;
 }
 
@@ -461,10 +460,13 @@ function pageSurfaceProps() {
 async function exerciseProductSurface(source, loseFocus = false,
   selection = ProductRuntimePolicy.resolve('universal','phone',26,'auto',true)) {
   const store = makeStore(), controls = gameControls(store), frontendStates = [];
-  const page = subject('entry/src/main/ets/pages/McGamePage.ets', ['updatePageInputActive', 'syncCursorLock'], [], {});
+  // 设置回调同时通知桌面持键恢复。保留真实辅助方法，让无持键的触屏会话走生产早退。
+  const page = subject('entry/src/main/ets/pages/McGamePage.ets',
+    ['updatePageInputActive', 'syncCursorLock', 'retireDesktopHeldKeys', 'rearmDesktopKeyRetirements'],
+    ['desktopKeyboardFocus_', 'desktopKeyRetirementOnRefocus_'], {ProductInputProfile:{selection:()=>selection}});
   Object.assign(page, {pageVisible:true, surfaceFocused:true, gameWindowReady:true, inputOverlayPaused:false,
     pageInputActive:true, gameWindowId:9, frontendLease:{id:'actual-page-lease'}, gameDir:'/game', realGameVersion:'26.4',
-    isInGame:false, surfaceContextGeneration:3,
+    isInGame:false, surfaceContextGeneration:3, getUIContext:()=>({getFocusController:()=>({requestFocus(){}})}),
     sessionHost:{setFrontendState(lease, active, windowId) {
       assert.equal(lease, page.frontendLease); assert.equal(windowId, 9); frontendStates.push(active);
     }}});
@@ -485,7 +487,9 @@ async function exerciseProductSurface(source, loseFocus = false,
   assert.deepEqual(frontendStates,[false],'编辑暂停必须抵达页面Host资格');
   assert.equal(page.inputOverlayPaused,true);
   if (loseFocus) page.surfaceFocused=false;
-  await controls.instance.closeEditorChoice_();
+  // 手感子页在确认恢复后才发出 onDone，父层接线必须一直保护同一输入暂停和模态。
+  assert.equal(await store.restoreEditorTransaction(),true);
+  renderEditorOverlay(controls.instance).settings[0].onDone(null);
   assert.deepEqual(frontendStates,[false,!loseFocus],'取消必须沿真实页面事实恢复资格');
   assert.equal(page.inputOverlayPaused,false); assert.equal(store.leases,0);
   assert.deepEqual(controls.pause,[true,false],'页面暂停和Native touch模态分别成对收口');
@@ -520,19 +524,14 @@ function renderEditorOverlay(controls) {
     {compilerOptions:{target:compiler.ScriptTarget.ES2020},reportDiagnostics:true});
   assert.equal((compiled.diagnostics??[]).filter(item=>item.category===compiler.DiagnosticCategory.Error).length,0,
     '生产工具菜单必须先转译成功');
-  const module={exports:{}}, buttons=new Map(), panels=[];
+  const module={exports:{}}, settings=[], panels=[], layouts=[];
   const chain=(attributes={})=>new Proxy(attributes,{get:(target,name,receiver)=>
     Reflect.has(target,name)?Reflect.get(target,name,receiver):()=>receiver});
   const draw=()=>chain();
-  const button=()=>chain({
-    onClick(action) { this.action=action; return this; },
-    id(id) { buttons.set(id,this.action); return this; },
-  });
-  // SDK 打印出的容器块尾部属性以独立 padding/width 调用开头。
-  new Function('module','Scroll','Column','Text','Button','padding','width','GameResolutionPanel','LayoutEditor',
-    compiled.outputText)(module,draw,draw,draw,button,draw,draw,value=>panels.push(value),()=>{});
+  new Function('module','Column','Text','Button','padding','InputSettingsEditor','GameResolutionPanel','LayoutEditor',
+    compiled.outputText)(module,draw,draw,draw,draw,value=>settings.push(value),value=>panels.push(value),value=>layouts.push(value));
   module.exports.prototype.EditorOverlay.call(controls);
-  return {buttons,panels};
+  return {settings,panels,layouts};
 }
 
 for (const [device,api,interaction,allowLiveResolution] of [
@@ -545,17 +544,29 @@ for (const [device,api,interaction,allowLiveResolution] of [
   assert.equal(selection.input.acceptDirectTouchInGame,true);
   const controls=await exerciseProductSurface(productSurfaceSource,false,selection);
   assert.equal(controls.allowLiveResolution,allowLiveResolution,'真实包装必须按设备传递本局分辨率资格');
-  controls.palette={}; controls.editorMode='choose'; controls.compWidth=800; controls.compHeight=500;
-  const entry=renderEditorOverlay(controls).buttons.get('open-game-resolution');
-  assert.equal(typeof entry==='function',allowLiveResolution,'触控工具菜单的分辨率入口必须匹配设备资格');
-  // 电脑也从旧编辑状态进入一次，防止只删按钮却留下可以挂载的面板。
-  if (entry) entry(); else controls.editorMode='resolution';
+  controls.palette={}; controls.compWidth=800; controls.compHeight=500;
+  await controls.openEditor();
+  const entry=renderEditorOverlay(controls).settings[0];
+  assert.equal(entry.inGameSettings,true);
+  assert.equal(entry.allowLiveResolution,allowLiveResolution,'实际设置目录接收对应设备的分辨率资格');
+  entry.onOpenGameTool('resolution');
+  assert.equal(controls.editorMode,allowLiveResolution?'resolution':'settings','绕过目录直接回调也必须执行产品准入');
+  if (!allowLiveResolution) controls.editorMode='resolution';
   const {panels}=renderEditorOverlay(controls);
   assert.equal(panels.length,allowLiveResolution?1:0,'只有移动触控能挂载本局分辨率面板');
   if (allowLiveResolution) {
     assert.equal(controls.editorMode,'resolution');
-    panels[0].onDone();
-    assert.equal(controls.editorMode,'choose');
+    panels[0].onNavigate('menu');
+    assert.equal(renderEditorOverlay(controls).settings[0].initialSection,'menu');
+    renderEditorOverlay(controls).settings[0].onOpenGameTool('resolution');
+    renderEditorOverlay(controls).panels[0].onDone();
+    assert.equal(renderEditorOverlay(controls).settings[0].initialSection,'');
+    renderEditorOverlay(controls).settings[0].onOpenGameTool('layout');
+    const layouts=renderEditorOverlay(controls).layouts;
+    assert.equal(layouts.length,1);
+    layouts[0].onDone(null);
+    assert.equal(renderEditorOverlay(controls).settings.length,1,'取消摆键回设置目录');
+    assert.equal(controls.editorInputPaused,true,'切换工具期间继续隔离游戏输入');
   }
   check('真实触控工具菜单遵循本局分辨率资格：'+device+' API '+api+' '+interaction);
 }

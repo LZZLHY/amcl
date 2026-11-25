@@ -22,7 +22,7 @@ import { AppTitleAction } from '../components/AppTitleAction';
 import { promptAction } from '@kit.ArkUI';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
+import { DistributionPolicy, ThemeColors, ThemeMode, resolveTheme, resolveIsDark } from 'commons';
 import { PreferenceManager } from 'feature_system';
 import { AppIconName, formatDurationMs, AppLogger } from 'commons';
 import { AppIcon } from '../components/AppIcon';
@@ -35,6 +35,10 @@ import { acquireEvidenceLease, releaseEvidenceLease, ledgerRemovalBlockReason } 
 import { getAiTaskSnapshot, cancelAiAnalysis } from '../components/AiAnalysisService';
 import { ActivityAiCard } from '../components/ActivityAiCard';
 import { ActivityShareSheet } from '../components/ActivityShareSheet';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
+import { loadAiReport } from '../components/AiReportStore';
+import { EvidenceChoiceResult } from '../launcherskill/EvidenceChoiceResult';
+import { util } from '@kit.ArkTS';
 import { AnimatedPillBar } from '../components/AnimatedPillBar';
 import { MotionSection } from '../components/MotionSection';
 import { ActivityViewTabs } from '../components/ActivityViewTabs';
@@ -46,7 +50,7 @@ import {
   LedgerPart, LedgerState, LedgerManifest,
   ledgerManifest, ledgerManifestAsync, ledgerRead, ledgerPartBytes, ledgerExport,
   ledgerRemoveAsync, ledgerListAsync, ledgerRemovalBlockReasonAsync, ledgerPartLabel, ledgerStateLabel, isAbnormalState,
-  formatLogBytes, LogExportTarget, sanitizeLogForExport,
+  formatLogBytes, LogExportTarget, redactGameLog, sanitizeLogForExport,
   EvidenceFileRecord, EvidenceFileState, EvidenceRole, evidenceRoleLabel,
   listSessionEvidence, evidenceSelectionOf, setEvidenceSelection,
   readSessionEvidence, readSessionEvidenceAsync, refreshSessionEvidence, evidenceSelectionDigest,
@@ -151,6 +155,11 @@ export struct ActivityLogWorkspace {
   @State private additionalEvidenceFiles: EvidenceFileRecord[] = []
   @State @Watch('shareVisibilityChanged_') private showShareOptions: boolean = false
   @State private shareNonce: number = 0
+  private skillShareRef_: string = '';
+  private skillShareNonce_: number = 0;
+  private skillShareState_: string = '';
+  private skillShareReceipt_: string = '';
+  private skillShareReason_: string = '';
   @State private shareMode: string = 'advanced'
   @State private showAiResult: boolean = false
   @State private evidenceRevision: number = 1
@@ -305,9 +314,9 @@ export struct ActivityLogWorkspace {
   }
 
   /** 原件上的操作不走系统直接复制，整条事件先脱敏再等待剪贴板完成。 */
-  private async copyEvent_(row: LogRow): Promise<void> {
+  private async copyEvent_(row: LogRow): Promise<boolean> {
     const event = row.event
-    if (event === undefined || this.copying) return
+    if (event === undefined || this.copying) return false
     this.copying = true
     try {
       const raw: string = this.sourceLabel_(row) + ':' + event.startLine + '-' + event.endLine + '\n'
@@ -315,18 +324,20 @@ export struct ActivityLogWorkspace {
       const text: string = sanitizeLogForExport(raw, LogExportTarget.CLIPBOARD)
       await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text))
       this.toast_(text.indexOf('省略') >= 0 || text.indexOf('截断') >= 0 ? '事件过长，已复制带省略说明的脱敏文本' : '已复制完整事件（脱敏）')
-    } catch (e) { this.toast_('复制失败：' + (e as Error).message) }
+      return true
+    } catch (e) { this.toast_('复制失败：' + (e as Error).message); return false }
     finally { this.copying = false }
   }
 
   /** ZIP 是本地导出，不必先进入分享流程；使用相同冻结/脱敏管线并保护异步生命周期。 */
-  private async exportZip_(): Promise<void> {
-    if (this.exportingEvidence || this.sharing || this.copying) return
+  private async exportZip_(): Promise<SkillFields> {
+    if (this.exportingEvidence || this.sharing || this.copying) return { 'state': 'busy' }
     this.exportingEvidence = true
     try {
       const result = await exportSessionEvidenceZip(this.context, this.activityId, this.publicSummary_())
       if (this.pageActive && !result.cancelled) this.toast_(result.ok ? '完整日志包已导出' : result.message)
-    } catch (e) { if (this.pageActive) this.toast_('导出失败：' + (e as Error).message) }
+      return { 'state': result.cancelled ? 'cancelled' : (result.ok ? 'ready' : 'failed'), 'saved': result.ok && !result.cancelled };
+    } catch (e) { if (this.pageActive) this.toast_('导出失败：' + (e as Error).message); return { 'state': 'unknown' }; }
     finally { this.exportingEvidence = false }
   }
 
@@ -351,9 +362,153 @@ export struct ActivityLogWorkspace {
     } finally { if (generation === this.pinGeneration_) this.pinSaving_ = false }
   }
 
+  /** 使用当前活动的生产阅读器和分享面板，不把原始日志路径、撤回凭据传出应用。 */
+  private async skillActivity_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (args['activityId'] !== this.activityId || this.loading) return { 'state': 'unavailable', 'reason': 'activityNotReady' };
+    if (!this.manifest) return { 'state': 'failed', 'reason': 'activityNotFound' };
+    if (method === 'readActivity') {
+      return { 'state': 'ready', 'activityId': this.activityId, 'category': this.manifest.category,
+        'outcome': this.manifest.state, 'pinned': this.pinned, 'duration': this.durationLabel_(),
+        'files': this.evidenceFiles.map((file: EvidenceFileRecord): SkillFields => ({
+          'id': file.fileId, 'role': file.role, 'capture': file.state, 'bytes': file.bytes })),
+        'localFindings': this.diagnosis?.findings.length ?? 0, 'integrity': this.evidenceIntegrityState,
+        'environment': this.environmentFacts.map((fact: SessionEnvironmentFact): SkillFields =>
+          ({ 'key':fact.key, 'status':fact.status, 'source':fact.source })),
+        'publicShareId': this.sharedLog?.id ?? '', 'authorReceipt': this.authorSubmissionId };
+    }
+    if (method === 'getActivityShareOutcome') {
+      if (!this.skillShareRef_ || args['operationRef'] !== this.skillShareRef_) return { 'state':'unknown', 'reason':'operationNotFound' };
+      return { 'state':'ready', 'shareState':this.skillShareState_, 'receipt':this.skillShareReceipt_, 'reason':this.skillShareReason_ };
+    }
+    if (this.showShareOptions || this.showAiResult || this.sharing || this.exportingEvidence ||
+      this.confirmingRemoval_ || this.deleting || this.pinSaving_ || this.copying) return { 'state': 'busy' };
+    if (method === 'readActivityFindings') {
+      if (!this.diagnosis) await this.loadDiagnosis_();
+      if (!this.pageActive || !this.diagnosis || this.diagnosis.activityId !== args['activityId']) {
+        return { 'state':this.diagnosisError ? 'failed' : 'initializing' };
+      }
+      return { 'state':this.diagnosis.complete ? 'ready' : 'partial', 'findings': this.diagnosis.findings.map((item: ActivityFinding): SkillFields =>
+        ({ 'fileId':item.fileId, 'line':item.line, 'endLine':item.endLine, 'level':item.level, 'count':item.occurrences,
+          'title':sanitizeLogForExport(item.title,LogExportTarget.CLIPBOARD) })), 'gaps':this.diagnosis.gaps.length };
+    }
+    if (method === 'readActivityEvents' || method === 'copyActivityEvent') return this.skillEvents_(args,method === 'copyActivityEvent');
+    if (method === 'setActivityRetention' && typeof args['keep'] === 'boolean') {
+      const activity = this.activityId;
+      if (args['keep'] !== this.pinned) await this.togglePinned_();
+      const committed = await ledgerManifestAsync(this.context.filesDir,activity);
+      if (!committed || committed.activityId !== activity) return { 'state':'unknown', 'reason':'activityChanged' };
+      return { 'state': (committed.pinned === true) === args['keep'] ? 'ready' : 'unknown', 'pinned': committed.pinned === true };
+    }
+    if (method === 'requestActivityRemoval') {
+      if (!this.canDelete_()) return { 'state': 'unavailable', 'reason': 'cannotRemove' };
+      return EvidenceChoiceResult.begin(this.activityId,method,async (): Promise<SkillFields> => {
+        const decision = await this.requestRemoveLedger_();
+        return { 'state':decision, 'removed':decision === 'ready' };
+      });
+    }
+    if (method === 'copyActivityEvidence') return { 'state': (await this.copyAll_()) ? 'ready' : 'failed' };
+    if (method === 'exportActivityEvidence') return EvidenceChoiceResult.begin(this.activityId,method,(): Promise<SkillFields> => this.exportZip_());
+    if (method === 'reviewActivityShare') {
+      const destination = String(args['destination']);
+      if (destination !== 'logshare' && (destination !== 'author' || !DistributionPolicy.allowPublisherServices())) {
+        return { 'state': 'unavailable', 'reason': 'destinationUnavailable' };
+      }
+      this.skillShareRef_ = util.generateRandomUUID(); this.skillShareNonce_ = this.shareNonce + 1;
+      this.skillShareState_ = 'waiting'; this.skillShareReceipt_ = ''; this.skillShareReason_ = '';
+      const ref = this.skillShareRef_;
+      LauncherSkillBus.followUserCondition(method, (): boolean => this.pageActive && this.skillShareRef_ === ref &&
+        (this.skillShareState_ === 'waiting' || this.skillShareState_ === 'sending'));
+      this.shareMode = 'advanced'; this.requestAi = false; this.shareDestination = destination; this.showShareOptions = true;
+      return { 'state': 'needsUser', 'surface': 'sharePreview', 'activityId': this.activityId, 'operationRef': this.skillShareRef_ };
+    }
+    if (method === 'readHistoricalAnalysis') {
+      const report = loadAiReport(this.context.filesDir, this.activityId);
+      if (!report) return { 'state': 'ready', 'available': false };
+      this.showAiResult = true;
+      return { 'state': 'needsUser', 'available': true, 'completedAt': report.completedAt, 'surface': 'historicalReport',
+        'identifiedSource': report.shareId.length > 0 && report.snapshotDigest.length > 0 };
+    }
+    return { 'state': 'failed', 'reason': 'unknownOperation' };
+  }
+
+  private async skillEvents_(args: SkillFields, copy: boolean): Promise<SkillFields> {
+    const fileId = String(args['fileId'] ?? '');
+    const skip = Number(args['offset'] ?? 0);
+    const rowOffset = Number(args['rowOffset'] ?? 0);
+    const level = Number(args['level'] ?? 0);
+    if (!Number.isSafeInteger(skip) || skip < 0 || !Number.isSafeInteger(rowOffset) || rowOffset < 0 ||
+      ![0,1,2].includes(level)) return { 'state': 'failed', 'reason': 'invalidArguments' };
+    const file = fileId ? this.evidenceFiles.find((item: EvidenceFileRecord): boolean => item.fileId === fileId) : undefined;
+    if (fileId && (!file || !evidenceReadable(file))) return { 'state': 'failed', 'reason': 'fileUnavailable' };
+    const line = copy ? Number(args['line']) : 0;
+    if (copy && (!file || !Number.isSafeInteger(line) || line < 1)) return { 'state':'failed', 'reason':'invalidLine' };
+    // 查询拥有自己的阅读游标；复用页面的解析器、可读规则与证据租约，不移动玩家的选择。
+    const catalog = this.evidenceFiles;
+    const selected = file ? [file] : catalog.filter(evidenceReadable);
+    const sources = selected.map((item: EvidenceFileRecord): LogReadSource =>
+      ({ path: item.localPath, compressed: item.path.endsWith('.gz') }));
+    const reader = new ActivityLogModel();
+    const activity = this.activityId;
+    acquireEvidenceLease(this.context.filesDir, activity);
+    try {
+      if (!await reader.loadEvidence(sources, level, String(args['keyword'] ?? ''), skip, line) ||
+        !this.pageActive || this.activityId !== activity || this.evidenceFiles !== catalog) {
+        return { 'state': 'unknown', 'reason': 'readChanged' };
+      }
+      if (!copy) return this.eventPage_(reader, selected, rowOffset);
+      if (reader.totalCount() === 0) return { 'state': 'failed', 'reason': 'eventNotFound' };
+      const row = reader.getData(0);
+      if (row.event?.startLine !== line || row.sourcePath !== file?.localPath) return { 'state':'failed','reason':'eventNotFound' };
+      return { 'state': (await this.copyEvent_(row)) ? 'ready' : 'failed' };
+    } finally {
+      reader.cancel();
+      releaseEvidenceLease(this.context.filesDir, activity);
+    }
+  }
+
+  /** 跨事件沿用阅读器的逻辑序号；页尾若在异常堆栈中间，则再返回事件内的脱敏文本块位置。 */
+  private eventPage_(reader: ActivityLogModel, selected: EvidenceFileRecord[], rowOffset: number): SkillFields {
+    const events: SkillFields[] = [];
+    let eventOffset = reader.pageStart;
+    for (let i = 0; i < reader.totalCount(); i++) {
+      const row = reader.getData(i);
+      if (!row.eventStart || !row.event) continue;
+      const event = row.event;
+      const source = selected.find((item: EvidenceFileRecord): boolean => item.localPath === row.sourcePath);
+      if (!source) return { 'state':'unknown','reason':'readChanged' };
+      let block = 0;
+      const skip = eventOffset === reader.pageStart ? rowOffset : 0;
+      for (const line of event.lines) {
+        // 先对完整逻辑行脱敏再切块，避免凭据、UTF-16 代理对或旧的 500 字预览截断点跨页丢失。
+        const safe = redactGameLog(line.text);
+        let start = 0;
+        do {
+          if (block >= skip && events.length === 30) {
+            return { 'state':'ready','offset':reader.pageStart,'matches':reader.matchingEvents,'events':events,
+              'hasMore':true,'nextOffset':eventOffset,'nextRowOffset':block };
+          }
+          let end = Math.min(safe.length, start + 500);
+          const last = safe.charCodeAt(end - 1);
+          if (end < safe.length && last >= 0xD800 && last <= 0xDBFF) end--;
+          if (block >= skip) events.push({'fileId':source.fileId,'line':line.number,'eventLine':event.startLine,
+            'level':row.level,'text':safe.substring(start,end)});
+          block++;
+          start = end;
+        } while (start < safe.length);
+      }
+      if (skip > 0 && skip >= block) return { 'state':'failed','reason':'invalidRowOffset' };
+      eventOffset++;
+    }
+    if (rowOffset > 0 && eventOffset === reader.pageStart) return { 'state':'failed','reason':'invalidRowOffset' };
+    return { 'state':'ready','offset':reader.pageStart,'matches':reader.matchingEvents,'events':events,
+      'hasMore':reader.hasNextPage,'nextOffset':eventOffset,'nextRowOffset':0 };
+  }
+
   /** 仅初始化当前活动，不自动公开日志或启动 AI。嵌入式实例由活动主键重建。 */
   aboutToAppear(): void {
     this.pageActive = true
+    LauncherSkillBus.bind('activity',this,(method: string,args: SkillFields): Promise<SkillFields> => this.skillActivity_(method,args),
+      (): boolean => this.pageActive && this.hostVisible);
     this.applyTheme_()
     this.activeView = this.initialView === 'share' ? 'overview' : this.initialView
     this.shareDestination = this.initialDestination
@@ -369,7 +524,22 @@ export struct ActivityLogWorkspace {
   private notifyBusy_(): void { this.onBusyChanged(this.sharing || this.exportingEvidence || this.pinSaving_) }
 
   /** 每次明确打开都创建新的 UI 会话，不让系统 sheet 缓存复用上次已关闭的 alive/阶段值。 */
-  private shareVisibilityChanged_(): void { if (this.showShareOptions) this.shareNonce++ }
+  private shareVisibilityChanged_(): void {
+    if (this.showShareOptions) this.shareNonce++;
+    else if (this.skillShareNonce_ === this.shareNonce) {
+      if (this.skillShareState_ === 'waiting') this.skillShareState_ = 'cancelled';
+      else if (this.skillShareState_ === 'sending') this.shareOutcome_(this.shareNonce, 'unknown', 'awaitingReceipt', '');
+    }
+  }
+
+  /** 只将原预览的阶段写回原票据，已获得的凭证不被随后关闭面板或复制失败覆盖。 */
+  private shareOutcome_(nonce: number, state: string, reason: string, receipt: string): void {
+    if (!this.skillShareRef_ || nonce !== this.skillShareNonce_) return;
+    if (this.skillShareReceipt_ && state !== 'sending') return;
+    this.skillShareState_ = state;
+    this.skillShareReason_ = reason;
+    this.skillShareReceipt_ = receipt;
+  }
 
   /** 分享入口统一打开选择层。复用已冻结但未发送的预览，已发送链接仍留在记录页。 */
   private openShareComposer_(): void {
@@ -515,6 +685,7 @@ export struct ActivityLogWorkspace {
   }
 
   aboutToDisappear(): void {
+    LauncherSkillBus.unbind('activity',this);
     this.pageActive = false
     this.pinGeneration_++; this.pinSaving_ = false
     this.evidenceGeneration++
@@ -753,7 +924,10 @@ export struct ActivityLogWorkspace {
       onClosed: (): void => { this.showShareOptions = false },
       onAdvancedChanged: (advanced: boolean): void => { if (advanced) this.shareMode = 'advanced' },
       onBusyChanged: (busy: boolean): void => { this.sharing = busy },
-      onShared: (record: LogShareRecord): void => { this.sharedLog = record; this.activeView = 'overview' },
+      onShareOutcome: (state: string, reason: string, receipt: string): void => { this.shareOutcome_(nonce, state, reason, receipt); },
+      onShared: (record: LogShareRecord): void => {
+        this.sharedLog = record; this.activeView = 'overview';
+      },
       onAuthorAccepted: (id: string, duplicate: boolean): void => {
         this.authorSubmissionId = id; this.authorDuplicate = duplicate; this.activeView = 'overview'
       } })
@@ -851,8 +1025,8 @@ export struct ActivityLogWorkspace {
   }
 
   /** 复制整条账本（含环境头与全部分段），统一过脱敏出口。 */
-  private async copyAll_(): Promise<void> {
-    if (this.copying || this.sharing || this.deleting || this.exportingEvidence) return
+  private async copyAll_(): Promise<boolean> {
+    if (this.copying || this.sharing || this.deleting || this.exportingEvidence) return false;
     this.copying = true
     let snapshot: EvidenceExportSnapshot | undefined = undefined
     try {
@@ -863,9 +1037,9 @@ export struct ActivityLogWorkspace {
       const files = await snapshotShareFiles(snapshot, 1024 * 1024, Number.MAX_SAFE_INTEGER)
       const text: string = files.map((file): string => '\n===== ' + file.name + ' =====\n' + file.content).join('')
       await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text))
-      this.toast_('已复制全部脱敏证据')
+      this.toast_('已复制全部脱敏证据'); return true;
     } catch (e) {
-      this.toast_('复制未完成，可改用完整 ZIP 导出：' + (e as Error).message)
+      this.toast_('复制未完成，可改用完整 ZIP 导出：' + (e as Error).message); return false;
     } finally {
       if (snapshot !== undefined) disposeEvidenceExportSnapshot(snapshot)
       this.copying = false
@@ -873,8 +1047,8 @@ export struct ActivityLogWorkspace {
   }
 
   /** 展示标题、占用和影响边界；关闭/取消确认框都不删除数据。 */
-  private async requestRemoveLedger_(): Promise<void> {
-    if (!this.canDelete_()) return
+  private async requestRemoveLedger_(): Promise<string> {
+    if (!this.canDelete_()) return 'unavailable'
     const activityId: number = this.activityId
     const generation: number = this.pinGeneration_
     const cancelled: () => boolean = (): boolean => !this.pageActive || generation !== this.pinGeneration_ || activityId !== this.activityId
@@ -882,10 +1056,10 @@ export struct ActivityLogWorkspace {
     let accepted: boolean = false
     try {
       const reason: string = await ledgerRemovalBlockReasonAsync(this.context.filesDir, activityId)
-      if (cancelled()) return
-      if (reason.length > 0) { this.toast_(reason); return }
+      if (cancelled()) return 'unavailable'
+      if (reason.length > 0) { this.toast_(reason); return 'unavailable' }
       const entry = (await ledgerListAsync(this.context.filesDir, cancelled)).find((value): boolean => value.activityId === activityId)
-      if (cancelled()) return
+      if (cancelled()) return 'unavailable'
       const title: string = this.manifest?.title ?? '这条活动'
       const message: string = '将删除“' + title + '”的本地日志和证据清单。\n'
         + '状态：' + (this.manifest === null ? '未知' : ledgerStateLabel(this.manifest.state))
@@ -902,24 +1076,29 @@ export struct ActivityLogWorkspace {
       accepted = result?.index === 1
     } catch (e) {
       if (!cancelled()) this.shareError = '无法核实或确认清理：' + (e as Error).message
+      return 'failed'
     } finally { this.confirmingRemoval_ = false }
-    if (accepted && !cancelled()) await this.removeLedger_()
+    if (cancelled()) return 'unavailable'
+    if (!accepted) return 'cancelled'
+    return await this.removeLedger_() ? 'ready' : 'unknown'
   }
 
   /** 已确认删除真正等待异步owner；成功/失败只发布给仍存活的同一活动，忙态拒绝重复操作。 */
-  private async removeLedger_(): Promise<void> {
-    if (!this.canDelete_()) return
+  private async removeLedger_(): Promise<boolean> {
+    if (!this.canDelete_()) return false
     const activityId: number = this.activityId
     const generation: number = this.pinGeneration_
     this.deleting = true
     try {
       await ledgerRemoveAsync(this.context.filesDir, activityId)
-      if (!this.pageActive || generation !== this.pinGeneration_ || activityId !== this.activityId) return
+      if (!this.pageActive || generation !== this.pinGeneration_ || activityId !== this.activityId) return true
       this.toast_('已删除本条日志')
       this.close_()
+      return true
     } catch (e) {
       if (this.pageActive && generation === this.pinGeneration_ && activityId === this.activityId) this.toast_((e as Error).message)
       hilog.warn(0x0000, TAG, 'remove failed: %{public}s', (e as Error).message)
+      return false
     } finally {
       this.deleting = false
     }

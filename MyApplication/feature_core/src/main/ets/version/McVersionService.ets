@@ -7,8 +7,8 @@
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { McManifestVersion, loadMcVersionManifest } from './McVersionManifest';
-import { isOfficialMcSourceOnly } from '../download/SourceProber';
+import { McManifestVersion, McVersionManifest, readCachedMcVersionManifest, refreshMcVersionManifest } from './McVersionManifest';
+import { getMcSourcePreference, isOfficialMcSourceOnly } from '../download/SourceProber';
 
 const TAG = 'McVersionService';
 /** 版本页的磁盘缓存窗口；显式刷新仍触发真实条件请求。 */
@@ -32,57 +32,70 @@ export interface McVersionList {
   versions: McVersion[];
 }
 
-// Waiter list: 多个并发 getVersionList 调用合并到同一个 in-flight fetch
-type Waiter = (list: McVersionList | null, err: Error | null) => void;
-
 export class McVersionService {
   private cachedList: McVersionList | null = null;
-  /** 官方模式不能继续复用此前允许镜像时产生的页面快照。 */
-  private cachedOfficialOnly: boolean = false;
-  private inflightWaiters: Waiter[] | null = null;  // null=空闲；非 null=有 fetch 进行中
+  private cachedSource: string = '';
+  /** 同一服务的重叠调用共享同一来源请求；更换来源后发起独立复核。 */
+  private pending: Map<string, Promise<McVersionList>> = new Map<string, Promise<McVersionList>>();
 
-  /**
-   * 获取版本列表（带缓存）。
-   *
-   * R11（D13-1）：原本用 `while (loading) await sleep(100)` 轮询，每 100ms 唤醒一次。
-   * 现改成 Promise waiter list：第一个调用方启动真实 fetch，后续并发调用方直接挂在
-   * waiter 队列上，fetch 完成时一次性 resolve/reject 全部。零轮询，零浪费 CPU。
-   */
-  async getVersionList(forceRefresh: boolean = false): Promise<McVersionList> {
-    const officialOnly = isOfficialMcSourceOnly();
-    if (this.cachedList && !forceRefresh && (!officialOnly || this.cachedOfficialOnly)) {
-      return this.cachedList
-    }
-    // 已有 in-flight fetch：挂队列等结果（与首发 caller 共享同一次网络请求）
-    if (this.inflightWaiters !== null) {
-      return new Promise<McVersionList>((resolve, reject) => {
-        this.inflightWaiters!.push((list, err) => {
-          if (err) reject(err); else resolve(list as McVersionList);
-        });
-      });
-    }
-    // 首发 caller：启动 fetch，建立 waiter 队列
-    this.inflightWaiters = [];
+  /** 网关意图和显式官方源使用同一官方清单权限，自动与镜像保留各自的优先序。 */
+  private sourceMode(): string {
+    return isOfficialMcSourceOnly() ? 'official' : getMcSourcePreference();
+  }
+
+  /** 读取当前来源可展示的快照。过期磁盘正文只用于首显，后台检查仍须访问网络。 */
+  peekVersionList(): McVersionList | null {
+    if (this.cachedList !== null && this.cachedSource === this.sourceMode()) return this.cachedList;
+    const stored = readCachedMcVersionManifest('', -1);
+    return stored === null ? null : this.toVersionList(stored);
+  }
+
+  /** 发起条件请求；网络失败保持上次成功快照并向页面报告失败，不把旧数据当作已复核。 */
+  async refreshVersionList(): Promise<McVersionList> {
+    const source = this.sourceMode();
+    const existing = this.pending.get(source);
+    if (existing !== undefined) return existing;
+    const request = this.refreshForSource(source);
+    this.pending.set(source, request);
     try {
-      const list = await this.fetchManifest(forceRefresh);
-      this.cachedList = list;
-      this.cachedOfficialOnly = officialOnly;
-      // 唤醒所有等待者（成功路径）
-      let waiters = this.inflightWaiters;
-      this.inflightWaiters = null;
-      for (let w of waiters) {
-        try { w(list, null); } catch (e) { /* ignore listener throws */ }
+      return await request;
+    } finally {
+      this.pending.delete(source);
+    }
+  }
+
+  /** 异步返回后重新核对权限，防止已撤销来源的旧响应覆盖当前首屏。 */
+  private async refreshForSource(source: string): Promise<McVersionList> {
+    const raw = await refreshMcVersionManifest();
+    if (source !== this.sourceMode()) throw new Error('版本清单下载来源已更改');
+    this.cachedList = this.toVersionList(raw);
+    this.cachedSource = source;
+    return this.cachedList;
+  }
+
+  /** 其他调用保留已有的内存命中、磁盘 TTL、强制刷新与失败时离线回退语义。 */
+  async getVersionList(forceRefresh: boolean = false): Promise<McVersionList> {
+    const source = this.sourceMode();
+    if (!forceRefresh) {
+      if (this.cachedList !== null && this.cachedSource === source) return this.cachedList;
+      const stored = readCachedMcVersionManifest('', TTL_MANIFEST_MS);
+      if (stored !== null) {
+        this.cachedList = this.toVersionList(stored);
+        this.cachedSource = source;
+        return this.cachedList;
       }
-      return list;
-    } catch (e) {
-      // 唤醒所有等待者（失败路径）
-      let waiters = this.inflightWaiters || [];
-      this.inflightWaiters = null;
-      let err = e as Error;
-      for (let w of waiters) {
-        try { w(null, err); } catch (e2) { /* ignore */ }
+    }
+    try {
+      return await this.refreshVersionList();
+    } catch (error) {
+      const cached = readCachedMcVersionManifest('', TTL_MANIFEST_MS, true);
+      if (cached !== null) {
+        hilog.warn(0x0000, TAG, 'Using cached Minecraft list: %{public}s', (error as Error).message);
+        this.cachedList = this.toVersionList(cached);
+        this.cachedSource = this.sourceMode();
+        return this.cachedList;
       }
-      throw err;
+      throw error as Error;
     }
   }
 
@@ -117,9 +130,8 @@ export class McVersionService {
     this.cachedList = null
   }
 
-  /** 使用安装入口同一清单策略；显示日期只在页面服务中生成。 */
-  private async fetchManifest(forceRefresh: boolean): Promise<McVersionList> {
-    const raw = await loadMcVersionManifest(TTL_MANIFEST_MS, forceRefresh);
+  /** 内存与磁盘快照均使用页面既有的日期和版本投影。 */
+  private toVersionList(raw: McVersionManifest): McVersionList {
     const versions = raw.versions.map((version: McManifestVersion): McVersion => ({
       id: version.id,
       type: version.type,

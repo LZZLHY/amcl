@@ -1,3 +1,5 @@
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { settingFailure, settingKeys, settingText, SettingsSkillData } from '../launcherskill/SettingsSkillValues';
 import { ThemeColors, AppLogger } from 'commons'
 import { common } from '@kit.AbilityKit'
 import { PreferenceManager } from 'feature_system'
@@ -35,6 +37,9 @@ export struct MobileglRendererSettings {
   @State private confirmError: string = ''
   /** 防止同一页面连续确定重复提交；重新挂接才开始下一次明确选择。 */
   @State private confirmationCommitted: boolean = false
+  /** 区分原选择、玩家改选以及已经派发但尚未持久化的写入。 */
+  private choiceEpoch_: number = 0
+  private writingChoice_: number = -1
   private refreshGeneration: number = 0
   private availabilityActive: boolean = false
   private pendingAvailabilityKey: string = ''
@@ -44,6 +49,12 @@ export struct MobileglRendererSettings {
 
   /** appear与可见性回调可能相邻触发；同事实键共享在途查询，不向native重复争抢忙门。 */
   aboutToAppear(): void {
+    if (!this.compact) {
+      LauncherSkillBus.bind('settingsGraphics',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+        this.skillAction_(method,args), (): boolean => this.availabilityActive && !this.compact &&
+          AppStorage.get<boolean>('appInForeground') === true && AppStorage.get<boolean>('amclSettingsTabVisible') === true);
+    }
+
     this.availabilityActive = true
     this.draftBackendId = ''
     this.confirmationCommitted = false
@@ -52,11 +63,43 @@ export struct MobileglRendererSettings {
 
   /** 退出后撤销所有等待者的发布资格；进行中的只读查询可完成，但不得再写组件状态。 */
   aboutToDisappear(): void {
+    LauncherSkillBus.unbind('settingsGraphics',this);
+
     this.availabilityActive = false
+    this.choiceEpoch_++
     this.refreshGeneration++
   }
 
   /** Watch/可见性共用此入口；组件出现前或离开后的回调不再发起能力查询。 */
+  /** 从实际候选与当前实例取证。切换版本、能力变化或失去页面时不提交旧草稿。 */
+  private async skillAction_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (this.compact || !this.availabilityActive || this.availabilityLoading || !this.lastInput) return settingFailure('graphicsNotReady');
+    try {
+      const ctx=this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const prefs=new PreferenceManager(ctx);
+      const profile=prefs.strictLauncherField('glRenderer') as string;
+      const explicit=prefs.strictLauncherField('graphicsProfileExplicit') as boolean;
+      const override=prefs.strictLauncherField('devRendererOverride') as string;
+      const selected=override || (!explicit && profile === 'mobileglues' ? 'auto' : profile);
+      if (!this.peerRows.some((r: PeerBackendRow): boolean => r.selected && r.id===selected)) return {'state':'unknown','reason':'graphicsSelectionChanged'};
+    } catch (_) { return {'state':'unknown','reason':'graphicsUnreadable'}; }
+    if (method === 'listGraphicsBackends' && settingKeys(args,[])) {
+      return {'state':'ready','version':this.mcVersion,'backends':this.peerRows.map((r: PeerBackendRow): SettingsSkillData =>
+        ({'id':r.id,'label':r.name,'selectable':r.enabled,'selected':r.selected,'reason':r.reasonCode}))};
+    }
+    if (method !== 'selectGraphicsBackend' || !settingKeys(args,['id','version']) || this.mcVersion !== args['version']) return settingFailure('invalidArguments');
+    const row = this.peerRows.find((r: PeerBackendRow): boolean => r.id === args['id'] && r.enabled);
+    if (!row) return settingFailure('backendUnavailable');
+    if (row.selected) return {'state':'ready','id':row.id};
+    this.stagePeerBackend_(row);
+    if (!this.canConfirm_()) return settingFailure('backendChanged');
+    const epoch = this.choiceEpoch_;
+    LauncherSkillBus.followUserCondition(method, (): boolean => this.writingChoice_ === epoch ||
+      (this.choiceEpoch_ === epoch && this.availabilityActive && !this.confirmationCommitted && this.draftBackendId === row.id));
+    // 候选就在当前设置页，保留原按钮让用户确认切换；下次查询读取实际偏好。
+    return {'state':'needsUser','id':row.id,'reason':'confirmGraphicsChoice'};
+  }
+
   private refreshAvailability(): void {
     this.loadAvailability()
   }
@@ -75,6 +118,7 @@ export struct MobileglRendererSettings {
       this.lastInput = undefined
       this.peerRows = []
       this.draftBackendId = ''
+      this.choiceEpoch_++
       this.availabilityLoading = false
       this.availabilityMessage = '无法读取当前页面环境，请重新打开设置。'
       return
@@ -92,6 +136,7 @@ export struct MobileglRendererSettings {
         this.lastInput = undefined
         this.peerRows = []
         this.draftBackendId = ''
+        this.choiceEpoch_++
         this.availabilityMessage = '正在读取设备与游戏能力…'
       }
       pending = this.pendingAvailabilityKey === key ? this.pendingAvailability : undefined
@@ -174,19 +219,6 @@ export struct MobileglRendererSettings {
     return '能力尚未通过：' + candidate.reason
   }
 
-  /** 原选择出口只在确定时调用；保存启动偏好不代表当前窗口已经采用或验证了该后端。 */
-  private selectPeerBackend(row: PeerBackendRow): void {
-    if (!row.enabled) return
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined
-    if (context === undefined) return
-    const preferences: PreferenceManager = new PreferenceManager(context)
-    preferences.graphicsProfile = row.id
-    // 所有候选共用原偏好键；用户明确选择时退役旧 DevTools 覆盖，避免两份偏好竞争。
-    preferences.devRendererOverride = ''
-    this.refreshPeerRows()
-    AppLogger.info('RendererSettings', 'graphics profile selected=' + row.id)
-  }
-
   /** 摘要只消费 peerRows 的确认标记；加载与失败时不借用旧偏好名称制造能力结论。 */
   private confirmedBackendName_(): string {
     if (this.availabilityLoading) return '正在读取…'
@@ -206,6 +238,7 @@ export struct MobileglRendererSettings {
     if (this.compact || !this.availabilityActive || this.availabilityLoading || this.confirmationCommitted) return
     const current: PeerBackendRow | undefined = this.peerRows.find((item: PeerBackendRow): boolean => item.id === row.id)
     if (current === undefined || !current.enabled || this.lastInput === undefined) return
+    if (current.id !== this.draftBackendId) this.choiceEpoch_++
     this.draftBackendId = current.id
     this.confirmError = ''
   }
@@ -218,23 +251,39 @@ export struct MobileglRendererSettings {
   }
 
   /** 确定时重核当前表与页面环境，只交给原选择出口一次；返回通知只代表偏好提交。 */
-  private confirmBackend_(): void {
+  private async confirmBackend_(): Promise<void> {
     if (!this.canConfirm_()) return
     const row: PeerBackendRow | undefined = this.peerRows.find((item: PeerBackendRow): boolean =>
       item.id === this.draftBackendId && item.enabled)
     if (row === undefined) return
-    if (this.getUIContext().getHostContext() === undefined) {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined
+    if (context === undefined) {
       this.confirmError = '当前页面环境已失效，请重新打开设置。'
       return
     }
+    const epoch = this.choiceEpoch_
+    const current = (): boolean => this.availabilityActive && this.choiceEpoch_ === epoch && this.draftBackendId === row.id
+    this.writingChoice_ = epoch
     this.confirmationCommitted = true
     try {
-      this.selectPeerBackend(row)
+      // 三个现有偏好属于同一决定，使用原耐久事务的 flush、回读和失败回滚。
+      await new PreferenceManager(context).saveLauncherFields(
+        {'glRenderer':row.id,'graphicsProfileExplicit':true,'devRendererOverride':''}, current)
+      if (!current()) {
+        if (this.availabilityActive && this.writingChoice_ === epoch) this.confirmationCommitted = false
+        return
+      }
+      this.refreshPeerRows()
+      AppLogger.info('RendererSettings', 'graphics profile selected=' + row.id)
     } catch (error) {
-      this.confirmationCommitted = false
-      this.confirmError = '无法提交图形偏好，请重试。'
+      if (this.availabilityActive && this.writingChoice_ === epoch) this.confirmationCommitted = false
+      if (current()) {
+        this.confirmError = '无法提交图形偏好，请重试。'
+      }
       AppLogger.warn('RendererSettings', 'graphics preference submission failed', error)
       return
+    } finally {
+      if (this.writingChoice_ === epoch) this.writingChoice_ = -1
     }
     this.onConfirmed()
   }

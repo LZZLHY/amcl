@@ -95,6 +95,8 @@ bool glfwOHOS_PromoteWindow(GLFWwindow* window);
 // Show/Hide在可见性状态提交后同步刷新两条输入平面的资格，避免隐藏期间事件
 // 在下一次Show重新投递。函数可能发释放回调；调用后不得继续解引用旧window。
 void glfwOHOS_RefreshTypedInputActivation();
+// 仅真实呈现窗口可以请求触控菜单定位；当前消费回调内的请求沿原泵次顺序交付。
+void glfwOHOS_WarpCarriedMenuCursor(GLFWwindow* window, double x, double y);
 
 struct GLFWmonitor {
     int64_t desktopId;
@@ -116,6 +118,7 @@ bool glfwOHOS_ReadInputSurfaceContext(
     AmclInputSurfaceContextPayload* outContext);
 void glfwOHOS_ClearInputSurfaceContext();
 void glfwOHOS_PollDesktopDisplays();
+void glfwOHOS_PollGamepads();
 void glfwOHOS_PrimeDesktopWindow(GLFWwindow* window);
 bool glfwOHOS_ApplyInitialMonitor(GLFWwindow* window, GLFWmonitor* monitor, int width, int height);
 

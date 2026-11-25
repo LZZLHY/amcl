@@ -87,5 +87,10 @@ export class RuntimeProductProfile {
     return ProductRuntimePolicy.supportsTabletIsolation(ProductBuildProfile.family,
       deviceInfo.deviceType, deviceInfo.sdkApiVersion)
   }
+  /** 选择下一局的手柄处理方式。电脑保留既有设置入口；手机、平板从 Game Controller Kit 的 API 21 开始提供。 */
+  static canChooseNativeGamepad(): boolean {
+    return RuntimeProductProfile.selection().supported &&
+      (deviceInfo.deviceType === '2in1' || deviceInfo.sdkApiVersion >= 21)
+  }
   static supportsTouchLayouts(): boolean { return ProductBuildProfile.touchControls }
 }

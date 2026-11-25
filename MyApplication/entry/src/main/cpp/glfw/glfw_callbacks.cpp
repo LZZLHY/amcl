@@ -2,6 +2,10 @@
 
 #include "glfw_internal.h"
 #include "../platform/desktop_host_api.h"
+#include "../platform/gamepad_reader.h"
+#include "../platform/gamepad_topology.h"
+#include "../platform/desktop_gamepad_mapping.h"
+#include <deviceinfo.h>
 #include "../platform/native_gl.h"
 #include "egl_dispatch.h"
 #include "../platform/desktop_drop_packet.h"
@@ -9,6 +13,7 @@
 #include "../input/amcl_input_host_descriptor.h"
 #include <hilog/log.h>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -253,10 +258,16 @@ int glfwGetInputMode(GLFWwindow* window, int mode) {
 // 更新 GLFW 窗口局部光标坐标，同时记录 Minecraft 请求的光标位置。
 // Minecraft 1.21.11 在 grabMouse() 中先把 MouseHandler.xpos/ypos 设为窗口中心，
 // 再依次调用 glfwSetCursorPos(center) 与 glfwSetInputMode(DISABLED)。bridge 因而只在这里
-// 记录该中心，并在随后的 menu→grabbed 转换中把 look 累加器及 pump 去重基准重锚到它。
+// 记录该中心供重抓使用。菜单中的主动定位还须更新游戏回调与触控拖动基线。
 void glfwSetCursorPos(GLFWwindow* window, double xpos, double ypos) {
-    if (window) { window->cursorX = xpos; window->cursorY = ypos; }
-    if (window && !window->auxiliary && window == g_currentWindow) inputBridge_setLookCursor(xpos, ypos);
+    if (!window) return;
+    window->cursorX = xpos;
+    window->cursorY = ypos;
+    if (window->auxiliary || window != g_currentWindow) return;
+    inputBridge_setLookCursor(xpos, ypos);
+    if (window->cursorMode == GLFW_CURSOR_NORMAL && window->cursorPosCb) {
+        glfwOHOS_WarpCarriedMenuCursor(window, xpos, ypos);
+    }
 }
 int glfwRawMouseMotionSupported(void) {
     return api26RawMouseMotionSupported() ? GLFW_TRUE : GLFW_FALSE;
@@ -326,72 +337,117 @@ static AmclDesktopSnapshot desktopFacts() {
     return facts;
 }
 
-// Clipboard
-static std::string g_clipboard;
-const char* glfwGetClipboardString(GLFWwindow* window) {
-    const auto* host = amclDesktopHostResolve();
-    if (!host) return g_clipboard.c_str();
-    static thread_local std::vector<char> clipboard(4 * 1024 * 1024 + 1);
-    const int result = host->clipboardRead(clipboard.data(), clipboard.size());
-    if (result < 0) {
-        if (g_errorCallback) g_errorCallback(GLFW_PLATFORM_ERROR, "System clipboard read failed or permission denied");
-        return nullptr;
+// 手柄读端与窗口服务分开。固定 NAPI 映像在进程内常驻；跨进程和首次发布失败均重新解析。
+static AmclGamepadReadFn gamepadReader(pid_t current = getpid()) {
+    static const bool supported = amcl::desktop::SupportsGamepadCapture(OH_GetDeviceType(), OH_GetSdkApiVersion());
+    if (!supported) return nullptr;
+    static thread_local pid_t owner = 0;
+    static thread_local AmclGamepadReadFn reader = nullptr;
+    // 默认映射没有文件。成功调用不读时钟，缺失时仅在后续游戏查询中每秒重试一次。
+    using Clock = std::chrono::steady_clock;
+    static thread_local Clock::time_point retryAfter{};
+    if (owner != current) {
+        reader = nullptr;
+        retryAfter = {};
+        owner = current;
     }
-    return clipboard.data();
+    if (!reader) {
+        const auto now = Clock::now();
+        if (now >= retryAfter) {
+            reader = amclResolveGamepadReader();
+            retryAfter = now + std::chrono::seconds(1);
+        }
+    }
+    return reader;
 }
-void glfwSetClipboardString(GLFWwindow* window, const char* string) {
-    if (!string) return;
-    const auto* host = amclDesktopHostResolve();
-    if (!host) { g_clipboard = string; return; }
-    if (host->clipboardWrite(string) != 0 && g_errorCallback)
-        g_errorCallback(GLFW_PLATFORM_ERROR, "System clipboard write failed");
-}
-
-// Native gamepad mode exposes canonical OHOS state. Launcher mapping stays separate.
-static bool readDesktopPad(int jid, AmclDesktopGamepad& pad) {
+static bool readGamepad(int jid, AmclDesktopGamepad& pad) {
     if(jid<0 || jid>=16)return false;
-    const auto* host=amclDesktopHostResolve(); return host && host->gamepadRead(jid,&pad)!=0;
+    const auto reader = gamepadReader();
+    return reader && reader(jid, &pad) > 0;
 }
-int glfwJoystickPresent(int jid) { AmclDesktopGamepad pad{}; return readDesktopPad(jid,pad) ? 1 : 0; }
+int glfwJoystickPresent(int jid) { AmclDesktopGamepad pad{}; return readGamepad(jid,pad) ? 1 : 0; }
 const float* glfwGetJoystickAxes(int jid, int* count) {
     static thread_local AmclDesktopGamepad pads[16]; if(jid<0 || jid>=16){if(count)*count=0;return nullptr;} auto& pad=pads[jid];
-    if(!readDesktopPad(jid,pad)) {if(count)*count=0;return nullptr;}
+    if(!readGamepad(jid,pad)) {if(count)*count=0;return nullptr;}
     if(count)*count=6;return pad.axes;
 }
 const unsigned char* glfwGetJoystickButtons(int jid, int* count) {
     static thread_local AmclDesktopGamepad pads[16]; if(jid<0 || jid>=16){if(count)*count=0;return nullptr;} auto& pad=pads[jid];
-    if(!readDesktopPad(jid,pad)) {if(count)*count=0;return nullptr;}
+    if(!readGamepad(jid,pad)) {if(count)*count=0;return nullptr;}
     if(count)*count=18;return pad.buttons;
 }
 const unsigned char* glfwGetJoystickHats(int jid, int* count) {
     static thread_local AmclDesktopGamepad pads[16]; if(jid<0 || jid>=16){if(count)*count=0;return nullptr;} auto& pad=pads[jid];
-    if(!readDesktopPad(jid,pad)) {if(count)*count=0;return nullptr;}
+    if(!readGamepad(jid,pad)) {if(count)*count=0;return nullptr;}
     if(count)*count=1;return pad.hats;
 }
-const char* glfwGetJoystickName(int jid) {static thread_local AmclDesktopGamepad pads[16]; if(jid<0 || jid>=16)return nullptr; auto& pad=pads[jid];return readDesktopPad(jid,pad)?pad.name:nullptr;}
+const char* glfwGetJoystickName(int jid) {static thread_local AmclDesktopGamepad pads[16]; if(jid<0 || jid>=16)return nullptr; auto& pad=pads[jid];return readGamepad(jid,pad)?pad.name:nullptr;}
 const char* glfwGetJoystickGUID(int jid) {
-    AmclDesktopGamepad pad{}; if(!readDesktopPad(jid,pad))return nullptr;
+    AmclDesktopGamepad pad{}; if(!readGamepad(jid,pad))return nullptr;
     static thread_local char guids[16][33]; auto& guid=guids[jid]; uint64_t hash=14695981039346656037ULL;
     for(const unsigned char* s=reinterpret_cast<const unsigned char*>(pad.id);*s;++s){hash^=*s;hash*=1099511628211ULL;}
     snprintf(guid,sizeof(guid),"616d636c00000000%016llx",static_cast<unsigned long long>(hash));return guid;
 }
 int glfwJoystickIsGamepad(int jid) {return glfwJoystickPresent(jid);}
 const char* glfwGetGamepadName(int jid) {return glfwGetJoystickName(jid);}
-static GLFWjoystickfun g_desktopJoystickCallback=nullptr;
-static bool g_padConnected[16]{};
+static GLFWjoystickfun g_gamepadCallback=nullptr;
+static int g_connectedPadMask = 0;
 static uint64_t g_padGenerations[16]{};
+static void* g_joystickUserPointers[16]{};
 GLFWjoystickfun glfwSetJoystickCallback(GLFWjoystickfun callback) {
-    const auto previous=g_desktopJoystickCallback;g_desktopJoystickCallback=callback;return previous;
+    const auto previous=g_gamepadCallback;g_gamepadCallback=callback;return previous;
 }
-static void pollDesktopPads() {
-    for(int i=0;i<16;++i){AmclDesktopGamepad pad{};const bool connected=readDesktopPad(i,pad);
-        const bool replaced=connected && g_padConnected[i] && pad.generation!=g_padGenerations[i];
-        if(g_padConnected[i] && (!connected || replaced) && g_desktopJoystickCallback)g_desktopJoystickCallback(i,0x00040002);
-        if(connected && (!g_padConnected[i] || replaced) && g_desktopJoystickCallback)g_desktopJoystickCallback(i,0x00040001);
-        g_padConnected[i]=connected;g_padGenerations[i]=pad.generation;
+// 只在 GLFW 的事件泵报告插拔；读取显示列表不消耗手柄通知或重入游戏回调。
+void glfwOHOS_PollGamepads() {
+    using namespace amcl::desktop;
+    static uint64_t revision = 0;
+    static pid_t observedPid = 0;
+    const pid_t current = getpid();
+    if (observedPid != current) {
+        revision = 0;
+        g_connectedPadMask = 0;
+        // 游戏可以在首次 Poll 前查询设备并绑定指针。只清理实际跨进程继承的旧绑定。
+        if (observedPid != 0) memset(g_joystickUserPointers, 0, sizeof(g_joystickUserPointers));
+        observedPid = current;
+    }
+    const auto reader = gamepadReader(current);
+    AmclDesktopGamepad query;
+    query.generation = revision;
+    const int topology = reader ? reader(GamepadTopologyQuery, &query) : 0;
+    if (topology == GamepadTopologyUnchanged) return;
+    GamepadGenerations generations{};
+    int mask = 0;
+    if (topology == GamepadTopologyChanged) {
+        revision = query.generation;
+        mask = query.connected;
+        memcpy(generations, query.id, sizeof(generations));
+    } else if (reader) {
+        // 旧宿主不认识拓扑操作，沿原快照协议发现代次；其负值表示原生路线当前不可读。
+        mask = reader(-1, nullptr);
+        for (int i = 0; mask > 0 && i < GamepadSlotCount; ++i) {
+            if (!(mask & (1 << i))) continue;
+            if (reader(i, &query) > 0) generations[i] = query.generation;
+            else mask &= ~(1 << i);
+        }
+    }
+    if (mask <= 0 && !g_connectedPadMask) return;
+    for (int slot = 0; slot < GamepadSlotCount; ++slot) {
+        const int bit = 1 << slot;
+        const bool present = mask > 0 && (mask & bit);
+        const bool reported = (g_connectedPadMask & bit) != 0;
+        const bool replaced = present && reported && generations[slot] != g_padGenerations[slot];
+        if (reported && (!present || replaced)) {
+            if (g_gamepadCallback) g_gamepadCallback(slot, GLFW_DISCONNECTED);
+            g_joystickUserPointers[slot] = nullptr;
+            g_connectedPadMask &= ~bit;
+        }
+        if (present && (!reported || replaced)) {
+            g_connectedPadMask |= bit;
+            g_padGenerations[slot] = generations[slot];
+            if (g_gamepadCallback) g_gamepadCallback(slot, GLFW_CONNECTED);
+        }
     }
 }
-static void* g_joystickUserPointers[16]{};
 void glfwSetJoystickUserPointer(int jid, void* pointer) {if(jid>=0 && jid<16)g_joystickUserPointers[jid]=pointer;}
 void* glfwGetJoystickUserPointer(int jid) {return jid>=0 && jid<16?g_joystickUserPointers[jid]:nullptr;}
 int glfwUpdateGamepadMappings(const char*) {
@@ -400,7 +456,7 @@ int glfwUpdateGamepadMappings(const char*) {
 }
 int glfwGetGamepadState(int jid, GLFWgamepadstate* state) {
     if(!state)return GLFW_FALSE;
-    memset(state,0,sizeof(*state));AmclDesktopGamepad pad{};if(!readDesktopPad(jid,pad))return GLFW_FALSE;
+    memset(state,0,sizeof(*state));AmclDesktopGamepad pad{};if(!readGamepad(jid,pad))return GLFW_FALSE;
     memcpy(state->buttons,pad.buttons,sizeof(state->buttons));memcpy(state->axes,pad.axes,sizeof(state->axes));return GLFW_TRUE;
 }
 
@@ -632,7 +688,6 @@ static void pollDesktopWindow(const AmclDesktopSnapshot& facts) {
 }
 void glfwOHOS_PollDesktopDisplays() {
     if (!amclDesktopHostResolve()) return;
-    pollDesktopPads();
     const auto facts = desktopFacts();
     const bool notify = g_desktopMonitorInitialized;
     for (int slot = 0; slot < AMCL_DESKTOP_MAX_DISPLAYS; ++slot) {

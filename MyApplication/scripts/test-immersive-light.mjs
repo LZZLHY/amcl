@@ -185,7 +185,13 @@ const Tab = component('entry/src/main/ets/pages/tabs/SettingsTab.ets', 'Settings
   DistributionPolicy: { isStore: () => true, allowPublisherServices: () => false },
   DiagnosticPolicy: { hasTestHooks: () => false }, DeviceProfile: { isPC: () => false } },
   // 本组只执行设置分区与返回订阅；其余业务入口显式隔离，误走它们会因缺少能力直接失败。
+  'entry/ProductDeveloperSettings': { developerToolRoute() { assert.fail('光感设置不应触发开发诊断路由'); } },
+  '../../launcherskill/LauncherSkillBus': load('entry/src/main/ets/launcherskill/LauncherSkillBus.ets'),
+  '../../launcherskill/SettingsSkillValues': load('entry/src/main/ets/launcherskill/SettingsSkillValues.ets'),
+  'entry/ProductBuildProfile': { ProductBuildProfile: { product: 'default' } },
   '../../components/TouchLearningStore': {}, '@kit.ArkUI': {}, '@kit.AbilityKit': {},
+  // 设置栏目从设备 API 级别生成可见项；本组在受支持的 API 20 环境验证进入与返回。
+  '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 20 } },
   '@kit.PerformanceAnalysisKit': {}, './SettingsCatalog': settingsCatalog,
   'entry/ProductInputProfile': { ProductInputProfile: { supportsTouchLayouts: () => false,
     canChooseInteraction: () => false, canChooseTabletProcess: () => false } } },

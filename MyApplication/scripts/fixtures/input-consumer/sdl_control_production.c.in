@@ -8,6 +8,9 @@
 #include "events/SDL_mouse_c.h"
 #include "events/SDL_touch_c.h"
 #include "SDL_amclinputcontrol_c.h"
+#include "SDL_amclpresentation.h"
+/* dummy video 没有 OHOS 窗口私有对象；只声明真实文本回执会查询的宿主边缘字段。 */
+struct SDL_WindowData { const void *native_window_lease_broker; Uint64 amcl_generation; int role; };
 #include "control_delivery_client.h"
 #include "input/delivery/look_execution_client.h"
 #include <stdio.h>
@@ -55,6 +58,8 @@ static void OPENHARMONY_RecordTextDegradation(const char *site, Uint64 *count) {
 static SDL_AtomicInt host_typed_state={1};
 static Uint64 host_surface_context_generation, amcl_typed_text_degraded_editing,
     amcl_typed_text_degraded_selection, amcl_typed_malformed_events;
+static bool host_menu_warp_dispatching;
+static Uint64 host_menu_mode_epoch;
 static bool host_last_grabbing,host_baseline_valid,host_capture_requested,host_capture_active,host_presented_active=true;
 static double host_last_x,host_last_y;
 static Uint32 host_relative_disable_authority;
@@ -73,7 +78,7 @@ typedef struct OPENHARMONY_HostBridge {
  int(*NextEvent)(int*,int*,int*,int*,int*);void(*GetCursorSnapshot)(double*,double*);bool(*IsGrabbing)(void);
  Uint64(*InteractionFence)(void);int(*TypedNextThrough)(Uint32,AMCL_BackendInputEvent*,Uint64);
  Uint64(*LegacyPeekOrder)(void);int(*LegacyNextThrough)(int*,int*,int*,int*,int*,Uint64);
- Uint64 pump_order_limit;int pump_budget;bool pump_did_read;
+ Uint64 pump_order_limit;int pump_budget;bool pump_did_read; Uint64 pending_menu_warp_order; SDL_WindowID pending_menu_warp_target;
 } OPENHARMONY_HostBridge;
 static int legacy[4096][5], legacyBegin,legacyEnd;
 static Uint64 legacyOrders[4096], frameLimit=UINT64_MAX;

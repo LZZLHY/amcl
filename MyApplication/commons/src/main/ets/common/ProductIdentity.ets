@@ -1,8 +1,7 @@
 /**
  * ProductIdentity.ets — 产品身份的结构化表示与格式化（批次 D8）
  *
- * 文档：docs/refactor/测试自动化方案.md §三.8（D8）
- *       docs/guides/test-automation-contract.md §2.3（机器可读优先）/ §10.2（产品身份不进日志）
+ * 产品身份采集和日志输出遵循产品基线的开发诊断约定。
  *
  * 起因（2026-09-07 真机探针 A7 判为不通过）：`onCreate` 第一行就调了
  * `DiagnosticPolicy.configure(ProductBuildProfile.developerDiagnostics, testNapi.getDiagnosticCapabilities())`

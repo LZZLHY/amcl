@@ -8,7 +8,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
 import { PROJECT_ROOT, assertExternalOutputPath } from './lib/workspace-paths.mjs';
+
+const { LauncherSkillBus } = makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets');
+const { ProductQa } = makePureEtsLoader()('entry/src/main/ets/product/UnavailableQa.ets');
 
 assert.equal(process.argv[2], '--output'); assert.ok(path.isAbsolute(process.argv[3]));
 const output = assertExternalOutputPath(process.argv[3], { root: PROJECT_ROOT });
@@ -18,7 +22,7 @@ const source = fs.readFileSync(pagePath, 'utf8'), clientSource = fs.readFileSync
 const ast = compiler.createSourceFile('Index.ets', source, compiler.ScriptTarget.Latest, true);
 const component = ast.statements.find(node => node.name?.getText(ast) === 'Index');
 const names = ['relayPageVisible_', 'applyRelayStatus_', 'syncRelayObservation_', 'stopRelayObservation_',
-  'onHomeTabVisibilityChanged_', 'onPageShow', 'onPageHide', 'aboutToDisappear'];
+  'onHomeTabVisibilityChanged_', 'onPageShow', 'onPageHide', 'aboutToDisappear', 'unbindSettingsSkill_'];
 const methods = names.map(name => { const node = component.members.find(item => item.name?.getText(ast) === name);
   assert.ok(node, '必须执行真实组件方法：' + name); return node.getText(ast); });
 const clientAst = compiler.createSourceFile('RelayClient.ets', clientSource, compiler.ScriptTarget.Latest, true);
@@ -39,7 +43,7 @@ function fixture() {
   const client = { subscribeStatus(listener) { subscriptions++; listeners.add(listener); listener(status);
     return () => { cancellations++; listeners.delete(listener); }; },
     refreshStatus() { samples++; for (const listener of [...listeners]) listener(status); } };
-  const globals = { getRelayClient: () => client,
+  const globals = { ProductQa, LauncherSkillBus, getRelayClient: () => client,
     AppStorage: { get: name => storage.get(name), setOrCreate: (name, value) => storage.set(name, value) },
     setInterval: (callback, delay) => { assert.equal(delay, 3000); const id = ++timerId; timers.set(id, callback); return id; },
     clearInterval: id => timers.delete(id), setTimeout: () => 1, clearTimeout() {},
@@ -55,7 +59,7 @@ function fixture() {
     rootViewportUpdateTimer_: -1, registry: { removeListener() {} }, landscapeListener: null,
     getPrefManager_: () => ({ appUpdateChannel: 'stable', appUpdateLatestSeen: () => 0, appUpdateLatestName: () => '' }) });
   // 这些方法的业务与网关状态无关；仅作为真实生命周期方法调用的外部边界存在。
-  for (const name of ['onLauncherWorkVisibilityChanged_', 'onSideloadTestRequest_', 'markRuntimeAppVerified_',
+  for (const name of ['onLauncherWorkVisibilityChanged_', 'markRuntimeAppVerified_',
     'consumeLastSession', 'onUpdateRecoveryRequested_', 'refreshStoreManager_', 'updateJdkReadyState',
     'refreshRecentActivities_', 'tryConsumeLayoutImport', 'onGraphicsRecoverySignal_', 'drainUpdateDialogs_',
     'showUpdateRecovery_', 'onOpenErrorSheetReq', 'onPendingToast', 'onOpenNetDiagReq', 'onDesktopLaunchError',

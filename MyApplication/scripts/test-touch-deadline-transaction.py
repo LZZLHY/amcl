@@ -4,7 +4,7 @@ import argparse
 import runpy
 import subprocess
 import os
-import uuid
+from lib.host_test_lifecycle import HostTestScope
 from lib.workspace_paths import external_output_path, workspace_path
 from lib.host_cpp import find_host_cmake, configure_host_cmake
 from lib.source_host import source_dependencies
@@ -17,7 +17,8 @@ args = parser.parse_args()
 output = external_output_path(args.output) if args.output else workspace_path('run','touch-deadline')
 output.mkdir(parents=True, exist_ok=True)
 # 与正常构建/独立预检隔离变异源和二进制；共享固定CMake树会使并发负控互相覆盖。
-build_root = workspace_path('build','touch-deadline') / ('run-' + str(os.getpid()) + '-' + uuid.uuid4().hex[:8])
+scope = HostTestScope('run-', parent=workspace_path('build','touch-deadline'))
+build_root = scope.directory
 build = build_root / 'build'
 configure_source = build_root / 'fixture'
 configure_source.mkdir(parents=True,exist_ok=True)
@@ -25,6 +26,30 @@ cmake_tool = find_host_cmake(args.cmake)
 # 复用已运行的生产夹具；对照仍需先通过既有schema和触控行为契约。
 fixture = runpy.run_path(str(root / 'scripts/test-touch-production.py'))
 prefix, production, source = fixture['prefix'], fixture['production'], fixture['source']
+# 使用生产GLFW入口发出程序设位，窗口只保留该入口读取的字段，事件和消费状态仍由真实bridge维护。
+callback_source=(root/'entry/src/main/cpp/glfw/glfw_callbacks.cpp').read_text(encoding='utf-8')
+front=(root/'entry/src/main/cpp/glfw/glfw_compat.cpp').read_text(encoding='utf-8')
+block=fixture['base']['recipe'].block
+setter=block(callback_source,callback_source.index('void glfwSetCursorPos('))
+warp_pump=block(front,front.index('static void pumpGlfwInputThrough('))
+warp_request=block(front,front.index('void glfwOHOS_WarpCarriedMenuCursor('))
+prefix=prefix.replace('static int sourceFixtureWindow=0;', '''
+enum { GLFW_CURSOR_NORMAL=0x34001, GLFW_CURSOR_DISABLED=0x34003 };
+struct GLFWwindow {
+    bool auxiliary=false;
+    double cursorX=0,cursorY=0;
+    int cursorMode=GLFW_CURSOR_NORMAL;
+    void (*cursorPosCb)(void*,double,double)=nullptr;
+};
+static GLFWwindow sourceFixtureWindow;
+static GLFWwindow* g_currentWindow=&sourceFixtureWindow;
+void inputBridge_setLookCursor(double,double);
+void inputBridge_pumpOrdered(void*,int(*)(void*,uint64_t),void*,uint64_t);
+// typed来源不生成事件；仍核对两端传递的实际目标及上限。混合typed顺序由其生产组合套件验证。
+int pumpTypedThrough(void* window,uint64_t) {return window==g_currentWindow;}
+''',1)
+prefix += '\n'+'\n'.join([warp_pump,warp_request,setter])+'\n'
+
 # 此目标链接真实neutral bridge；基础纯触控夹具的计数出口只能保留声明，避免重复定义。
 # 面板集合仍用基础夹具唯一的平台替身，集合本身由独立生产producer测试覆盖。
 scope_stub = 'extern "C" void inputBridge_retireTouchMenuScopeV1(){++menuScopeRetirements;}'
@@ -42,12 +67,22 @@ prefix = prefix.replace('void recordSourceEdge(const Output& output,int action){
 prefix = prefix.replace('edges.push_back({output,action});',
     'edges.push_back({output,action});if(action==1&&blockPress.load()){'
     'pressEntered.store(true,std::memory_order_release);while(!releasePress.load(std::memory_order_acquire))std::this_thread::yield();}')
-prefix = '#include <thread>\n#include <cstdio>\n' + prefix
+# 将真实bridge已消费的指针和按键回调记录在同一轨迹；录制器不参与排序和持有。
+prefix = prefix.replace('void recordSourceEdge(const Output& output,int action){',
+                        'void recordDeliveredCarriedRelease(const Output&,int);\n'
+                        'void recordSourceEdge(const Output& output,int action){recordDeliveredCarriedRelease(output,action);')
+prefix = '#include <thread>\n#include <cstdio>\n#include "platform/render_scale.h"\n#include "input/input_menu_cursor_snapshot.h"\n' + prefix
 # 提取生产RAII事务类，底层begin/end委派到此目标链接的真实bridge。
 header = (root / 'entry/src/main/cpp/platform/touch_input.h').read_text(encoding='utf-8')
 raii = header[header.index('class AuthoritativeGrabInputTransaction final'):header.index('class SurfaceInputGateTransaction final')]
 prefix += r'''
 void inputBridge_setGrabState(int);
+void inputBridge_setCursorPosCallback(void(*)(void*,double,double));
+void inputBridge_publishMenuCursor(double,double);
+void inputBridge_getCursorSnapshot(double*,double*);
+void inputBridge_publishTouchMenuRelativeV1(int,uint32_t,double,double,double,double);
+void inputBridge_notifyFramePresentedForTargetV1(uint64_t,uint64_t);
+constexpr int MENU_POINTER_MOVE=0,MENU_POINTER_END=5;
 int inputBridge_beginPhysicalMotionTransaction(int*);
 void inputBridge_endPhysicalMotionTransaction();
 unsigned int inputBridge_testGrabWriterWaiters();
@@ -74,9 +109,12 @@ namespace amcl::input {
 class SurfaceInputGateTransaction{public:explicit operator bool()const{return surfaceAvailable;}};
 }
 '''
-names = ['static std::set<OwnerToken> schemaCaptureHeldOwnersLocked(',
+names = ['static bool mapMenuRelativePayload(', 'static void schemaCaptureCarriedMenuDragLocked(',
+         'static std::set<OwnerToken> schemaCaptureHeldOwnersLocked(',
+         'static bool schemaCollectCarriedUpLocked(', 'static bool handleSchemaCarriedTouch(',
          'static void schemaResetTransientStateLocked(', 'static void onGrabFlipCancel(',
-         'static bool consumeGrabEpochLocked(', 'static bool schemaExecuteDueDeadlines(']
+         'static bool consumeGrabEpochLocked(', 'extern "C" void ohos_note_physical_pointer_visual(',
+         'static uint64_t amcl_touch_claim_menu_warp(', 'static bool schemaExecuteDueDeadlines(']
 production += '\n' + '\n'.join(fixture['definition'](name) for name in names)
 template = (root / 'entry/src/main/cpp/tests/host/touch_deadline_transaction.cpp.in').read_text(encoding='utf-8')
 cpp = root / 'entry/src/main/cpp'
@@ -86,7 +124,8 @@ project(touch_deadline_transaction LANGUAGES CXX)
 find_package(Threads REQUIRED)
 set_source_files_properties("{(cpp/'glfw/input_bridge_ohos.c').as_posix()}" PROPERTIES LANGUAGE CXX)
 add_executable(deadline "{(output/'deadline.cpp').as_posix()}"
- {source_paths})
+ {source_paths}
+ "{(cpp/'platform/render_scale.cpp').as_posix()}")
 target_compile_features(deadline PRIVATE cxx_std_17)
 # POSIX也通过真实动态getter验证owner，不能靠Windows导出pragma代替。
 set_target_properties(deadline PROPERTIES ENABLE_EXPORTS ON)
@@ -126,4 +165,18 @@ assert production.count(before)==1
 check(production.replace(before,'if (grabbed || s_touchGroups.Enabled()) schemaPollLongPressLocked();\n        if (grabbed) schemaPollWasdLatchLocked();',1),
       negative=True,expected='!s_touchGroups.Enabled()&&ledger.isHeld',label='negative-menu.log')
 print('PASS compiled withdrawal: legacy menu long-press requires deadline advancement without another input event')
+# 撤回承接指的位置投递，真实松键仍可达，但实际consumer轨迹必须拒绝旧坐标。
+before = 'inputBridge_publishTouchMenuRelativeV1(MENU_POINTER_MOVE, 0, x, y, maxX, maxY);'
+assert production.count(before) == 1
+check(production.replace(before, '(void)0;', 1),
+      negative=True, expected='carriedDelivery==pendingPositions', label='negative-carried-motion.log')
+print('PASS compiled withdrawal: same-finger menu position must arrive before right release')
+# 只撤回程序设位对松键屏障的贡献；零物理MOVE时旧值仍能显示，但提前松键会把位移带到世界帧。
+warp_claim = fixture['definition']('static uint64_t amcl_touch_claim_menu_warp(')
+assert warp_claim.count('drag.movedInMenu = true;') == 1 and production.count(warp_claim)==1
+check(production.replace(warp_claim,warp_claim.replace('drag.movedInMenu = true;', '(void)0;')),
+      negative=True, expected='count(OutputKind::Mouse,1,GLFW_RELEASE)==0',label='negative-warp-release.log')
+print('PASS compiled withdrawal: initial warp alone must protect the first world frame')
 check(production,label='restored.log')
+# 全部断言和撤回负控结束后仅回收本次生成树；失败直接保留现场与日志。
+scope.close()

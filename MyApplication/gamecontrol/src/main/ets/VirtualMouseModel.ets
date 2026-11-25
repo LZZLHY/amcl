@@ -299,7 +299,8 @@ export class VirtualMouseModel {
   moveWheel(id: number,y: number): boolean {
     const flight: VirtualMouseWheelFlight | undefined=this.wheelFlight
     if(this.cancelPending || id!==this.scrollId || flight===undefined || !Number.isFinite(y) || Math.abs(y)>1048576) return false
-    const accumulated: number=this.remainder+y-this.scrollY
+    // 窗口Y向下为正。手指向上转动拟物滚轮应发正格，余量也按滚轮方向记账。
+    const accumulated: number=this.remainder+(this.scrollY-y)
     if(!Number.isFinite(accumulated)) return false
     this.scrollY=y; this.remainder=accumulated
     // 同接触的同步回入只积入真实新位移；原在途循环取得回执后统一扣量，不能重复发送旧包。

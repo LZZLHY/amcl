@@ -41,8 +41,7 @@
  */
 
 import { AppIconName } from 'commons';
-import { detectLoaderFromId, classifyVersion, VersionCategory } from 'mods';
-import { resolveInstalledLoader } from 'mods';
+import { detectLoaderFromId, classifyVersion, VersionCategory, resolveInstalledLoader, resolveInstalledGameId } from 'mods';
 
 /** 已识别的 mod loader 键（含 vanilla 表示无 loader） */
 export type LoaderKey = 'vanilla' | 'fabric' | 'forge' | 'neoforge' | 'quilt';
@@ -245,6 +244,19 @@ export function resolveInstalledLoaderInfo(mcDir: string, versionId: string): Lo
   return getLoaderInfo(resolveInstalledLoaderKey(mcDir, versionId));
 }
 
+/** 已知加载器和游戏版本决定图标。原版实例的显示名即使含加载器字样，也不能改变类别。 */
+export function versionCategoryForLoader(loader: LoaderKey, gameVersion: string): VersionCategory {
+  if (loader !== 'vanilla') return loader;
+  const category = classifyVersion(gameVersion);
+  return category === 'snapshot' || category === 'aprilfools' || category === 'old' ? category : 'release';
+}
+
+/** 已装实例按当前存储根读取加载器；原版子类改用底层 Minecraft 标识，支持重命名。 */
+export function resolveInstalledVersionCategory(mcDir: string, versionId: string): VersionCategory {
+  const loader = resolveInstalledLoaderKey(mcDir, versionId);
+  return versionCategoryForLoader(loader, loader === 'vanilla' ? resolveInstalledGameId(mcDir, versionId) : '');
+}
+
 /**
  * 取 vanilla 子类别信息。
  *
@@ -293,25 +305,24 @@ export interface InstalledBadgeInfo {
  * "快照" + 命令橙，不再误显示成 "原版" + 草绿。
  */
 export function getInstalledBadgeInfo(versionId: string): InstalledBadgeInfo {
-  return badgeInfoForKey_(inferLoaderKey(versionId), versionId);
+  return badgeInfoForCategory_(versionCategoryForLoader(inferLoaderKey(versionId), versionId));
 }
 
 /** 同 getInstalledBadgeInfo，但 loader 走【已装版本内容判定】(整合包/重命名版本正确)。 */
 export function getInstalledBadgeInfoResolved(mcDir: string, versionId: string): InstalledBadgeInfo {
-  return badgeInfoForKey_(resolveInstalledLoaderKey(mcDir, versionId), versionId);
+  return badgeInfoForCategory_(resolveInstalledVersionCategory(mcDir, versionId));
 }
 
-function badgeInfoForKey_(key: LoaderKey, versionId: string): InstalledBadgeInfo {
-  if (key !== 'vanilla') {
-    let info = getLoaderInfo(key);
+function badgeInfoForCategory_(category: VersionCategory): InstalledBadgeInfo {
+  if (category === 'fabric' || category === 'forge' || category === 'neoforge' || category === 'quilt') {
+    let info = getLoaderInfo(category);
     return {
       displayName: info.displayName,
       accentColor: info.accentColor,
       accentBg: info.accentBg,
     };
   }
-  let cat = classifyVersion(versionId);
-  if (cat === 'release') {
+  if (category === 'release') {
     let info = getLoaderInfo('vanilla');
     return {
       displayName: info.displayName,    // "原版"
@@ -320,7 +331,7 @@ function badgeInfoForKey_(key: LoaderKey, versionId: string): InstalledBadgeInfo
     };
   }
   // snapshot / aprilfools / old
-  let vinfo = getVanillaCategoryInfo(cat);
+  let vinfo = getVanillaCategoryInfo(category);
   return {
     displayName: vinfo.displayName,     // "快照" / "愚人节版" / "远古版"
     accentColor: vinfo.accentColor,

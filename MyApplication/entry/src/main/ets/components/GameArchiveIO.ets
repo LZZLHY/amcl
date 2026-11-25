@@ -17,6 +17,7 @@
  */
 
 import { picker } from '@kit.CoreFileKit';
+import { ArchiveDirectory, ArchiveSelectionScope, ArchiveSource, missingEntry } from './ArchiveSelectionScope';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
@@ -43,6 +44,7 @@ export interface ImportFailure {
 
 export interface BatchImportResult {
   cancelled: boolean;
+  targetChanged?: boolean;
   names: string[];
   failures: ImportFailure[];
   message: string;
@@ -150,40 +152,77 @@ function copyUriToPath(uri: string, destPath: string): void {
   }
 }
 
-/** 把 srcPath 文件内容写入 picker 另存 uri（用 fd）。 */
-function copyPathToUri(srcPath: string, uri: string): void {
-  let f: fs.File | null = null;
-  try {
-    f = fs.openSync(uri, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    fs.copyFileSync(srcPath, f.fd);
-  } catch (e) {
-    throw new Error('copy to uri failed: ' + (e as BusinessError).message);
-  } finally {
-    if (f !== null) {
-      try { fs.closeSync(f); } catch (ee) { /* ignore close error */ }
-    }
+/** 只回收此次创建且身份未变的暂存成员，用户后来放入的文件、同名替代目录和链接均原地保留。 */
+interface StageMember {path:string; ino:string; directory:boolean;}
+class OwnedArchiveStage {
+  readonly dir:ArchiveDirectory;
+  private members:StageMember[]=[];
+  private directories:Map<string,string>=new Map<string,string>();
+  constructor(root:string,prefix:string) {
+    const created=fs.mkdtempSync(root+'/'+prefix);
+    this.dir=ArchiveDirectory.capture(created,{root:root,current:():boolean=>true});
+  }
+  remember(path:string,directory:boolean):void {
+    if(!path.startsWith(this.dir.path+'/')) throw new Error('暂存位置无效');
+    const inode=String(fs.lstatSync(path).ino);
+    this.members.push({path:path,ino:inode,directory:directory});
+    if(directory) this.directories.set(path,inode);
+  }
+  published():void { this.members=[];this.directories.clear(); }
+  close():void {
+    try {
+      this.dir.check();
+      for(const item of this.members.reverse()) {
+        try {
+          this.dir.check();
+          // 逐层拒绝被换成符号链接／其他目录的中间节点，再比对文件本身。
+          let parent=item.path.slice(0,item.path.lastIndexOf('/'));
+          let intact=true;
+          while(parent!==this.dir.path) {
+            const inode=this.directories.get(parent);
+            const st=fs.lstatSync(parent);
+            if(inode===undefined || String(st.ino)!==inode || st.isSymbolicLink() || !st.isDirectory()) {intact=false;break;}
+            parent=parent.slice(0,parent.lastIndexOf('/'));
+          }
+          if(!intact) continue;
+          const st=fs.lstatSync(item.path);
+          if(st.isSymbolicLink() || String(st.ino)!==item.ino) continue;
+          if(item.directory) {if(st.isDirectory() && !fs.listFileSync(item.path).length) fs.rmdirSync(item.path);}
+          else if(st.isFile()) fs.unlinkSync(item.path);
+        } catch(_) { /* 原成员已移动、未完整发布或权限已收回时保留。 */ }
+      }
+      this.dir.check();
+      if(!fs.listFileSync(this.dir.path).length) fs.rmdirSync(this.dir.path);
+    } catch(_) { /* 同名新目录不是本次临时空间。 */ }
+    finally {this.dir.close();}
   }
 }
-
-/** 把 srcDir 下的每个子项复制进 destDir（destDir 须已存在）。 */
-async function copyTreeInto(srcDir: string, destDir: string, activityId: number): Promise<void> {
-  ensureDir(destDir);
-  let entries: string[] = [];
-  entries = fs.listFileSync(srcDir);
-  for (let name of entries) {
-    let src = srcDir + '/' + name;
-    try {
-      let st = fs.statSync(src);
+/** 从本次私有解压目录复制到本次独占暂存；不跟随链接，不重开异步复制的目标路径。 */
+async function copyWorldContents(src:string,dest:string,current:()=>void,stage?:OwnedArchiveStage):Promise<void> {
+  const scope=ArchiveDirectory.capture(dest);
+  let inputDir:ArchiveDirectory|undefined;
+  try {
+    inputDir=ArchiveDirectory.capture(src);
+    const pinned=inputDir;
+    const names=fs.listFileSync(src).sort();
+    for (const name of names) {
+      current();scope.check();pinned.check();
+      const from=src+'/'+name,to=dest+'/'+name,st=fs.lstatSync(from);
+      if (st.isSymbolicLink() || !missingEntry(to)) throw new Error('存档中包含不可导入的项目');
       if (st.isDirectory()) {
-        await fs.copyDir(src, destDir, 1); // → destDir/<name>
-      } else {
-        fs.copyFileSync(src, destDir + '/' + name);
-      }
-    } catch (e) {
-      AppLogger.warn(TAG, `copyTreeInto failed ${name}`, e, LOG_DOMAIN_UI, activityId);
-      throw e as Error;
+        fs.mkdirSync(to);stage?.remember(to,true);
+        await copyWorldContents(from,to,():void=>{current();scope.check();pinned.check();},stage);
+      } else if(st.isFile()) {
+        const input=new ArchiveSource(from,false);
+        try {
+          const output=fs.openSync(to,fs.OpenMode.WRITE_ONLY|fs.OpenMode.CREATE|fs.OpenMode.NOFOLLOW);
+          try {stage?.remember(to,false);await fs.copyFile(input.handle.fd,output.fd);input.check();} finally {fs.closeSync(output);}
+        } finally {input.close();}
+      } else throw new Error('存档中包含非普通文件');
     }
-  }
+    current();scope.check();pinned.check();
+    if(JSON.stringify(names)!==JSON.stringify(fs.listFileSync(src).sort())) throw new Error('源目录内容已变化');
+  } finally {inputDir?.close();scope.close();}
 }
 
 /** Promise 化 zlib.decompressFile（沿用 JdkInstaller 的 3 参回调形式 + 超时保护）。 */
@@ -224,27 +263,95 @@ export class GameArchiveIO {
   private static readonly ZIP_TIMEOUT_MS = 300_000;
 
   /** 本地文件/存档操作统一由领域owner记账，内部单文件和递归步骤不重复开账。 */
-  static importResourceFiles(ctx: common.UIAbilityContext, targetDir: string, expectedExts: string[],
-    maxSelectNumber: number = 500): Promise<BatchImportResult> {
-    return trackArchiveBatch(ctx, '导入本地资源文件', (id: number): Promise<BatchImportResult> =>
-      GameArchiveIO.importResourceFilesUntracked(ctx, targetDir, expectedExts, maxSelectNumber, id));
+  static async importResourceFiles(ctx: common.UIAbilityContext, targetDir: string, expectedExts: string[],
+    maxSelectNumber: number = 500, scope?:ArchiveSelectionScope): Promise<BatchImportResult> {
+    let guard:ArchiveDirectory|undefined;
+    try {
+      guard=ArchiveDirectory.capture(targetDir,scope);
+      if (scope?.consent && !await scope.consent()) return batchResult([],[],true);
+      guard.check();
+      const bound=guard;
+      return await trackArchiveBatch(ctx,'导入本地资源文件',async(id:number):Promise<BatchImportResult>=>{
+        const outcome=await GameArchiveIO.importResourceFilesUntracked(ctx,bound,expectedExts,maxSelectNumber,id);
+        if(!outcome.cancelled) {
+          try {bound.check();} catch (_) {outcome.targetChanged=true;if(!outcome.failures.length) outcome.failures.push({name:'',message:'原目录已经变化'});outcome.message+='；原目录已经变化。';}
+        }
+        return outcome;
+      });
+    } catch(e) { return batchResult([],[{name:'',message:(e as Error).message}]); }
+    finally { guard?.close(); }
   }
 
-  static importSaveZips(ctx: common.UIAbilityContext, savesDir: string): Promise<BatchImportResult> {
-    return trackArchiveBatch(ctx, '导入存档', (id: number): Promise<BatchImportResult> => GameArchiveIO.importSaveZipsUntracked(ctx, savesDir, id));
+  static async importSaveZips(ctx:common.UIAbilityContext,savesDir:string,scope?:ArchiveSelectionScope):Promise<BatchImportResult> {
+    let guard:ArchiveDirectory|undefined;
+    try {
+      guard=ArchiveDirectory.capture(savesDir,scope);
+      if (scope?.consent && !await scope.consent()) return batchResult([],[],true);
+      guard.check();
+      const bound=guard;
+      return await trackArchiveBatch(ctx,'导入存档',async(id:number):Promise<BatchImportResult>=>{
+        const outcome=await GameArchiveIO.importSaveZipsUntracked(ctx,bound,id);
+        if(!outcome.cancelled) {
+          try {bound.check();} catch (_) {outcome.targetChanged=true;if(!outcome.failures.length) outcome.failures.push({name:'',message:'原存档目录已经变化'});outcome.message+='；原目录已经变化。';}
+        }
+        return outcome;
+      });
+    } catch(e) { return batchResult([],[{name:'',message:(e as Error).message}]); }
+    finally { guard?.close(); }
   }
 
-  static exportSaveZip(ctx: common.UIAbilityContext, savesDir: string, worldName: string): Promise<ImportResult> {
-    return trackArchiveSingle(ctx, '导出存档 ' + worldName, (id: number): Promise<ImportResult> =>
-      GameArchiveIO.exportSaveZipUntracked(ctx, savesDir, worldName, id));
+  static exportSaveZip(ctx:common.UIAbilityContext,savesDir:string,worldName:string,scope?:ArchiveSelectionScope):Promise<ImportResult> {
+    return GameArchiveIO.exportBound(ctx,savesDir+'/'+worldName,worldName,true,'导出存档',scope);
+  }
+  static exportFile(ctx:common.UIAbilityContext,srcPath:string,fileName:string,scope?:ArchiveSelectionScope):Promise<ImportResult> {
+    return GameArchiveIO.exportBound(ctx,srcPath,fileName,false,'导出文件',scope);
+  }
+  static exportDirZip(ctx:common.UIAbilityContext,srcDir:string,dirName:string,scope?:ArchiveSelectionScope):Promise<ImportResult> {
+    return GameArchiveIO.exportBound(ctx,srcDir,dirName,true,'导出目录',scope);
   }
 
-  static exportFile(ctx: common.UIAbilityContext, srcPath: string, fileName: string): Promise<ImportResult> {
-    return trackArchiveSingle(ctx, '导出文件 ' + fileName, (id: number): Promise<ImportResult> => GameArchiveIO.exportFileUntracked(ctx, srcPath, fileName, id));
-  }
-
-  static exportDirZip(ctx: common.UIAbilityContext, srcDir: string, dirName: string): Promise<ImportResult> {
-    return trackArchiveSingle(ctx, '导出目录 ' + dirName, (id: number): Promise<ImportResult> => GameArchiveIO.exportDirZipUntracked(ctx, srcDir, dirName, id));
+  /** 在选择窗口和账本等待之前取得原源文件/目录；普通文件直接从原 fd 读取。 */
+  private static async exportBound(ctx:common.UIAbilityContext,path:string,name:string,directory:boolean,title:string,scope?:ArchiveSelectionScope):Promise<ImportResult> {
+    let guard:ArchiveDirectory|undefined;
+    let source:ArchiveSource|undefined;
+    try {
+      const normalized=path.replace(/\\/g,'/');
+      guard=ArchiveDirectory.capture(normalized.slice(0,normalized.lastIndexOf('/')),scope);
+      source=new ArchiveSource(path,directory);
+      const parent=guard,original=source;
+      return await trackArchiveSingle(ctx,title+' '+name,async(id:number):Promise<ImportResult>=>{
+        let scratch='';
+        let staged:ArchiveSource|undefined;
+        let output:fs.File|undefined;
+        try {
+          parent.check();original.check();
+          if(directory) {
+            scratch=fs.mkdtempSync(ctx.tempDir+'/amcl-archive-export-');
+            const snapshot=scratch+'/snapshot';fs.mkdirSync(snapshot);
+            await copyWorldContents(path,snapshot,():void=>{parent.check();original.check();});
+            await compress(snapshot,scratch+'/archive.zip',GameArchiveIO.ZIP_TIMEOUT_MS);
+            parent.check();original.check();staged=new ArchiveSource(scratch+'/archive.zip',false);
+          }
+          const opt=new picker.DocumentSaveOptions();opt.newFileNames=[name+(directory?'.zip':'')];
+          const selected=await new picker.DocumentViewPicker(ctx).save(opt);
+          if(!selected || !selected.length) return cancelledResult();
+          parent.check();original.check();staged?.check();
+          // 用户实际批准的 URI 由系统授予。先确认源，再打开输出；误选同一个文件不能将源截断。
+          const read=(staged ?? original).handle.fd;
+          output=fs.openSync(selected[0],fs.OpenMode.READ_WRITE|fs.OpenMode.CREATE);
+          if (fs.statSync(output.fd).ino===fs.statSync(read).ino) return failResult('请选择与原文件不同的目标');
+          parent.check();original.check();staged?.check();
+          await fs.copyFile(read,output.fd);
+          AppLogger.info(TAG,'导出已写入所选目标',LOG_DOMAIN_UI,id);
+          return okResult(name);
+        } finally {
+          if (output) fs.closeSync(output);
+          staged?.close();
+          if (scratch) removeDirRecursive(scratch);
+        }
+      });
+    } catch(e) {return failResult((e as Error).message);}
+    finally { source?.close();guard?.close(); }
   }
 
   /** JDK/整合包安装仍为单任务流程，不把多个安装包混入一次安装。 */
@@ -262,12 +369,12 @@ export class GameArchiveIO {
    */
   private static async importResourceFilesUntracked(
     ctx: common.UIAbilityContext,
-    targetDir: string,
+    target: ArchiveDirectory,
     expectedExts: string[],
     maxSelectNumber: number = 500,
     activityId: number = 0,
   ): Promise<BatchImportResult> {
-    if (targetDir.length === 0) return batchResult([], [{ name: '', message: '目标目录无效' }]);
+    target.check();
     let uris: string[] = [];
     try {
       let opt = new picker.DocumentSelectOptions();
@@ -284,7 +391,8 @@ export class GameArchiveIO {
     for (let index = 0; index < uris.length; index++) {
       const uri = uris[index];
       const filename = basenameFromUri(uri);
-      let temp = '';
+      let scratch:OwnedArchiveStage|undefined;
+      let tmpFile:fs.File|undefined;
       let source: fs.File | null = null;
       try {
         if (filename.length === 0 || filename === '.' || filename === '..' ||
@@ -295,13 +403,23 @@ export class GameArchiveIO {
           !expectedExts.some((ext: string) => filename.toLowerCase().endsWith(ext))) {
           throw new Error('文件类型不符，需要 ' + expectedExts.join(' / '));
         }
-        ensureDir(targetDir);
-        // staging 与目标位于同目录；源读取/复制失败时不触碰已有资源文件。
-        temp = targetDir + '/.amcl-import-' + Date.now() + '-' + index + '-' + Math.random() + '.tmp';
-        source = await fs.open(uri, fs.OpenMode.READ_ONLY);
-        await fs.copyFile(source.fd, temp);
-        await fs.rename(temp, targetDir + '/' + filename);
-        temp = '';
+        target.ensure();
+        const dest=target.path+'/'+filename;
+        if (!missingEntry(dest)) throw new Error('同名文件已存在，原文件已保留');
+        scratch=new OwnedArchiveStage(target.path,'.amcl-import-');
+        const temp=scratch.dir.path+'/part';
+        tmpFile=fs.openSync(temp,fs.OpenMode.READ_WRITE|fs.OpenMode.CREATE|fs.OpenMode.NOFOLLOW);
+        scratch.remember(temp,false);
+        source=await fs.open(uri,fs.OpenMode.READ_ONLY);
+        target.check();scratch.dir.check();
+        // 复制只写已经打开的暂存 fd；业务目录或临时路径变化不会把后续字节写进替代目录。
+        await fs.copyFile(source.fd,tmpFile.fd);
+        target.check();scratch.dir.check();
+        if(fs.lstatSync(temp).ino!==fs.statSync(tmpFile.fd).ino) throw new Error('暂存文件已变化');
+        fs.moveFileSync(temp,dest,1);
+        target.checkIdentity();
+        if(fs.lstatSync(dest).ino!==fs.statSync(tmpFile.fd).ino) throw new Error('导入结果已变化');
+        scratch.published();
         names.push(filename);
         AppLogger.info(TAG, `importResourceFiles imported=${names.length}/${uris.length} name=${filename}`, LOG_DOMAIN_UI, activityId);
       } catch (e) {
@@ -310,7 +428,8 @@ export class GameArchiveIO {
         AppLogger.warn(TAG, `importResourceFiles failed name=${filename}`, e, LOG_DOMAIN_UI, activityId);
       } finally {
         if (source !== null) { try { fs.closeSync(source); } catch (e) { /* */ } }
-        if (temp.length > 0) { try { fs.unlinkSync(temp); } catch (e) { /* */ } }
+        scratch?.close();
+        if(tmpFile) fs.closeSync(tmpFile);
       }
     }
     AppLogger.info(TAG, `importResourceFiles completed selected=${uris.length} imported=${names.length} failed=${failures.length}`, LOG_DOMAIN_UI, activityId);
@@ -327,10 +446,10 @@ export class GameArchiveIO {
    */
   private static async importSaveZipsUntracked(
     ctx: common.UIAbilityContext,
-    savesDir: string,
+    target: ArchiveDirectory,
     activityId: number,
   ): Promise<BatchImportResult> {
-    if (savesDir.length === 0) return batchResult([], [{ name: '', message: '存档目录无效' }]);
+    target.check();
     let uris: string[] = [];
     try {
       let opt = new picker.DocumentSelectOptions();
@@ -345,170 +464,53 @@ export class GameArchiveIO {
     const names: string[] = [];
     const failures: ImportFailure[] = [];
     for (const uri of uris) {
-      const result = await GameArchiveIO.importSaveUri(ctx, savesDir, uri, activityId);
+      const result = await GameArchiveIO.importSaveUri(ctx,target,uri,activityId);
       if (result.ok) names.push(result.name);
       else failures.push({ name: basenameFromUri(uri), message: result.message });
     }
     return batchResult(names, failures);
   }
 
-  private static async importSaveUri(ctx: common.UIAbilityContext, savesDir: string, uri: string, activityId: number): Promise<ImportResult> {
-    let filename = basenameFromUri(uri);
-    if (!filename.toLowerCase().endsWith('.zip')) {
-      return failResult('存档需为 .zip 文件');
-    }
-
-    let stamp = Date.now().toString();
-    let tmpZip = ctx.tempDir + '/amcl_save_' + stamp + '.zip';
-    let tmpExtract = ctx.tempDir + '/amcl_save_x_' + stamp;
-    let incompleteTarget = '';
+  private static async importSaveUri(ctx:common.UIAbilityContext,target:ArchiveDirectory,uri:string,activityId:number):Promise<ImportResult> {
+    const filename=basenameFromUri(uri);
+    if (!filename.toLowerCase().endsWith('.zip')) return failResult('存档需为 .zip 文件');
+    let scratch='';
+    let staging:OwnedArchiveStage|undefined;
     try {
-      // 1. 选中的 zip 拷到沙箱临时路径（zlib 需要真实路径）
-      copyUriToPath(uri, tmpZip);
-      // 2. 解压到临时目录
-      try { removeDirRecursive(tmpExtract); } catch (e) { /* */ }
-      ensureDir(tmpExtract);
-      await decompress(tmpZip, tmpExtract, GameArchiveIO.ZIP_TIMEOUT_MS);
-
-      // 3. 定位世界根（含 level.dat 的目录）
-      let worldRoot = GameArchiveIO.locateWorldRoot(tmpExtract);
-      let defaultName = stripExt(filename);
-      let worldName: string;
-      if (worldRoot === tmpExtract) {
-        worldName = defaultName;
-      } else {
-        // 取子文件夹名
-        let slash = worldRoot.lastIndexOf('/');
-        worldName = slash >= 0 ? worldRoot.substring(slash + 1) : defaultName;
-      }
-      worldName = GameArchiveIO.sanitizeName(worldName, defaultName);
-
-      // 4. 落地：saves/<worldName>，冲突追加序号
-      ensureDir(savesDir);
-      let finalName = GameArchiveIO.uniqueName(savesDir, worldName);
-      let target = savesDir + '/' + finalName;
-      incompleteTarget = target;
-      await copyTreeInto(worldRoot, target, activityId);
-
-      // 5. 校验：level.dat 必须在世界根，否则视为无效存档
-      if (!pathExists(target + '/level.dat')) {
-        try { removeDirRecursive(target); } catch (e) { /* */ }
-        return failResult('zip 内未找到 level.dat，不是有效的 MC 存档');
-      }
-      AppLogger.info(TAG, `importSaveZips -> ${target}`, LOG_DOMAIN_UI, activityId);
-      incompleteTarget = '';
-      return okResult(finalName);
-    } catch (e) {
-      return failResult('导入失败: ' + (e as BusinessError).message);
-    } finally {
-      if (incompleteTarget.length > 0) {
-        try { removeDirRecursive(incompleteTarget); } catch (e) { /* */ }
-      }
-      try { fs.unlinkSync(tmpZip); } catch (e) { /* */ }
-      try { removeDirRecursive(tmpExtract); } catch (e) { /* */ }
+      target.check();
+      scratch=fs.mkdtempSync(ctx.tempDir+'/amcl-world-import-');
+      const zip=scratch+'/input.zip',extracted=scratch+'/contents';
+      copyUriToPath(uri,zip);fs.mkdirSync(extracted);
+      await decompress(zip,extracted,GameArchiveIO.ZIP_TIMEOUT_MS);
+      target.ensure();
+      const world=GameArchiveIO.locateWorldRoot(extracted);
+      const level=fs.lstatSync(world+'/level.dat');
+      if(!level.isFile() || level.isSymbolicLink()) return failResult('zip 内未找到有效的 level.dat');
+      const baseName=GameArchiveIO.sanitizeName(world===extracted?stripExt(filename):world.slice(world.lastIndexOf('/')+1),'world');
+      const base=baseName==='.' || baseName==='..'?'world':baseName;
+      const name=GameArchiveIO.uniqueName(target.path,base);
+      staging=new OwnedArchiveStage(target.path,'.amcl-world-');
+      const bound=staging,worldStage=staging.dir.path+'/'+name;
+      fs.mkdirSync(worldStage);staging.remember(worldStage,true);
+      const check=():void=>{target.check();bound.dir.check();};
+      await copyWorldContents(world,worldStage,check,staging);
+      check();
+      if(!missingEntry(target.path+'/'+name)) return failResult('新存档名称已被占用');
+      const original=fs.lstatSync(worldStage).ino;
+      fs.moveDirSync(worldStage,target.path,0);staging.published();
+      target.checkIdentity();if(fs.lstatSync(target.path+'/'+name).ino!==original || !fs.lstatSync(target.path+'/'+name+'/level.dat').isFile()) return failResult('目标存档已变化');
+      AppLogger.info(TAG,'存档已导入：'+name,LOG_DOMAIN_UI,activityId);
+      return okResult(name);
+    } catch(e) {return failResult('导入失败：'+(e as Error).message);}
+    finally {
+      staging?.close();
+      if(scratch) removeDirRecursive(scratch);
     }
   }
 
-  /**
-   * 导出存档：把 saves/<worldName>/ 压成 zip → 系统另存 picker 让用户选位置。
-   * @returns true=已保存，false=用户取消
-   */
-  private static async exportSaveZipUntracked(
-    ctx: common.UIAbilityContext,
-    savesDir: string,
-    worldName: string,
-    activityId: number,
-  ): Promise<ImportResult> {
-    let worldDir = savesDir + '/' + worldName;
-    if (!pathExists(worldDir)) return failResult('存档不存在');
-
-    let stamp = Date.now().toString();
-    let tmpZip = ctx.tempDir + '/amcl_export_' + stamp + '.zip';
-    try {
-      try { fs.unlinkSync(tmpZip); } catch (e) { /* */ }
-      // 1. 压缩世界目录到临时 zip
-      await compress(worldDir, tmpZip, GameArchiveIO.ZIP_TIMEOUT_MS);
-
-      // 2. 另存 picker
-      let saveOpt = new picker.DocumentSaveOptions();
-      saveOpt.newFileNames = [worldName + '.zip'];
-      let dp = new picker.DocumentViewPicker(ctx);
-      let result = await dp.save(saveOpt);
-      if (!result || result.length === 0) return cancelledResult();
-
-      // 3. 临时 zip 内容写入用户选定 uri
-      copyPathToUri(tmpZip, result[0]);
-      AppLogger.info(TAG, `exportSaveZip ${worldName} -> ${result[0]}`, LOG_DOMAIN_UI, activityId);
-      return okResult(worldName);
-    } catch (e) {
-      return failResult('导出失败: ' + (e as BusinessError).message);
-    } finally {
-      try { fs.unlinkSync(tmpZip); } catch (e) { /* */ }
-    }
-  }
-
-  /**
-   * 导入任意文件到 targetDir（虚拟文件管理器用，无扩展名限制；同名覆盖）。
-   */
-  static async importAnyFiles(
-    ctx: common.UIAbilityContext,
-    targetDir: string,
-  ): Promise<BatchImportResult> {
-    return GameArchiveIO.importResourceFiles(ctx, targetDir, []);
-  }
-
-  /**
-   * 导出单个文件：系统另存 picker，把 srcPath 写入用户选定位置。
-   */
-  private static async exportFileUntracked(
-    ctx: common.UIAbilityContext,
-    srcPath: string,
-    fileName: string,
-    activityId: number,
-  ): Promise<ImportResult> {
-    if (!pathExists(srcPath)) return failResult('文件不存在');
-    try {
-      let saveOpt = new picker.DocumentSaveOptions();
-      saveOpt.newFileNames = [fileName];
-      let dp = new picker.DocumentViewPicker(ctx);
-      let result = await dp.save(saveOpt);
-      if (!result || result.length === 0) return cancelledResult();
-      copyPathToUri(srcPath, result[0]);
-      AppLogger.info(TAG, `exportFile ${fileName} -> ${result[0]}`, LOG_DOMAIN_UI, activityId);
-      return okResult(fileName);
-    } catch (e) {
-      return failResult('导出失败: ' + (e as BusinessError).message);
-    }
-  }
-
-  /**
-   * 导出文件夹：压成 .zip → 系统另存 picker。
-   */
-  private static async exportDirZipUntracked(
-    ctx: common.UIAbilityContext,
-    srcDir: string,
-    dirName: string,
-    activityId: number,
-  ): Promise<ImportResult> {
-    if (!pathExists(srcDir)) return failResult('文件夹不存在');
-    let stamp = Date.now().toString();
-    let tmpZip = ctx.tempDir + '/amcl_dir_' + stamp + '.zip';
-    try {
-      try { fs.unlinkSync(tmpZip); } catch (e) { /* */ }
-      await compress(srcDir, tmpZip, GameArchiveIO.ZIP_TIMEOUT_MS);
-      let saveOpt = new picker.DocumentSaveOptions();
-      saveOpt.newFileNames = [dirName + '.zip'];
-      let dp = new picker.DocumentViewPicker(ctx);
-      let result = await dp.save(saveOpt);
-      if (!result || result.length === 0) return cancelledResult();
-      copyPathToUri(tmpZip, result[0]);
-      AppLogger.info(TAG, `exportDirZip ${dirName} -> ${result[0]}`, LOG_DOMAIN_UI, activityId);
-      return okResult(dirName);
-    } catch (e) {
-      return failResult('导出失败: ' + (e as BusinessError).message);
-    } finally {
-      try { fs.unlinkSync(tmpZip); } catch (e) { /* */ }
-    }
+  /** 系统选取的文件按原目录逐个创建；同名项保留并计入失败。 */
+  static async importAnyFiles(ctx:common.UIAbilityContext,targetDir:string,scope?:ArchiveSelectionScope):Promise<BatchImportResult> {
+    return GameArchiveIO.importResourceFiles(ctx,targetDir,[],500,scope);
   }
 
   /**

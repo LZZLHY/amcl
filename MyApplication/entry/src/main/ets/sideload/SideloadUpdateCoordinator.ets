@@ -17,9 +17,7 @@ import { SideloadFiles } from './SideloadFiles';
 import { SideloadConnection } from './SideloadConnection';
 import { DeveloperAuthSession, DeveloperAuthState } from './DeveloperAuthSession';
 import { SideloadTransactionRepository } from './SideloadTransactionRepository';
-import { SideloadUpdatePageParams } from './SideloadUpdateTestSession';
-import { SideloadFixtureHttp } from './SideloadFixtureHttp';
-import { SideloadUpdateTestSession } from './SideloadUpdateTestSession';
+import { SideloadUpdatePageParams } from './SideloadUpdatePromptPolicy';
 import { SideloadUpdateSnapshot } from './SideloadUpdateSnapshot';
 import { GitHubUpdateAssetResolver, UpdateManifest, UpdateChecker, AppArtifactReceiptResolver } from 'update';
 import { PreferenceManager } from 'feature_system';
@@ -71,6 +69,8 @@ export class SideloadUpdateCoordinator {
   private needsLogin: boolean = false;
   /** 续期只刷新证书/Profile，保险库中的现装私钥必须保留。 */
   private refreshSigningMaterial: boolean = false;
+  /** 同一更新尝试只因本地验签失效自动换证一次，重新登录不会重置预算。 */
+  private materialRenewalAttempted: boolean = false;
   private signingIssue: SigningPreparationIssue = SigningPreparationIssue.None;
   private port: string = '10178';
   private progress: number = 0;
@@ -98,8 +98,6 @@ export class SideloadUpdateCoordinator {
   private epoch: number = 0;
   private udid: string = '';
   private failure: string = '';
-  private testAsset: SideloadUpdateAsset | undefined = undefined;
-  private sameVersionTest: boolean = false;
   private foreground: boolean = false;
   private abilityForeground: boolean = false;
   private windowInteractive: boolean = true;
@@ -143,7 +141,6 @@ export class SideloadUpdateCoordinator {
   private executor: SideloadInstallExecutor;
   private installEffectActive: boolean = false;
   private confirmOnForeground: boolean = false;
-  private diagnosticAttempt: boolean = false;
   private pumpScheduled: boolean = false;
   private attentionPublished: boolean = false;
   private gate: UpdateInstallGate = new UpdateInstallGate();
@@ -172,7 +169,7 @@ export class SideloadUpdateCoordinator {
     DownloadTaskRegistry.instance().setFileLeaseProvider(
       (): number => testNapi.acquireSideloadFileLease(this.context.filesDir),
       (token: number): void => { testNapi.releaseSideloadFileLease(token); });
-    this.repository = new SideloadTransactionRepository(this.root, this.allowSameVersionTest());
+    this.repository = new SideloadTransactionRepository(this.root, this.allowLegacySameVersionReceipt());
     try {
       SideloadFiles.ensureDirectory(this.root); this.vault = new SigningVault(context);
       InstallFence.init(context.filesDir); this.cleanInterruptedSecrets();
@@ -277,42 +274,17 @@ export class SideloadUpdateCoordinator {
       this.advance();
     }
   }
-  /** 显式材料导入独占当前操作，Runtime/新轮变化会阻止迟到的加密提交。 */
-  async importMaterial(body: string): Promise<void> {
-    if (this.busy || this.finishing || this.installationPending()) throw new Error('更新操作正在进行，暂不可替换签名配置');
-    const epoch = this.epoch; const owner = this.attemptId; this.busy = true;
-    try {
-      await this.signingVault().importBundle(body, (): void => {
-        if (epoch !== this.epoch || owner !== this.attemptId) throw new InstallExecutionError('stale-effect', '材料导入所属尝试已改变');
-      });
-      // 所有显式导入入口共用同一恢复状态，不能材料已保存仍显示上一轮“缺原签名”。
-      if (epoch === this.epoch && owner === this.attemptId) {
-        this.refreshSigningMaterial = false; this.signingVault().finishDraft(); this.signingIssue = SigningPreparationIssue.None; this.failure = '';
-      }
-    } finally { this.busy = false; this.publish(); }
-  }
-
-  /** 自动化旧入口复用下载与签名两步，产品页面可以在下载期间并行准备授权。 */
-  async prepare(asset: SideloadUpdateAsset, sameVersionTest: boolean = false): Promise<void> {
-    if (ProductBuildProfile.product !== 'default' || !DiagnosticPolicy.hasTestHooks()) throw new Error('直接准备仅用于已启用的诊断夹具');
-    if (!SideloadUpdateTestSession.allowedAssetUrl(asset.url) || (asset.url.startsWith('http://') && !SideloadFixtureHttp.registered(asset.url))) throw new Error('诊断来源未由当前固定夹具注册');
-    this.diagnosticAttempt = true;
-    try { await this.download(asset, sameVersionTest); await this.signPrepared(); }
-    catch (error) { this.finishAttempt((error as Error).message, this.cancelled); throw error as Error; }
-  }
-
   /** 所有入口统一排队；整个下载和摘要核验占一个队列槽，结束后才允许获取覆盖安装租约。 */
-  async download(asset: SideloadUpdateAsset, sameVersionTest: boolean = false): Promise<void> {
+  private async download(asset: SideloadUpdateAsset): Promise<void> {
     if (this.storageBlocked) throw new Error('更新存储仍待核实');
     if (this.isBusy()) throw new Error('已有更新任务正在进行');
     if (ProductBuildProfile.storeChannel) throw new Error('当前产品不支持侧载自更新');
     if (this.installationPending() || this.fenceBlocked()) throw new Error('请先核实上一次安装结果');
-    // 自动流程先冻结候选；诊断直接下载也复制输入，避免调用方在排队期间改写资产字段。
+    // 排队前冻结本轮候选，异步处理不能受调用方后续修改影响。
     if (this.attemptTarget !== undefined && this.automatic && !this.sameAssetIdentity(this.attemptTarget, asset)) {
       throw new Error('本轮更新目标已改变，请重新检查更新');
     }
     this.attemptTarget = JSON.parse(JSON.stringify(asset)) as SideloadUpdateAsset;
-    if (!this.automatic) this.sameVersionTest = sameVersionTest;
     this.attemptChannel = this.manifest?.updateChannel ?? 'stable';
     asset = JSON.parse(JSON.stringify(this.attemptTarget)) as SideloadUpdateAsset;
     // 人工开发原件只接受当前选择器令牌已经冻结的同一资产；诊断/路由不能直接构造该资格。
@@ -326,7 +298,7 @@ export class SideloadUpdateCoordinator {
       ' · bytes=' + asset.sizeBytes + ' · SHA-256=' + asset.sha256);
     const adapter = new SideloadDownloadTask(this.context.filesDir, asset.sha256, 'AMCL ' + asset.versionName + ' 安装包',
       this.activity.activityId(), async (activityId: number): Promise<void> => {
-        this.downloadActivityId = activityId; await this.downloadDirect(asset, sameVersionTest);
+        this.downloadActivityId = activityId; await this.downloadDirect(asset);
       }, (): void => { this.cancelTransfer(); }, (): void => { this.publish(); });
     this.downloadAdapter = adapter; this.downloadEnqueued = true;
     this.phase = SideloadUpdatePhase.Queued; this.operation = '更新包已加入统一下载队列'; this.publish();
@@ -336,7 +308,7 @@ export class SideloadUpdateCoordinator {
   }
 
   /** 仅由统一适配器调用；同目标重试复用原路径，使既有下载器能够恢复分段。 */
-  private async downloadDirect(asset: SideloadUpdateAsset, sameVersionTest: boolean = false): Promise<void> {
+  private async downloadDirect(asset: SideloadUpdateAsset): Promise<void> {
     if (ProductBuildProfile.storeChannel) throw new Error('当前产品不支持侧载自更新');
     if (this.busy) throw new Error('已有更新任务正在进行');
     if (this.installationPending() || this.fenceBlocked()) throw new Error('请先核实上一次安装结果');
@@ -345,8 +317,7 @@ export class SideloadUpdateCoordinator {
       bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_SIGNATURE_INFO);
     // 订阅身份冻结到本轮事务；同编号预览不借用诊断开关，低编号安装仍被拒绝。
     const channel = this.attemptChannel;
-    const versionMatches = sameVersionTest ? this.allowSameVersionTest() && asset.versionCode === info.versionCode :
-      AppUpdatePolicy.canInstall(info.versionCode,info.versionName,asset.versionCode,asset.versionName,channel,
+    const versionMatches = AppUpdatePolicy.canInstall(info.versionCode,info.versionName,asset.versionCode,asset.versionName,channel,
         this.importSource !== undefined && this.sameAssetIdentity(this.importSource.asset,asset) && SideloadTransactionPolicy.manualDeveloper(asset));
     if (!versionMatches || !new RegExp('^[0-9a-f]{64}$').test(asset.sha256)) throw new Error('更新目标版本或摘要无效');
     const previous = this.state();
@@ -355,7 +326,7 @@ export class SideloadUpdateCoordinator {
     // 手动精确收据增加的来源字段不改变同一HAP字节；仍核产品/发行/文件名及安装基线。
     const samePendingPlan = previous !== undefined && AppJdkUpdatePlanRuntime.pending(this.context) && this.samePlanContent(previous.asset,asset);
     const reusable = previous !== undefined && (this.sameAssetIdentity(previous.asset, asset) || samePendingPlan) &&
-      this.sameInstalledBaseline(previous) && previous.sameVersionTest === sameVersionTest &&
+      this.sameInstalledBaseline(previous) && !previous.sameVersionTest &&
       ((previous.updateChannel ?? 'stable') === channel || samePendingPlan);
     const id = reusable && previous !== undefined ? previous.id : util.generateRandomUUID().replace(new RegExp('-', 'g'), '');
     const directory = this.root + '/tasks/' + id;
@@ -367,7 +338,7 @@ export class SideloadUpdateCoordinator {
       runtimeIntentId:this.runtimeIntentId,
       subscriptionRevision:this.subscriptionSnapshotSet?this.subscriptionRevision:new PreferenceManager(this.context).appUpdateSelectionRevision(),
       beforeUid: info.appInfo.uid, expectedPayloadIdentity: '',
-      sameVersionTest: sameVersionTest,
+      sameVersionTest: false,
       unsignedPath: directory + '/unsigned.hap', signedPath: directory + '/signed.hap', signedSha256: '',
       restartNonce: '', confirmedAt: 0,
       createdAt: Date.now(), updatedAt: Date.now(), error: '' };
@@ -419,9 +390,7 @@ export class SideloadUpdateCoordinator {
             throw new Error('更新包摘要不一致，正在切换来源');
           }
         };
-        if (ProductBuildProfile.product === 'default' && DiagnosticPolicy.hasTestHooks() &&
-          (asset.url.startsWith('https://amcl.lovedhy.cn/uploads/self-update-tests/') || SideloadFixtureHttp.registered(asset.url))) await run({ label: '测试源', url: asset.url });
-        else await SideloadDownloadSources.download(asset, (): boolean => !this.cancelled, run);
+        await SideloadDownloadSources.download(asset, (): boolean => !this.cancelled, run);
       } else { this.bytesDone = asset.sizeBytes; this.bytesTotal = asset.sizeBytes; }
       this.assertActive();
       this.operation = '正在校验更新包';
@@ -440,7 +409,7 @@ export class SideloadUpdateCoordinator {
   }
 
   /** 下载、授权和调试连接均准备好后调用；锁在第一个await之前取得，重复回调不会重复签名。 */
-  async signPrepared(): Promise<void> {
+  private async signPrepared(): Promise<void> {
     if (ProductBuildProfile.storeChannel) throw new Error('当前产品不支持侧载自更新');
     if (this.busy) throw new Error('已有更新任务正在进行');
     if (this.transaction === undefined || (this.transaction.phase !== SideloadUpdatePhase.Downloaded &&
@@ -455,15 +424,18 @@ export class SideloadUpdateCoordinator {
       catch (error) {
         // 有效更新许可内仅自动换证一次；失败前不落终态、不另建活动，也不重新下载原件。
         // 只有明确的材料问题可走这里，包损坏、运行时异常和已派发安装不允许自动重试。
-        if (!this.automatic || !(error instanceof SigningPreparationError) || error.issue !== SigningPreparationIssue.Material ||
+        if (!this.automatic || this.materialRenewalAttempted || !(error instanceof SigningPreparationError) || error.issue !== SigningPreparationIssue.Material ||
           !this.active(epoch) || this.storageBlocked || this.installationPending()) throw error as Error;
-        this.operation = '正在自动刷新更新授权'; this.refreshSigningMaterial = true;
+        this.materialRenewalAttempted = true; this.operation = '正在自动刷新更新授权'; this.refreshSigningMaterial = true;
         this.transition(SideloadUpdatePhase.Downloaded); this.busy = false;
         await this.prepareMaterial(this.auth, this.udid); this.assertEffect(epoch, owner);
         this.busy = true; await this.sign(epoch, owner);
       }
     } catch (error) {
-      if (epoch === this.epoch && owner === this.attemptId) this.fail(error as Error);
+      // 换证阶段的登录失效交回原推进器。保留已下载原件和活动，重登后继续本次尝试。
+      const awaitingLogin = this.active(epoch) && this.materialRenewalAttempted &&
+        this.state()?.phase === SideloadUpdatePhase.Downloaded && DeveloperAuthSession.isExpired(error as Error);
+      if (epoch === this.epoch && owner === this.attemptId && !awaitingLogin) this.fail(error as Error);
       throw error as Error;
     } finally {
       this.busy = false; this.downloadTaskId = 0;
@@ -640,7 +612,7 @@ export class SideloadUpdateCoordinator {
   }
 
   /** 提取固定开源签名器并核对摘要；JVM只接收路径，口令不进入NAPI argv。 */
-  private async sign(epoch: number = this.epoch, owner: string = this.attemptId): Promise<void> {
+  private async sign(epoch: number, owner: string): Promise<void> {
     const transaction = this.state();
     if (transaction === undefined) throw new Error('更新事务不存在');
     this.assertTargetBinding(transaction);
@@ -754,7 +726,7 @@ export class SideloadUpdateCoordinator {
    * 一次性安装边界由Executor裁决。Coordinator只持业务许可/Repository/Registry租约，
    * CLI返回、旧版本、断连、磁盘未知均不能推断BMS失败或再次派发。
    */
-  async install(pumpEpoch: number = -1): Promise<void> {
+  private async install(pumpEpoch: number): Promise<void> {
     if (ProductBuildProfile.storeChannel) throw new Error('当前产品不支持侧载自更新');
     if (this.finishing && pumpEpoch !== this.finishingEpoch) throw new Error('已有更新步骤正在进行，请等待其完成');
     const transaction = this.state();
@@ -773,7 +745,7 @@ export class SideloadUpdateCoordinator {
         this.assertTargetBinding(transaction);
       },
       assertForeground: (): void => {
-        if (!this.foreground || (!this.hasPresentation() && !this.diagnosticAttempt)) throw new InstallExecutionError('foreground', '已暂停安装，返回 AMCL 后会继续');
+        if (!this.foreground || !this.hasPresentation()) throw new InstallExecutionError('foreground', '已暂停安装，返回 AMCL 后会继续');
       }
     };
     let proof: InstallExecutionObservation | undefined = undefined;
@@ -869,7 +841,7 @@ export class SideloadUpdateCoordinator {
     const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
     const profile = JSON.parse(new util.TextDecoder().decodeWithStream(this.context.resourceManager.getRawFileContentSync('product-profile.json'))) as Record<string, Object>;
     const installedIdentityConfirmed = SideloadTransactionPolicy.confirms(transaction, info.versionCode, info.appInfo.uid,
-      String(profile['sourceRevision'] ?? ''), launchId, launchNonce, this.allowSameVersionTest(), info.versionName);
+      String(profile['sourceRevision'] ?? ''), launchId, launchNonce, this.allowLegacySameVersionReceipt(), info.versionName);
     if (installedIdentityConfirmed) {
       if (transaction.installedIdentityVerified !== true) {
         transaction.installedIdentityVerified = true; transaction.confirmedAt = Date.now();
@@ -913,8 +885,8 @@ export class SideloadUpdateCoordinator {
       },delays[this.recoveryObservations]);
     }
   }
-  /** 同版本只用于受控default真机实验，正式渠道不能靠修改journal开启此模式。 */
-  private allowSameVersionTest(): boolean { return ProductBuildProfile.product === 'default' && DiagnosticPolicy.hasTestHooks(); }
+  /** 旧诊断事务可能仍持有安装租约，仅在原调试身份下按原证据核实结局。新事务采用正常版本策略。 */
+  private allowLegacySameVersionReceipt(): boolean { return ProductBuildProfile.product === 'default' && DiagnosticPolicy.hasTestHooks(); }
 
   private transition(phase: SideloadUpdatePhase, draft?: SideloadUpdateTransaction): void {
     const next = draft ?? this.state();
@@ -935,20 +907,6 @@ export class SideloadUpdateCoordinator {
     if (this.cancelled) this.transition(SideloadUpdatePhase.Cancelled, next);
     else if (next.phase === SideloadUpdatePhase.AwaitingRestart) this.save(next);
     else this.transition(SideloadUpdatePhase.Failed, next);
-  }
-  /** 冷启动后复用已校验的原始包，不重复下载或绕开JVM生命周期保留态。 */
-  async continuePreparing(): Promise<void> {
-    if (!this.allowSameVersionTest()) throw new Error('直接继续仅用于诊断入口');
-    this.diagnosticAttempt = true;
-    if (this.transaction === undefined || this.transaction.phase !== SideloadUpdatePhase.AwaitingRestart || this.busy) return;
-    if (testNapi.mcIsRunning()) throw new Error('请先保存并退出游戏');
-    this.busy = true;
-    try {
-      if (await SideloadFiles.sha256(this.transaction.unsignedPath) !== this.transaction.asset.sha256) throw new Error('已下载更新包不完整');
-      const draft = this.state()!; draft.error = ''; this.save(draft);
-      await this.sign();
-    } catch (error) { this.fail(error as Error); throw error as Error; }
-    finally { this.busy = false; this.publish(); }
   }
   /** 先可靠持久提交，再替换内存；未知耐久性封所有后续effect，不写第二次假失败覆盖现场。 */
   private save(value: SideloadUpdateTransaction): void {
@@ -1265,7 +1223,7 @@ export class SideloadUpdateCoordinator {
       current === undefined || current.id !== task.id || !this.sameAssetIdentity(current.asset, target) ||
       current.ownerAttemptId !== this.attemptId || task.ownerAttemptId !== this.attemptId ||
       !this.sameInstalledBaseline(task) || !this.sameInstalledBaseline(current) ||
-      task.sameVersionTest !== this.sameVersionTest || (task.updateChannel ?? 'stable') !== this.attemptChannel) {
+      task.sameVersionTest || (task.updateChannel ?? 'stable') !== this.attemptChannel) {
       throw new InstallExecutionError('preparation', '更新目标或当前安装身份已改变，请重新检查更新');
     }
   }
@@ -1283,13 +1241,11 @@ export class SideloadUpdateCoordinator {
     if (task === undefined || task.activityId !== requested ||
       [SideloadUpdatePhase.Failed, SideloadUpdatePhase.Cancelled, SideloadUpdatePhase.Downloaded,
         SideloadUpdatePhase.Ready, SideloadUpdatePhase.AwaitingRestart].indexOf(task.phase) < 0 ||
-      task.sameVersionTest !== this.sameVersionTest) return 0;
-    let candidate = this.testAsset;
-    if (candidate === undefined) {
-      if (this.manifest === undefined || this.manifest.delivery === undefined) return 0;
-      try { candidate = GitHubUpdateAssetResolver.fromDelivery(this.manifest, ProductBuildProfile.product); }
-      catch (_) { return 0; }
-    }
+      task.sameVersionTest) return 0;
+    if (this.manifest === undefined || this.manifest.delivery === undefined) return 0;
+    let candidate: SideloadUpdateAsset;
+    try { candidate = GitHubUpdateAssetResolver.fromDelivery(this.manifest, ProductBuildProfile.product); }
+    catch (_) { return 0; }
     const asset = task.asset;
     // 显示版本只作完整性附加核对；tag/code/product/摘要等资产身份仍须全部匹配。
     if (candidate.versionName !== requestedVersion) return 0;
@@ -1303,13 +1259,14 @@ export class SideloadUpdateCoordinator {
       if (ProductBuildProfile.storeChannel) { this.message = '请通过应用市场更新'; return; }
       if (this.phase === SideloadUpdatePhase.Installing) { this.message = '系统正在安装，请等待应用重新打开'; return; }
       if (this.phase === SideloadUpdatePhase.ConfirmationPending) { this.reconcile(); return; }
-      if (this.phase === SideloadUpdatePhase.Verified && this.testAsset === undefined &&
+      if (this.phase === SideloadUpdatePhase.Verified &&
         (this.manifest === undefined || (!UpdateChecker.canInstall(this.manifest,this.manifest.updateChannel ?? 'stable') && this.importSource === undefined))) return;
       // 先撤下上一轮内存候选。异步解析完成前 advance 不得凭旧 Ready/Downloaded 事务推进。
       const refreshSigning = this.signingIssue === SigningPreparationIssue.Material || this.recoveryAction === 'material';
       this.attemptTarget = undefined;
       try { this.beginAttempt(this.version, true, retryOf); }
       catch (error) { this.message = (error as Error).message; return; }
+      this.materialRenewalAttempted = false;
       if (refreshSigning) this.refreshSigningMaterial = true;
       this.epoch++; this.automatic = true; this.working = true;
       this.signingIssue = SigningPreparationIssue.None;
@@ -1361,13 +1318,13 @@ export class SideloadUpdateCoordinator {
         if (this.manifest === undefined) throw new Error('请返回检查更新后重试');
         // 无论是否有缓存，都先经产品解析器取得本次完整候选。解析后复制，防止外部对象
         // 在排队/账号授权期间变化；镜像健康和临时 lease 不属于安装内容身份。
-        const resolved = this.importSource?.asset ?? this.testAsset ?? await GitHubUpdateAssetResolver.resolve(this.manifest, ProductBuildProfile.product);
+        const resolved = this.importSource?.asset ?? await GitHubUpdateAssetResolver.resolve(this.manifest, ProductBuildProfile.product);
         if (!this.active(epoch)) return;
         const asset = JSON.parse(JSON.stringify(resolved)) as SideloadUpdateAsset;
         this.attemptChannel = this.manifest.updateChannel ?? 'stable';
         const state = service.state();
         const reusable = state !== undefined && this.sameAssetIdentity(state.asset, asset) &&
-          this.sameInstalledBaseline(state) && state.sameVersionTest === this.sameVersionTest &&
+          this.sameInstalledBaseline(state) && !state.sameVersionTest &&
           (state.updateChannel ?? 'stable') === this.attemptChannel &&
           (state.phase === SideloadUpdatePhase.Downloaded || state.phase === SideloadUpdatePhase.AwaitingRestart ||
             state.phase === SideloadUpdatePhase.Ready);
@@ -1390,7 +1347,7 @@ export class SideloadUpdateCoordinator {
           this.attemptTarget = asset;
           this.assertTargetBinding(state);
         } else {
-          await service.download(asset, this.sameVersionTest);
+          await service.download(asset);
         }
         if (this.active(epoch)) { this.synchronize(); await this.advance(); }
       } catch (error) {
@@ -1452,8 +1409,8 @@ export class SideloadUpdateCoordinator {
     }
 
   /** 仅打开公开系统设置入口，helper往返保留Attempt，不读/代改安全开关。 */
-  async openDebugSettings(): Promise<void> {
-      if (this.context === undefined || this.finishing) return;
+  async openDebugSettings(): Promise<boolean> {
+      if (this.context === undefined || this.finishing) return false;
       this.connectionReady = false;
       this.connectionRetry = false; this.connectionAttempts = 0;
       this.connectionMessage = '请在开发者选项中开启无线调试，返回 AMCL 后会自动检查并继续';
@@ -1461,10 +1418,11 @@ export class SideloadUpdateCoordinator {
         try {
           await this.context.startAbility({ bundleName: 'com.huawei.hmos.settings',
             abilityName: 'com.huawei.hmos.settings.MainAbility', uri: uri });
-          return;
+          return true;
         } catch (_) { /* 深链不可用时只回退公开设置入口，不修改任何系统开关。 */ }
       }
       this.connectionMessage = '无法直接打开设置，请手动进入“设置 → 系统 → 开发者选项”开启无线调试';
+      return false;
     }
 
   /** 每轮最多一个连接复检timer；后台、取消及旧绑定回收都解除。 */
@@ -1718,15 +1676,10 @@ export class SideloadUpdateCoordinator {
       if(this.importSource!==undefined) this.removeImportDirectory(this.importSource.path.substring(0,this.importSource.path.lastIndexOf('/')));
       this.importSource=undefined;
     }
-    this.diagnosticAttempt = false; this.testAsset = undefined; this.sameVersionTest = false;
     // 路由只提供值快照，后续修改调用方的 manifest 不能改变本轮通道或资产来源。
     this.manifest = params.manifest === undefined ? undefined : JSON.parse(JSON.stringify(params.manifest)) as UpdateManifest;
     // 即使页面传入了看似官方的开发 manifest，也必须先有本轮选择器取得的内部令牌。
     if (AppUpdatePolicy.releaseKind(this.manifest?.versionName ?? '') === 'developer' && this.importSource === undefined) return 'rejected';
-    if (ProductBuildProfile.product === 'default' && DiagnosticPolicy.hasTestHooks() && params.testAsset !== undefined && SideloadUpdateTestSession.allowedAssetUrl(params.testAsset.url) &&
-      (!params.testAsset.url.startsWith('http://') || SideloadFixtureHttp.registered(params.testAsset.url))) {
-      this.testAsset = params.testAsset; this.sameVersionTest = params.sameVersionTest === true;
-    }
     this.version = params.manifest?.versionName ?? this.transaction?.asset.versionName ?? '';
     this.startWorkflow(retryOf); this.publish(); return this.working ? 'started' : 'rejected';
   }

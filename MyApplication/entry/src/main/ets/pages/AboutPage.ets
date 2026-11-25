@@ -1,4 +1,5 @@
 import { applyNativeTheme } from '../components/AppTheme';
+import { LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
 import { util } from '@kit.ArkTS';
 import { DistributionPolicy } from 'commons';
 import { ImmersiveTitleScaffold } from '../components/ImmersiveTitleScaffold';
@@ -71,6 +72,29 @@ struct AboutPage {
   private exitPresentedUpdate: () => boolean = (): boolean => true
   private updatePresenterOwner: string = 'about-' + util.generateRandomUUID()
   private updateDialogCtrl_: CustomDialogController | null = null
+
+  /** 对外读取页面已经用于展示的安装身份；剪贴板、商店调试开关和外链交给用户原面板。 */
+  private async skillAction_(method: string, args: SkillFields): Promise<SkillFields> {
+    if (method === 'readLauncherAbout') {
+      const code = UpdateChecker.currentVersionCode();
+      const version = UpdateChecker.currentVersionName();
+      if (!version || code <= 0) return { 'state':'unknown', 'reason':'installedIdentityUnavailable' };
+      return { 'state': 'ready', 'versionName': version, 'versionCode': code,
+        'email': AUTHOR_EMAIL, 'group': QQ_GROUP_ID, 'repository': DistributionPolicy.isStore() ? '' : APP_REPO_URL,
+        'gameRunAllowed': GameRunAdmission.isAllowed() };
+    }
+    if (method === 'openStoreRunSettings' && DistributionPolicy.isStore()) {
+      return { 'state': 'needsUser', 'surface': 'AboutPage', 'gameRunAllowed': GameRunAdmission.isAllowed() };
+    }
+    return { 'state': 'unavailable', 'reason': 'channelOrOperation' };
+  }
+
+  private bindSkill_(): void {
+    LauncherSkillBus.bind('about', this, (method: string, args: SkillFields): Promise<SkillFields> => this.skillAction_(method,args), (): boolean => {
+      const page = this.getUIContext().getRouter().getState().name;
+      return page === 'AboutPage' || page === 'pages/AboutPage';
+    });
+  }
 
   aboutToAppear() {
     this.applyTheme_()
@@ -290,9 +314,9 @@ struct AboutPage {
   }
 
   /** 后台/设置往返仅发布显示事实，不销毁连续更新。真正离页取消迟到检查请求。 */
-  onPageShow(): void { this.applyTheme_();  this.allowDebug = GameRunAdmission.isAllowed(); this.hasPendingUpdate = !DistributionPolicy.isStore() && SideloadUpdateService.get(this.context).needsAttention(); this.pageVisible = true; if (this.pendingUpdate !== undefined) { const pending = this.pendingUpdate; this.pendingUpdate = undefined; this.showUpdateDialog_(pending) } }
+  onPageShow(): void { this.bindSkill_(); this.applyTheme_();  this.allowDebug = GameRunAdmission.isAllowed(); this.hasPendingUpdate = !DistributionPolicy.isStore() && SideloadUpdateService.get(this.context).needsAttention(); this.pageVisible = true; if (this.pendingUpdate !== undefined) { const pending = this.pendingUpdate; this.pendingUpdate = undefined; this.showUpdateDialog_(pending) } }
   onPageHide(): void { this.pageVisible = false; this.exitUpdateForRoute_(); setTimeout((): void => { this.exitUpdateForRoute_(); }, 0) }
-  aboutToDisappear(): void {
+  aboutToDisappear(): void { LauncherSkillBus.unbind('about',this);
     this.checkGeneration++; this.pageVisible = false; if (UpdatePromptPresenter.owns(this.updatePresenterOwner)) this.exitPresentedUpdate(); this.closeUpdateDialog_(); UpdatePromptPresenter.forget(this.updatePresenterOwner)
   }
 

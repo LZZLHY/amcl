@@ -281,9 +281,12 @@ export class AppMessageStore {
   }
 
   /** 标记单条已读。返回是否有变化。 */
-  async markRead(id: string): Promise<boolean> {
+  async markRead(id: string, expected?: AppMessage): Promise<boolean> {
     let changed = false;
     await this.change_((list: AppMessage[]): AppMessage[] => {
+      if (expected !== undefined && !list.some((m: AppMessage): boolean => m.id === id && m.createdAt === expected.createdAt &&
+        m.kind === expected.kind && m.title === expected.title && m.body === expected.body &&
+        m.action.type === expected.action.type && m.action.payload === expected.action.payload)) throw new Error('消息内容已改变');
       for (const m of list) { if (m.id === id && !m.read) { m.read = true; changed = true; } }
       return list;
     });
@@ -306,8 +309,13 @@ export class AppMessageStore {
   }
 
   /** 清空。 */
-  async clear(): Promise<void> {
-    await this.change_((): AppMessage[] => []);
+  async clear(expected?: AppMessage[]): Promise<void> {
+    // 与变更队列使用同一持久化投影。新投递对象的属性插入顺序可能不同。
+    const snapshot = expected === undefined ? undefined : JSON.stringify(deserializeMessages(JSON.stringify(expected)));
+    await this.change_((list: AppMessage[]): AppMessage[] => {
+      if (snapshot !== undefined && JSON.stringify(list) !== snapshot) throw new Error('消息已变更，请重新确认');
+      return [];
+    });
   }
 
   /** 串行执行变更并保存：先深拷贝当前消息，避免已读字段提前污染 UI；

@@ -48,6 +48,13 @@
 -enable-filename-obfuscation
 -enable-export-obfuscation
 
+# skillProfiles 的脚本 URL 由系统解析。保留路径段，使发行 ABC 记录与包内清单一致。
+-keep-file-name
+skills
+amcl-launcher
+scripts
+LauncherSkill
+
 # ============================================================
 # §A — NAPI bridge：testNapi.<func> 调用的所有属性名（由脚本核对，禁止手工硬编码数量）
 #
@@ -137,6 +144,9 @@ getDeviceMemoryMB
 getRecommendedXmx
 mcCheckFiles
 mcForceExit
+mcLauncherRestartPending
+mcPrepareLauncherRestart
+mcDeclineLauncherRestart
 mcGetStatus
 mcGetGraphicsLaunchFailure
 mcGetGraphicsRuntimeState
@@ -255,6 +265,8 @@ onButtonPressed
 onGrabChange
 onHaptic
 physicalKeyTransaction
+peekSdlTextInputDemand
+onSdlTextInputDemandChange
 physicalMouseButtonTransaction
 setCursorLocked
 noteCursorLockFocusLost
@@ -362,6 +374,7 @@ downloadOnProgress
 downloadPauseTask
 downloadProbeTransfer
 downloadPurgeTask
+archiveMutateConfirmedEntry
 downloadPublishNoReplace
 downloadQueryTask
 downloadRelayStats

@@ -206,7 +206,7 @@ set(AMCL_REVIEW_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/desktop_review")
 file(GLOB AMCL_REVIEW_PATCHES CONFIGURE_DEPENDS "${AMCL_REVIEW_ROOT}/prebuilt/sdl3/patches/*.patch")
 file(GLOB AMCL_REVIEW_TEMPLATES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/desktop_review/*.cpp.in")
 set(AMCL_REVIEW_SOURCES)
-foreach(unit glfw_context glfw_monitor sdl_profile sdl_owner sdl_hide)
+foreach(unit glfw_context glfw_monitor sdl_profile sdl_owner sdl_hide sdl_fullscreen)
     list(APPEND AMCL_REVIEW_SOURCES "${AMCL_REVIEW_GENERATED}/${unit}.cpp")
 endforeach()
 
@@ -238,9 +238,9 @@ add_custom_command(OUTPUT ${AMCL_REVIEW_SOURCES}
         --out "${AMCL_REVIEW_GENERATED}"
     DEPENDS "${AMCL_REVIEW_ROOT}/scripts/generate-desktop-review-tests.py"
         "${AMCL_REVIEW_ROOT}/prebuilt/sdl3/patches/series" ${AMCL_REVIEW_PATCHES} ${AMCL_REVIEW_TEMPLATES}
-        ../../glfw/glfw_compat.cpp ../../glfw/glfw_callbacks.cpp
+        ../../glfw/glfw_compat.cpp ../../glfw/glfw_callbacks.cpp ../../platform/desktop_host_api.h
     VERBATIM)
-foreach(unit glfw_monitor sdl_profile sdl_owner sdl_hide)
+foreach(unit glfw_monitor sdl_profile sdl_owner sdl_hide sdl_fullscreen)
     add_executable(amcl_review_${unit}_test "${AMCL_REVIEW_GENERATED}/${unit}.cpp")
     target_compile_features(amcl_review_${unit}_test PRIVATE cxx_std_17)
     target_compile_definitions(amcl_review_${unit}_test PRIVATE AMCL_NATIVE_DESKTOP_ONLY=0)
@@ -269,6 +269,40 @@ add_executable(amcl_desktop_command_queue_test desktop_command_queue_test.cpp)
 target_compile_features(amcl_desktop_command_queue_test PRIVATE cxx_std_17)
 add_test(NAME amcl_desktop_command_queue_test COMMAND amcl_desktop_command_queue_test)
 set_tests_properties(amcl_desktop_command_queue_test PROPERTIES LABELS "desktop;input")
+
+# 直接执行游戏调用的 GLFW 剪贴板 ABI，只在系统写入与设备类型边界注入宿主替身。
+add_executable(amcl_glfw_clipboard_test glfw_clipboard_test.cpp ../../glfw/glfw_clipboard.cpp)
+target_include_directories(amcl_glfw_clipboard_test PRIVATE stubs)
+target_compile_features(amcl_glfw_clipboard_test PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(amcl_glfw_clipboard_test PRIVATE /utf-8)
+endif()
+foreach(clipboard_device IN ITEMS phone desktop tablet unknown)
+    add_test(NAME amcl_glfw_clipboard_${clipboard_device}_test
+        COMMAND amcl_glfw_clipboard_test ${clipboard_device})
+    set_tests_properties(amcl_glfw_clipboard_${clipboard_device}_test PROPERTIES LABELS "input;clipboard")
+endforeach()
+
+# SDL 手机复制把完整的生产补丁 C/H 单元与可故障注入的 Pasteboard 边界链接。
+set(AMCL_SDL_PHONE_CLIPBOARD_DIR "${CMAKE_CURRENT_BINARY_DIR}/sdl_phone_clipboard")
+set(AMCL_SDL_PHONE_CLIPBOARD_SOURCE "${AMCL_SDL_PHONE_CLIPBOARD_DIR}/SDL_amclphoneclipboard.c")
+set(AMCL_SDL_PHONE_CLIPBOARD_HEADER "${AMCL_SDL_PHONE_CLIPBOARD_DIR}/SDL_amclphoneclipboard.h")
+add_custom_command(OUTPUT "${AMCL_SDL_PHONE_CLIPBOARD_SOURCE}" "${AMCL_SDL_PHONE_CLIPBOARD_HEADER}"
+    COMMAND "${Python3_EXECUTABLE}" "${AMCL_REVIEW_ROOT}/scripts/generate-desktop-review-tests.py"
+        --sdl-phone-clipboard-only --out "${AMCL_SDL_PHONE_CLIPBOARD_DIR}"
+    DEPENDS "${AMCL_REVIEW_ROOT}/scripts/generate-desktop-review-tests.py"
+        "${AMCL_REVIEW_ROOT}/prebuilt/sdl3/patches/series" ${AMCL_REVIEW_PATCHES}
+    VERBATIM)
+add_executable(amcl_sdl_phone_clipboard_test desktop_review/sdl_phone_clipboard_test.c
+    "${AMCL_SDL_PHONE_CLIPBOARD_SOURCE}" "${AMCL_SDL_PHONE_CLIPBOARD_HEADER}")
+target_include_directories(amcl_sdl_phone_clipboard_test PRIVATE
+    "${AMCL_SDL_PHONE_CLIPBOARD_DIR}" desktop_review/sdl_phone_clipboard_stubs)
+target_compile_features(amcl_sdl_phone_clipboard_test PRIVATE c_std_11)
+if(MSVC)
+    target_compile_options(amcl_sdl_phone_clipboard_test PRIVATE /utf-8)
+endif()
+add_test(NAME amcl_sdl_phone_clipboard_test COMMAND amcl_sdl_phone_clipboard_test)
+set_tests_properties(amcl_sdl_phone_clipboard_test PROPERTIES LABELS "input;clipboard;sdl")
 
 add_executable(amcl_mg_buffer_contract_core_test
     mg_buffer_contract_core_test.cpp
@@ -576,8 +610,12 @@ foreach(_amcl_text_key_typed IN ITEMS 1 0)
     target_include_directories(${_amcl_text_key_target} PRIVATE
         ../.. ../../platform ../../input stubs)
     target_compile_features(${_amcl_text_key_target} PRIVATE cxx_std_17)
+    # 此目标经真实 look/控制投递依赖链接 descriptor，在宿主 EXE 发布真实入口。
+    set_target_properties(${_amcl_text_key_target} PROPERTIES ENABLE_EXPORTS ON)
+    target_link_libraries(${_amcl_text_key_target} PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
     target_compile_definitions(${_amcl_text_key_target} PRIVATE
         AMCL_INPUT_HOST_EXPORTS
+        AMCL_TEXT_ORDER_REAL_DESCRIPTOR=1 AMCL_INPUT_BRIDGE_HOST_TESTING
         AMCL_INPUT_SHADOW=0
         AMCL_TEXT_KEY_ORDER_TYPED=${_amcl_text_key_typed}
         $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>
@@ -1518,6 +1556,24 @@ target_compile_features(amcl_desktop_gamepad_mapping_test PRIVATE cxx_std_17)
 add_test(NAME amcl_desktop_gamepad_mapping_test COMMAND amcl_desktop_gamepad_mapping_test)
 set_tests_properties(amcl_desktop_gamepad_mapping_test PROPERTIES LABELS "desktop;input")
 
+# 使用真正的 POSIX 文件锁与两个同名导出，证明只能调用当前进程中约定的 libentry 读端。
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    foreach(fixture IN ITEMS entry foreign)
+        add_library(amcl_gamepad_reader_${fixture} SHARED gamepad_reader_test.c)
+        target_compile_definitions(amcl_gamepad_reader_${fixture} PRIVATE AMCL_GAMEPAD_FIXTURE)
+        set_target_properties(amcl_gamepad_reader_${fixture} PROPERTIES OUTPUT_NAME "${fixture}"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/gamepad-reader")
+    endforeach()
+    add_executable(amcl_gamepad_reader_test gamepad_reader_test.c)
+    target_link_libraries(amcl_gamepad_reader_test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME amcl_gamepad_reader_test COMMAND amcl_gamepad_reader_test
+        $<TARGET_FILE:amcl_gamepad_reader_entry> $<TARGET_FILE:amcl_gamepad_reader_foreign>)
+    add_executable(amcl_mobile_gamepad_publication_test mobile_gamepad_publication_test.cpp)
+    target_compile_features(amcl_mobile_gamepad_publication_test PRIVATE cxx_std_17)
+    target_link_libraries(amcl_mobile_gamepad_publication_test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME amcl_mobile_gamepad_publication_test COMMAND amcl_mobile_gamepad_publication_test)
+endif()
+
 # The tested presentation implementation is extracted from the shipped SDL
 # patch recipe. Do not keep a second hand-copied production header in tests.
 get_filename_component(AMCL_SDL_PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../.." ABSOLUTE)
@@ -1695,3 +1751,11 @@ foreach(held_target IN LISTS amcl_held_host_targets)
         target_sources(${held_target} PRIVATE ../../input/adapters/backend_keymaps.cpp)
     endif()
 endforeach()
+
+# Linux POSIX 目录 fd 和真实内核重命名语义；本测试只使用本轮独占的临时世界。
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(archive_entry_mutation_test archive_entry_mutation_test.cpp ../../platform/archive_entry_mutation.cpp)
+    target_compile_features(archive_entry_mutation_test PRIVATE cxx_std_17)
+    target_compile_definitions(archive_entry_mutation_test PRIVATE AMCL_ARCHIVE_MUTATION_HOST_TEST)
+    add_test(NAME archive_entry_mutation COMMAND archive_entry_mutation_test)
+endif()

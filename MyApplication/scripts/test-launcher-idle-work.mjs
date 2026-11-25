@@ -4,13 +4,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import compiler from './lib/ets-compiler.mjs';
+import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+
+const { ProductQa } = makePureEtsLoader()('entry/src/main/ets/product/UnavailableQa.ets');
+
+const { LauncherSkillBus } = makePureEtsLoader()('entry/src/main/ets/launcherskill/LauncherSkillBus.ets');
 
 function fixture() {
   const source = fs.readFileSync(new URL('../entry/src/main/ets/pages/Index.ets', import.meta.url), 'utf8');
   const ast = compiler.createSourceFile('Index.ets', source, compiler.ScriptTarget.Latest, true);
   const component = ast.statements.find(node => node.members?.some(value => value.name?.getText(ast) === 'onPageShow'));
   const names = ['getPrefManager_', 'finishErrorSheetWait_', 'registryListener', 'onRegistryChanged_', 'onLauncherWorkVisibilityChanged_', 'onPageShow',
-    'onPageHide', 'aboutToDisappear', 'observeExportActivities_', 'refreshStoreManager_', 'onNetBannerChange',
+    'onPageHide', 'aboutToDisappear', 'unbindSettingsSkill_', 'observeExportActivities_', 'refreshStoreManager_', 'onNetBannerChange',
     'startNetRecheck_', 'stopNetRecheck_', 'runNetCheck_', 'initNetworkCheck', 'stopRelayObservation_'];
   const members = names.map(name => {
     const member = component.members.find(value => value.name?.getText(ast) === name);
@@ -39,13 +44,13 @@ function fixture() {
   const module = {exports: {}};
   new Function('module', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'quickConnectivityCheck',
     'AppStorage', 'getAccountManager', 'UpdatePromptPresenter', 'DistributionPolicy', 'UpdateChecker', 'ProductBuildProfile',
-    'getGameExportCoordinator', code)(module,
+    'ProductQa', 'LauncherSkillBus', 'getGameExportCoordinator', code)(module,
     callback => { const id = ++sequence; timers.set(id, callback); return id; }, id => timers.delete(id),
     () => 1000, () => {}, () => new Promise((resolve, reject) => requests.push({resolve, reject})),
     {get: key => storage.get(key), setOrCreate: (key, value) => storage.set(key, value)},
     () => ({isReady: () => false}), {owns: () => false, forget() {}},
     {isStore:()=>false},{currentVersionCode:()=>1,currentVersionName:()=> '1.0.5',hasCachedUpdate:()=>false},{product:'default'},
-    () => exportCoordinator);
+    ProductQa, LauncherSkillBus, () => exportCoordinator);
   const page = new module.exports();
   Object.assign(page, {launcherWorkVisible_: false, launcherWorkForeground_: false, tasksProjectionDirty_: false,
     // 本组测试模拟已经完成开屏的首页。显式提供真实生命周期前提，不能让新增初始化
@@ -64,7 +69,7 @@ function fixture() {
     launcherWindow_: null, rootViewportUpdateTimer_: -1, registry: {removeListener() {}},
     syncStatusFromRegistry_() { businessCalls++; }});
   // 生命周期照常执行；本测试不替代这些业务服务自己的生产回归。
-  for (const name of ['onSideloadTestRequest_', 'onHomeTabVisibilityChanged_', 'consumeLastSession',
+  for (const name of ['onHomeTabVisibilityChanged_', 'consumeLastSession',
     'onUpdateRecoveryRequested_', 'scanVersions', 'loadPreferences', 'updateJdkReadyState',
     'refreshRecentActivities_', 'tryConsumeLayoutImport', 'onGraphicsRecoverySignal_', 'drainUpdateDialogs_',
     'showUpdateRecovery_', 'exitUpdateForRoute_', 'closeUpdateDialog_',

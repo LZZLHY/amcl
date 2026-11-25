@@ -13,24 +13,149 @@ import { hilog } from '@kit.PerformanceAnalysisKit'
 import { KeyPickerSheet } from './KeyPickerSheet'
 import { AppIconName } from 'commons'
 import { AppIcon } from './AppIcon'
-import { TouchOptionsEditor, TouchOptionSlider, TouchOptionToggle } from './TouchOptionsEditor'
-import { controlProfileSaveLabel } from 'gamecontrol'
+import { TouchOptionsEditor, TouchOptionSlider, TouchOptionToggle, TouchOptionChoice } from './TouchOptionsEditor'
+import { controlProfileSaveLabel, getKeyOptionGroups } from 'gamecontrol'
+import { DraftLeaveDecision, LauncherSkillBus, SkillFields } from '../launcherskill/LauncherSkillBus';
+import { LayoutDraftAccess } from '../launcherskill/LayoutDraftAccess';
+import { touchFlagDraft, touchNumberDraft, touchChoiceDraft, touchBindingDraft } from '../runtime/TouchOptionDraft';
 import { EditorPalette } from './TouchEditorTheme'
+import { GameSettingsDirectory, GameSettingsRail, InputSettingsColumns, InputSettingsGroup,
+  gameSettingsTitle, gameSettingsDetail } from './GameSettingsNavigation'
+import { gameSettingsWide, gameSettingsWidth, gameSettingsHeight } from './GameSettingsWindow'
 
 @Component
 export struct InputSettingsEditor {
   /** 宿主提供的实例显示palette，不写入用户布局或输入配置。 */
   @Prop palette: EditorPalette = new EditorPalette();
   @Prop targetProfileName: string = ''
+  @Prop launcherWorkbench: boolean = false;
+  private playerInput_: LayoutDraftAccess = new LayoutDraftAccess();
+  private savedPlayerInput_: LayoutProfile | null = null;
+
+  /** 所有以下操作均写当前草稿；保存仍由持有布局事务的编辑器确认。 */
+  private inputSnapshot_(): SkillFields {
+    const stamp=this.playerInput_.snapshot(JSON.stringify(this.buildProfile()));
+    return { 'state':'draft','draftRef':stamp['draftRef'],'draftRevision':stamp['draftRevision'],'name':this.profileName,
+      'touch':JSON.stringify(this.touch),'joystickDeadZone':this.joystickDeadZone,'haptic':this.haptic,
+      'source':this.selectedLookSource,'independent':this.lookPolicies?.mode==='independent',
+      'look':JSON.stringify(this.editorLookParameters()),'gamepad':JSON.stringify(this.gamepad),
+      'actions':TOUCH_ACTION_NAMES,'buttons':this.gamepadButtonOrder() };
+  }
+
+  private async playerInputAction_(method:string,args:SkillFields):Promise<SkillFields> {
+    if (!this.launcherWorkbench || !this.mounted || !this.leaseHeld || this.busy) return { 'state':'busy' };
+    if (method==='readInputWorkbench') return this.inputSnapshot_();
+    if (!this.playerInput_.permits(JSON.stringify(this.buildProfile()),args)) return { 'state':'unavailable','reason':'draftChanged' };
+    if (this.skillLeave_?.pending()) return { 'state':'busy','reason':'originalLeavePending' };
+    if (this.leaveConfirm || this.touchBindingEditIndex>=0 || this.gamepadBtnPicker.length>0) return { 'state':'needsUser' };
+    if (method==='finishInputWorkbench') {
+      const decision=args['decision'];
+      if (decision==='undo' && this.undoCount>0) { this.undo_(); return this.inputSnapshot_(); }
+      if (decision!=='save' && decision!=='discard') return { 'state':'unavailable','reason':'decision' };
+      // 同一结束意图覆盖直接提交和退出确认；若持久化期间组件销毁，cleanup 会继续接管原事务。
+      const generation=this.generation;
+      const leave=LauncherSkillBus.draftLeave(method,():boolean=>this.mounted && generation===this.generation);
+      this.skillLeave_=leave;
+      let waiting=false;
+      try {
+        if (decision==='save') this.run_(true); else this.cancel_();
+        waiting=this.leaveConfirm;
+        if (waiting) return { 'state':'needsUser','surface':'unsavedDraft' };
+        if (this.pending) await this.pending;
+      } finally {
+        if (!waiting) leave.dismiss();
+      }
+      const saved=this.savedPlayerInput_;
+      return { 'state':!this.completed?'unknown':(saved?'ready':'cancelled'),'name':saved?.name??'', 'layoutId':saved?.profileId??'', 'revision':saved?.profileRevision??0 };
+    }
+    if (method==='setTouchOption') return this.playerTouchOption_(args);
+    if (method==='setLookOption') return this.playerLookOption_(args);
+    if (method==='setGamepadOption') return this.playerGamepadOption_(args);
+    return { 'state':'failed','reason':'unknownOperation' };
+  }
+
+  private playerTouchOption_(args: SkillFields): SkillFields {
+    const field=String(args['field']); const value=String(args['value']); const n=Number(value);
+    const mode=SliderChangeMode.Click;
+    let next: TouchConfiguration | undefined=undefined;
+    if (['scroll','sprint','bindings','swap','drop','gyroX','gyroY'].includes(field) && (value==='true'||value==='false')) next=touchFlagDraft(this.touch,field,value==='true');
+    else if ((field==='menu'&&['direct','touchpad'].includes(value)) || (field==='joystick'&&['fixed','floating'].includes(value)) ||
+      (field==='gyroMode'&&['off','aim','always'].includes(value))) next=touchChoiceDraft(this.touch,field==='gyroMode'?'gyro':field,value);
+    else if (value.trim() && Number.isSafeInteger(n) && ((field==='menuSpeed'&&n>=30&&n<=300) ||
+      (field==='menuHold'&&n>=150&&n<=1000) || (field==='sprintThreshold'&&n>=50&&n<=150) ||
+      (field==='hold'&&n>=200&&n<=1500) || (field==='gyroScale'&&n>=10&&n<=300))) {
+      next=touchNumberDraft(this.touch,field==='gyroScale'?'gyro':field==='sprintThreshold'?'sprint':field,n);
+    } else if (field==='deadZone' && n>=1 && n<=50) {
+      this.adjustJoystickDeadZone_(n/100,mode); return this.inputSnapshot_();
+    } else if(field==='action') {
+      const index=TOUCH_ACTION_NAMES.indexOf(String(args['actionName']));
+      if(index<0) return { 'state':'failed','reason':'action' };
+      if(value==='inherit'||value==='unbind') next=touchBindingDraft(this.touch,index,value==='unbind');
+      else if (value.trim() && getKeyOptionGroups().some((g):boolean=>g.options.some((k):boolean=>k.code===n))) {
+        this.touchBindingEditIndex=index;this.applyTouchBinding([n]); return this.inputSnapshot_();
+      }
+    }
+    if(!next) return { 'state':'failed','reason':'touchValue' };
+    this.applyTouchChange(next,'',mode); return this.inputSnapshot_();
+  }
+
+  private playerLookOption_(args:SkillFields):SkillFields {
+    const source=String(args['source']); const field=String(args['field']); const value=String(args['value']);const n=Number(value);
+    if (!['physical','touch','gamepad','external'].includes(source)) return { 'state':'failed','reason':'source' };
+    this.selectLookSource(source as LookPolicySource);
+    if (field==='independent' && (value==='true'||value==='false')) this.setIndependentLook(value==='true');
+    else if(field==='invertY' && (value==='true'||value==='false')) this.setLookInversion_(value==='true');
+    else if(field==='haptic' && (value==='true'||value==='false')) this.setHaptic_(value==='true');
+    else if(value.trim() && Number.isFinite(n) && ((field==='sensitivity'&&n>=30&&n<=300)||(field==='smoothing'&&n>=10&&n<=100)||
+      (field==='acceleration'&&n>=0&&n<=100))) this.setLookNumber_(field,n/100,SliderChangeMode.Click);
+    else return { 'state':'failed','reason':'lookValue' };
+    return this.inputSnapshot_();
+  }
+
+  private playerGamepadOption_(args:SkillFields):SkillFields {
+    const field=String(args['field']); const value=String(args['value']);const n=Number(value);
+    if (field==='reset') { this.confirmGamepadReset_(); return { 'state':'needsUser','surface':'resetGamepad' }; }
+    if(field==='enabled' && (value==='true'||value==='false')) this.setGamepadEnabled_(value==='true');
+    else if((field==='left'||field==='right') && ['move','look','none'].includes(value)) this.setStickRole_(field,value as StickRole);
+    else if(value.trim() && Number.isFinite(n) && ((field==='deadzone'&&n>=0&&n<=50)||(field==='threshold'&&n>=10&&n<=95)||
+      (field==='scale'&&n>=30&&n<=300))) this.setGamepadNumber_(field,n/100,SliderChangeMode.Click);
+    else if(field==='button' && this.gamepadButtonOrder().includes(String(args['button']))) {
+      const button=String(args['button']);
+      if(value==='none'||value==='hotbarPrev'||value==='hotbarNext') this.setGamepadAction_(button,value as 'hotbarPrev'|'hotbarNext'|'none');
+      else if(value.trim() && getKeyOptionGroups().some((g):boolean=>g.options.some((k):boolean=>k.code===n))) this.applyGamepadKey(button,n);
+      else return { 'state':'failed','reason':'buttonValue' };
+    } else return { 'state':'failed','reason':'gamepadValue' };
+    return this.inputSnapshot_();
+  }
+
+  private adjustJoystickDeadZone_(value:number,mode:SliderChangeMode):void {
+    if (this.prepareSliderChange('joystickDeadZone',mode,this.joystickDeadZone !== value)) this.joystickDeadZone=value;
+  }
+  private setGamepadEnabled_(value:boolean):void {
+    if (value===(this.gamepad.enabled!==false)) return;
+    this.pushUndo(); this.gamepad.enabled=value; this.gamepad=this.cloneGamepad(this.gamepad);
+  }
+  private setLookInversion_(value:boolean):void {
+    if (this.editorLookParameters().invertY===value) return;
+    this.pushUndo(); const next: LookParameters=this.editorLookParameters(); next.invertY=value; this.updateEditorLook(next);
+  }
+  private setHaptic_(value:boolean):void {
+    if (value!==this.haptic) { this.pushUndo(); this.haptic=value; }
+  }
+
   @Prop screenWidth: number = 720
   @Prop screenHeight: number = 360
   @Prop resolvedActionKeys: number[] = []
   @Prop gyroscopeStatus: string = 'unknown'
   onDone: (profile: LayoutProfile | null) => void = (_profile: LayoutProfile | null): void => {}
   onInitializationFailed: (message: string) => void = (_message: string): void => {}
+  /** 工具切换由游戏宿主重新领取编辑检查点；启动器不展示本局工具。 */
+  @Prop inGameSettings: boolean = false
+  @Prop allowLiveResolution: boolean = false
+  onOpenGameTool: (tool: string) => void = (_tool: string): void => {}
+  private pendingGameTool_: string = ''
   @Prop initialSection: string = ''
   @State private category: string = 'home'
-  @State private lookAdvanced: boolean = false
   @State private gamepadAdvanced: boolean = false
   @State private originallyActive: boolean = true
   private sliderGestureKey: string = ''
@@ -55,6 +180,7 @@ export struct InputSettingsEditor {
   @State private profileName: string = ''
   @State private busy: boolean = true
   @State private leaveConfirm: boolean = false
+  private skillLeave_: DraftLeaveDecision | undefined = undefined;
   private session: LayoutEditSession = new LayoutEditSession()
   private original: LayoutProfile | undefined = undefined
   private sliderUndoKey: string = ''
@@ -74,6 +200,7 @@ export struct InputSettingsEditor {
     if (previous!==undefined) await previous
     if (!this.mounted || generation!==this.generation) return
     this.completed=false; this.cleanupTask=undefined; this.pending=undefined
+    this.pendingGameTool_=''; this.leaveConfirm=false
     const store=getLayoutStore()
     try {
       await store.waitReady()
@@ -85,8 +212,13 @@ export struct InputSettingsEditor {
       this.original=cloneLayout(profile); this.session.open(profile); this.load_(profile)
       this.profileName=profile.name
       this.originallyActive=store.getActiveProfile().profileId === profile.profileId
-      this.selectCategory_(this.initialSection.length > 0 ? this.initialSection : 'home')
+      this.selectCategory_(this.initialSection.length > 0 ? this.initialSection :
+        this.inGameSettings && this.wide_() ? 'look' : 'home')
       this.baselineSig=JSON.stringify(this.buildProfile())
+      if (this.launcherWorkbench) {
+        this.playerInput_.open();
+        LauncherSkillBus.bind('inputWorkbench',this,(m:string,a:SkillFields):Promise<SkillFields>=>this.playerInputAction_(m,a),():boolean=>this.mounted && !this.completed && this.launcherWorkbench);
+      }
     } catch(error) {
       this.statusMsg='无法打开输入设置：'+(error as Error).message
       if (this.mounted && generation===this.generation) this.onInitializationFailed(this.statusMsg)
@@ -95,8 +227,11 @@ export struct InputSettingsEditor {
 
   /** 退出立即使旧代失效；同一清理任务覆盖重复销毁，等待原保存结果后再退休自己的租约。 */
   aboutToDisappear(): void {
+    if (this.launcherWorkbench) LauncherSkillBus.unbind('inputWorkbench',this);
     this.mounted=false; this.generation++
     if (this.cleanupTask===undefined) this.cleanupTask=this.cleanup_()
+    this.skillLeave_?.hold(this.cleanupTask);
+    this.skillLeave_?.dismiss();
   }
 
   /** 迟到写结果不得关闭新页面；销毁后等待原操作，再由原事务恢复或保留失败义务。 */
@@ -160,6 +295,11 @@ export struct InputSettingsEditor {
     return JSON.stringify(this.buildProfile())!==this.baselineSig
   }
   /** 有内容变化时显示明确的离开选择；无变化直接结束原编辑事务，忙碌时拒绝重入。 */
+  private keepEditing_(): void {
+    this.pendingGameTool_=''; this.leaveConfirm=false;
+    this.skillLeave_?.dismiss();
+  }
+
   private cancel_(): void {
     if (this.busy) return
     if (this.dirty_()) this.leaveConfirm=true
@@ -171,6 +311,8 @@ export struct InputSettingsEditor {
     if (this.busy || !this.mounted || !this.leaseHeld) return
     this.busy=true; this.leaveConfirm=false
     this.pending=this.persist_(save,this.generation)
+    this.skillLeave_?.hold(this.pending);
+    this.skillLeave_?.dismiss();
   }
   /** 等待仓库真实确认后才提交编辑事务；旧generation的完成留给cleanup恢复，不能关闭后来页面。 */
   private async persist_(save: boolean,generation: number): Promise<void> {
@@ -184,10 +326,18 @@ export struct InputSettingsEditor {
         if (result===null) throw new Error('方案已改变或配置不被支持，请重新载入')
       } else if (!(await store.restoreEditorTransaction())) throw new Error('原方案恢复未确认')
       if (!this.mounted || generation!==this.generation) return
-      store.commitEditorTransaction(); this.completed=true; this.release_()
-      this.onDone(result)
+      store.commitEditorTransaction(); this.savedPlayerInput_=result; this.completed=true; this.release_()
+      if (this.launcherWorkbench) this.playerInput_.complete({ 'state':result?'ready':'cancelled', 'name':result?.name??'',
+        'layoutId':result?.profileId??'', 'revision':result?.profileRevision??0 });
+      // 原检查点和嵌套租约均已归还，才允许宿主开始新工具的事务。
+      const tool: string=this.pendingGameTool_
+      this.pendingGameTool_=''
+      if (!save && tool.length>0) this.onOpenGameTool(tool)
+      else this.onDone(result)
     } catch(error) {
-      if (this.mounted && generation===this.generation) this.statusMsg=(error as Error).message
+      if (this.mounted && generation===this.generation) {
+        this.pendingGameTool_=''; this.statusMsg=(error as Error).message
+      }
       hilog.error(0,'InputSettingsEditor','%{public}s',(error as Error).message)
     } finally { if (this.mounted && generation===this.generation) this.busy=false }
   }
@@ -195,26 +345,29 @@ export struct InputSettingsEditor {
 
   /** 导航状态不进入草稿，不制造Undo；六类任务只映射既有设置域。 */
   private selectCategory_(category: string): void {
-    const known: string[]=['home','move','look','menu','gesture','gyro','gamepad']
+    const known: string[]=['home','move','look','menu','gesture','gyro','gamepad','policy']
     this.category=known.indexOf(category)>=0 ? category : 'home'
     this.tab=category==='look' ? 'look' : category==='gamepad' ? 'gamepad' : 'touch'
     if (this.tab==='touch' && category!=='home') this.touchSection=category
     this.sliderUndoKey=''; this.sliderGestureKey=''
   }
-  private categoryTitle_(category: string): string {
-    return category==='move' ? '移动' : category==='look' ? '视角' : category==='menu' ? '菜单与背包' :
-      category==='gesture' ? '快捷栏' : category==='gyro' ? '陀螺仪' : category==='gamepad' ? '映射手柄' : '设置目录'
+  /** 分类之间保留草稿；跨工具切换须走已有的放弃确认，失败时保留当前页面。 */
+  private openDestination_(id: string): void {
+    if (this.busy || this.completed || this.leaveConfirm || this.touchBindingEditIndex>=0 || this.gamepadBtnPicker.length>0) return
+    if (id==='layout' || id==='resolution') {
+      if (!this.inGameSettings || (id==='resolution' && !this.allowLiveResolution)) return
+      this.pendingGameTool_=id; this.cancel_()
+    } else { this.selectCategory_(id) }
   }
-  @Builder
-  CategoryDirectory_() {
-    Column({space:8}) {
-      ForEach(['home','move','look','menu','gesture','gyro','gamepad'],(category: string) => {
-        Button(this.categoryTitle_(category)).type(ButtonType.Normal).borderRadius(6).height(44).width('100%').fontColor(this.palette.text)
-          .backgroundColor(this.category===category ? this.palette.surfaceActive : this.palette.surface)
-          .onClick((): void => { this.selectCategory_(category) })
-      },(category: string): string => category)
-    }.width('100%')
+
+  private wide_(): boolean { return gameSettingsWide(this.screenWidth,this.screenHeight) }
+
+  /** 横竖/分屏变化只派生呈现分类，不改导航记录和输入草稿；所有可见位置读取同一个结果。 */
+  private effectiveCategory_(): string {
+    if (this.category==='home' && this.wide_()) return this.inGameSettings ? 'look' : 'policy'
+    return this.category
   }
+
   private touchLook_(): LookParameters {
     return this.lookPolicies===undefined ? {sensitivity:this.lookSensitivity,invertY:this.invertY,smoothing:this.lookSmoothing,acceleration:this.lookAccel} :
       sourceLookParameters(this.lookPolicies,'touch')
@@ -257,66 +410,131 @@ export struct InputSettingsEditor {
       }}})
   }
 
-  /** 只组装当前设置分区、选键浮层和退出确认；不创建输入、游戏帧或传感器订阅。 */
+  /** 专用键位开关仍写当前完整方案，历史手势只读提示沿用同一兼容政策。 */
+  @Builder
+  PolicyCard_() {
+    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'专用控件'}) {
+      TouchOptionToggle({palette:this.palette,wide:this.wide_(),label:'专用控件跟随游戏键位',
+        description:'作用于移动、快捷栏和陀螺仪使用识别；普通按钮保持自身绑定，手动覆盖优先。',value:this.touch.followGameBindings,
+        onChange:(value: boolean): void => {
+          if (value === this.touch.followGameBindings) return
+          this.pushUndo(); const next: TouchConfiguration=normalizeTouchPreferences(this.touch) ?? new TouchConfiguration()
+          next.followGameBindings=value; this.touch=next
+        }})
+      if (this.touch.joystickAutoWalk || this.touch.gestureMode !== 'buttons') {
+        Text('旧自动前进和空白区域玩法手势已停用；原值保留用于往返导出。').fontSize(13).fontColor(this.palette.warning)
+      }
+    }
+  }
+
+  /** 顺序与共享目录一致，读取当前草稿而非上次保存的配置。 */
+  private directorySummaries_(): string[] {
+    return [
+      (this.lookPolicies?.mode==='independent' ? this.lookSourceName(this.selectedLookSource) : '共享视角')+' · '+Math.round(this.editorLookParameters().sensitivity*100)+'%',
+      (this.touch.joystickCenter==='fixed'?'固定中心':'落指浮动')+' · '+Math.round(this.joystickDeadZone*100)+'%',
+      (this.touch.menuMode==='direct'?'直接操作':'触摸板')+' · '+Math.round(this.touch.menuSensitivity*100)+'%',
+      this.touch.hotbarSwapDoubleTap ? (this.touch.hotbarDropHold?'双击换手 · 长按丢弃':'双击换手') : this.touch.hotbarDropHold ? '长按丢弃':'手势已关闭',
+      this.touch.gyroscopeMode==='off'?'已关闭':this.touch.gyroscopeMode==='aim'?'按住启用':'游戏内持续',
+      this.gamepad.enabled===false?'已关闭':'已启用 · '+this.gamepadButtonOrder().length+' 项映射',
+      this.touch.followGameBindings?'跟随游戏键位':'使用默认键位'
+    ]
+  }
+
+  /** 各类始终共享当前草稿。窄窗口返回目录不会写入或结束编辑事务。 */
+  @Builder
+  PageBody_() {
+    Column({space:12}) {
+      if (this.statusMsg.length>0) { Text(this.statusMsg).fontSize(14).fontColor(this.palette.warning).width('100%') }
+      if (this.effectiveCategory_()==='home') {
+        GameSettingsDirectory({palette:this.palette,summaries:this.directorySummaries_(),includeGameTools:this.inGameSettings,allowLiveResolution:this.allowLiveResolution,
+          onSelect:(id: string): void=>{ this.openDestination_(id) }})
+      } else if (this.effectiveCategory_()==='look') { this.LookPage_() }
+      else if (this.effectiveCategory_()==='gamepad') { this.GamepadTabContent() }
+      else if (this.effectiveCategory_()==='policy') {
+        Column() { this.PolicyCard_() }.width('100%').constraintSize({maxWidth:580})
+      } else {
+        TouchOptionsEditor({palette:this.palette,value:this.touch,section:this.touchSection,showSectionPicker:false,wide:this.wide_(),
+          gyroscopeStatus:this.gyroscopeStatus,joystickDeadZone:this.joystickDeadZone,
+          sourceSensitivity:this.touchLook_().sensitivity,sourceInvertY:this.touchLook_().invertY,resolvedActionKeys:this.resolvedActionKeys,
+          onRemap:(index: number): void => { this.touchBindingEditIndex=index },
+          onDeadZone:(value: number,mode: SliderChangeMode): void => {
+            this.adjustJoystickDeadZone_(value,mode)
+          },
+          onChange:(value: TouchConfiguration,key: string,mode?: SliderChangeMode): void => { this.applyTouchChange(value,key,mode) }})
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  Header_() {
+    Row({space:12}) {
+      if (!this.wide_() && this.effectiveCategory_()!=='home') {
+        Button() { AppIcon({name:AppIconName.Back,iconSize:20,color:this.palette.accent}) }
+          .type(ButtonType.Normal).borderRadius(this.palette.radiusSmall).width(44).height(44)
+          .backgroundColor(this.palette.surface).accessibilityText('返回设置目录').onClick((): void=>{ this.selectCategory_('home') })
+      }
+      Column({space:3}) {
+        Text(this.effectiveCategory_()==='home' ? (this.inGameSettings?'设置':'手感与输入') : gameSettingsTitle(this.effectiveCategory_()))
+          .fontSize(this.wide_()?38:22).fontWeight(FontWeight.Bold).fontColor(this.palette.text)
+        if (this.effectiveCategory_()!=='home') { Text(gameSettingsDetail(this.effectiveCategory_())).fontSize(12).fontColor(this.palette.muted) }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if (this.wide_() && this.effectiveCategory_()!=='home') {
+        AppIcon({name:this.effectiveCategory_()==='look'?AppIconName.Aim:AppIconName.Settings,iconSize:28,color:this.palette.accent})
+      } else if (!this.wide_()) {
+        Text(this.profileName).fontSize(12).fontColor(this.palette.muted).maxLines(1).textOverflow({overflow:TextOverflow.Ellipsis})
+          .constraintSize({maxWidth:'30%'}).copyOption(CopyOptions.LocalDevice).accessibilityText('当前方案：'+this.profileName)
+      }
+      if (this.inGameSettings) {
+        Button('返回游戏').type(ButtonType.Normal).constraintSize({minHeight:44}).fontSize(13).fontColor(this.palette.accent)
+          .backgroundColor(Color.Transparent).onClick((): void=>{ this.cancel_() })
+      }
+    }.width('100%').padding({left:18,right:12,top:this.wide_()?14:4,bottom:this.wide_()?10:4})
+  }
+
+  /** 保存文案区分预设副本和用户方案；返回仍经过原有草稿确认。 */
+  @Builder
+  Actions_() {
+    Row({space:8}) {
+      if (this.wide_() || this.screenWidth>=600) {
+        Text(this.undoCount>0 && this.dirty_() ? '有未保存的修改' : this.original?.isPreset?'保存时创建副本并使用':
+          !this.originallyActive?'保存后使用此方案':'已保存到当前方案')
+          .fontSize(12).fontColor(this.palette.muted).layoutWeight(1)
+      }
+      Button('撤销').type(ButtonType.Normal).borderRadius(9).height(44).fontColor(this.palette.text).backgroundColor(this.palette.surface)
+        .enabled(this.undoCount>0).onClick((): void=>{ this.undo_() })
+      Button('取消').type(ButtonType.Normal).borderRadius(9).height(44)
+        .fontColor(this.palette.text).backgroundColor(this.palette.surface).onClick((): void=>{ this.cancel_() })
+      Button(controlProfileSaveLabel(this.original?.isPreset===true,this.originallyActive)).type(ButtonType.Normal)
+        .borderRadius(9).constraintSize({minHeight:44}).fontColor(this.palette.onAccent).backgroundColor(this.palette.accentFill)
+        .onClick((): void=>{ this.run_(true) })
+    }.width('100%').justifyContent(FlexAlign.End).padding({left:12,right:12,top:4,bottom:4})
+  }
+
+  /** 页面只读取宿主投影的窗口信息，选键和退出确认继续独占编辑表面。 */
   build() {
     Stack() {
-      Column({space:12}) {
-        Row({space:8}) {
-          Text('手感与输入').fontSize(20).fontColor(this.palette.text).layoutWeight(1)
-          Text(this.profileName).fontSize(13).fontColor(this.palette.muted).maxLines(1)
-            .textOverflow({overflow:TextOverflow.Ellipsis}).constraintSize({maxWidth:'50%'})
-            .copyOption(CopyOptions.LocalDevice).accessibilityText('当前方案：'+this.profileName)
-        }.width('100%')
-        if (this.original?.isPreset) { Text('预设将在保存时创建完整副本并使用').fontSize(12).fontColor(this.palette.muted) }
-        else if (!this.originallyActive) { Text('保存后使用此完整操控方案').fontSize(12).fontColor(this.palette.muted) }
-        Row({space:12}) {
-          if (this.screenWidth >= 900) {
-            Scroll() { this.CategoryDirectory_() }.width(180).height('100%').align(Alignment.TopStart)
+      Row() {
+        if (this.wide_()) {
+          GameSettingsRail({palette:this.palette,selected:this.effectiveCategory_(),profileName:this.profileName,
+            includeGameTools:this.inGameSettings,allowLiveResolution:this.allowLiveResolution,onSelect:(id:string):void=>{this.openDestination_(id)}})
+        }
+        Column() {
+          this.Header_()
+          Divider().strokeWidth(0.5).color(this.palette.stroke)
+          // 导航到新类时从顶部开始；编辑同一页或拖动滑条不重置滚动位置。
+          ForEach([this.effectiveCategory_()],(id: string) => {
+            Scroll() { this.PageBody_() }.layoutWeight(1).width('100%').align(Alignment.TopStart).scrollBar(BarState.Auto)
+              .padding({left:this.wide_()?20:14,right:this.wide_()?20:14,top:10,bottom:10})
+          },(id: string): string=>id)
+          if (!this.inGameSettings || this.effectiveCategory_()!=='home' || (this.undoCount>0 && this.dirty_())) {
+            Divider().strokeWidth(0.5).color(this.palette.stroke)
+            this.Actions_()
           }
-          Scroll() {
-            Column({space:12}) {
-              if (this.statusMsg.length > 0) { Text(this.statusMsg).fontSize(14).fontColor(this.palette.warning).width('100%') }
-              if (this.screenWidth < 900 && this.category !== 'home') {
-                Button('‹ 设置目录 · '+this.categoryTitle_(this.category)).type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
-                  .onClick((): void => { this.selectCategory_('home') })
-              }
-              if (this.category === 'home') {
-                if (this.screenWidth < 900) { this.CategoryDirectory_() }
-                TouchOptionToggle({palette:this.palette,label:'专用控件跟随游戏键位',
-                  description:'作用于移动、快捷栏和陀螺仪使用识别；普通按钮保持自身绑定，手动覆盖优先。',value:this.touch.followGameBindings,
-                  onChange:(value: boolean): void => {
-                    if (value === this.touch.followGameBindings) return
-                    this.pushUndo(); const next: TouchConfiguration=normalizeTouchPreferences(this.touch) ?? new TouchConfiguration()
-                    next.followGameBindings=value; this.touch=next
-                  }})
-                if (this.touch.joystickAutoWalk || this.touch.gestureMode !== 'buttons') {
-                  Text('旧自动前进和空白区域玩法手势已停用；原值保留用于往返导出。').fontSize(13).fontColor(this.palette.warning)
-                }
-              } else if (this.category === 'look') { this.GlobalTabContent() }
-              else if (this.category === 'gamepad') { this.GamepadTabContent() }
-              else {
-                TouchOptionsEditor({palette:this.palette,value:this.touch,section:this.touchSection,showSectionPicker:false,
-                  gyroscopeStatus:this.gyroscopeStatus,joystickDeadZone:this.joystickDeadZone,
-                  sourceSensitivity:this.touchLook_().sensitivity,sourceInvertY:this.touchLook_().invertY,resolvedActionKeys:this.resolvedActionKeys,
-                  onRemap:(index: number): void => { this.touchBindingEditIndex=index },
-                  onDeadZone:(value: number,mode: SliderChangeMode): void => {
-                    if (this.prepareSliderChange('joystickDeadZone',mode,this.joystickDeadZone !== value)) this.joystickDeadZone=value
-                  },
-                  onChange:(value: TouchConfiguration,key: string,mode?: SliderChangeMode): void => { this.applyTouchChange(value,key,mode) }})
-                Button('专用键位政策：'+(this.touch.followGameBindings ? '跟随游戏' : '使用默认')+' ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
-                  .onClick((): void => { this.selectCategory_('home') })
-              }
-            }.width('100%').alignItems(HorizontalAlign.Start)
-          }.layoutWeight(1).height('100%').align(Alignment.TopStart).scrollBar(BarState.Auto)
-        }.width('100%').layoutWeight(1)
-        Row({space:8}) {
-          Button('撤销').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).enabled(this.undoCount>0).onClick((): void => { this.undo_() })
-          Button('取消').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.cancel_() })
-          Button(controlProfileSaveLabel(this.original?.isPreset === true,this.originallyActive)).type(ButtonType.Normal).borderRadius(6).constraintSize({minHeight:44})
-            .layoutWeight(2).onClick((): void => { this.run_(true) })
-        }.width('100%')
-      }.width(Math.min(this.screenWidth >= 900 ? 1000 : 560,Math.max(1,this.screenWidth-24)))
-        .height(Math.max(1,this.screenHeight-24)).padding(16).backgroundColor(this.palette.panel).borderRadius(16).enabled(!this.busy)
+        }.height('100%').layoutWeight(1)
+      }.width(gameSettingsWidth(this.screenWidth,this.screenHeight)).height(gameSettingsHeight(this.screenWidth,this.screenHeight))
+        .id('game-settings-sheet')
+        .backgroundColor(this.palette.panel).borderRadius(this.palette.radiusPanel).clip(true)
+        .enabled(!this.busy && !this.leaveConfirm && this.touchBindingEditIndex<0 && this.gamepadBtnPicker.length===0)
       if (this.touchBindingEditIndex>=0) {
         KeyPickerSheet({palette:this.palette,currentKeys:this.touchBindingKeys(),currentDescription:this.touchBindingDescription(),allowCombo:false,
           onPick:(keys: number[] | null): void => { this.applyTouchBinding(keys) }})
@@ -333,13 +551,13 @@ export struct InputSettingsEditor {
       if (this.leaveConfirm) {
         Column({space:12}) {
           Text('放弃尚未保存的输入设置？').fontSize(18).fontColor(this.palette.text)
-          Button('继续编辑').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.leaveConfirm=false })
+          Button('继续编辑').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.keepEditing_(); })
           Button('放弃修改').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.run_(false) })
         }.padding(24).width(Math.min(420,this.screenWidth-24)).backgroundColor(this.palette.panel).borderRadius(16)
       }
     // Default允许分类、滑条和取消按钮参与命中，同时遮挡后方游戏；Block会把所有子控件一起禁用。
     // 游戏输入仍由宿主持有的编辑模态隔离，不靠吞掉设置页面自己的事件实现暂停。
-    }.width('100%').height('100%').backgroundColor('#90000000').hitTestBehavior(HitTestMode.Default)
+    }.width('100%').height('100%').backgroundColor(this.palette.overlay).hitTestBehavior(HitTestMode.Default)
       .onTouch((event: TouchEvent): void => { event.stopPropagation() })
   }
 
@@ -473,14 +691,14 @@ export struct InputSettingsEditor {
     return '无'
   }
 
-  /** 按需构建手柄基本参数与映射分区；所有操作只修改本编辑草稿。 */
+  /** 左列选择控制方式，右列仅在展开时构建具体映射和高级参数。 */
   @Builder
-  GamepadTabContent() {
-    Column({space:12}) {
-      TouchOptionToggle({palette:this.palette,label:'启用映射手柄',description:'只控制键鼠映射，不关闭游戏的原生手柄API。',value:this.gamepad.enabled!==false,
-        onChange:(value: boolean): void => { if (value===(this.gamepad.enabled!==false)) return; this.pushUndo(); this.gamepad.enabled=value; this.gamepad=this.cloneGamepad(this.gamepad) }})
+  GamepadPrimary_() {
+    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'手柄映射'}) {
+      TouchOptionToggle({palette:this.palette,wide:this.wide_(),label:'启用映射手柄',description:'只控制键鼠映射，不关闭游戏的原生手柄API。',value:this.gamepad.enabled!==false,
+        onChange:(value: boolean): void => this.setGamepadEnabled_(value)})
       ForEach(['left','right'],(side: string) => {
-        Text(side==='left' ? '左摇杆' : '右摇杆').fontSize(14).fontColor(this.palette.text)
+        Text(side==='left' ? '左摇杆' : '右摇杆').fontSize(this.wide_()?16:14).fontColor(this.palette.text)
         Row({space:4}) {
           ForEach(['move','look','none'],(role: string) => {
             Button(this.stickLabel(role as StickRole)).type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1)
@@ -489,6 +707,12 @@ export struct InputSettingsEditor {
           },(role: string): string => role)
         }.width('100%')
       },(side: string): string => side)
+    }
+  }
+
+  @Builder
+  GamepadSecondary_() {
+    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'按键与参数'}) {
       Button(this.gamepadPane==='buttons' ? '收起按钮映射' : '按钮映射 · '+this.gamepadButtonOrder().length.toString()+' 项 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
         .onClick((): void => { this.gamepadPane=this.gamepadPane==='buttons' ? 'general' : 'buttons' })
       if (this.gamepadPane==='buttons') {
@@ -508,16 +732,21 @@ export struct InputSettingsEditor {
       Button(this.gamepadAdvanced ? '收起高级参数' : '高级参数与恢复默认 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
         .onClick((): void => { this.gamepadAdvanced=!this.gamepadAdvanced })
       if (this.gamepadAdvanced) {
-        TouchOptionSlider({palette:this.palette,label:'映射摇杆死区',value:(this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE)*100,minimum:0,maximum:50,step:1,suffix:'%',
+        TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'映射摇杆死区',value:(this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE)*100,minimum:0,maximum:50,step:1,suffix:'%',
           onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('deadzone',value/100,mode) }})
-        TouchOptionSlider({palette:this.palette,label:'扳机阈值',value:(this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD)*100,minimum:10,maximum:95,step:1,suffix:'%',
+        TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'扳机阈值',value:(this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD)*100,minimum:10,maximum:95,step:1,suffix:'%',
           onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('threshold',value/100,mode) }})
-        TouchOptionSlider({palette:this.palette,label:'摇杆局部视角倍率',value:(this.gamepad.lookScale ?? 1)*100,minimum:30,maximum:300,step:5,suffix:'%',
+        TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'摇杆局部视角倍率',value:(this.gamepad.lookScale ?? 1)*100,minimum:30,maximum:300,step:5,suffix:'%',
           onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('scale',value/100,mode) }})
         Text('局部倍率继续与映射手柄来源的视角倍率相乘。额外保存的按钮映射完整保留。').fontSize(12).fontColor(this.palette.muted)
         Button('恢复默认手柄配置…').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').fontColor(this.palette.warning).onClick((): void => { this.confirmGamepadReset_() })
       }
-    }.width('100%')
+    }
+  }
+
+  @Builder
+  GamepadTabContent() {
+    InputSettingsColumns({wide:this.wide_(),primary:():void=>{this.GamepadPrimary_()},secondary:():void=>{this.GamepadSecondary_()}})
   }
 
   /** 按当前显示分组选择既有逻辑按钮，不改变存档映射顺序或内容。 */
@@ -579,44 +808,62 @@ export struct InputSettingsEditor {
       source === 'gamepad' ? '映射手柄' : '外部兼容'
   }
 
-  /** 呈现来源视角与反馈参数；对齐吸附属于布局编辑器，不在此混入布局操作。 */
+  /** 镜头参数一组共用当前来源。物理鼠标继续直通，旧平滑值保存在草稿内。 */
   @Builder
   GlobalTabContent() {
-    Column({space:12}) {
-      Text(this.lookPolicies?.mode === 'independent' ? '当前来源：'+this.lookSourceName(this.selectedLookSource) : '共享视角设置 · 影响原兼容政策覆盖的来源')
-        .fontSize(14).fontColor(this.palette.accent).width('100%')
-      TouchOptionSlider({palette:this.palette,label:'视角灵敏度',value:this.editorLookParameters().sensitivity*100,minimum:30,maximum:300,step:5,suffix:'%',
+    Column({space:8}) {
+      TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'视角灵敏度',value:this.editorLookParameters().sensitivity*100,minimum:30,maximum:300,step:5,suffix:'%',
         onChange:(value: number,mode: SliderChangeMode): void => { this.setLookNumber_('sensitivity',value/100,mode) }})
-      TouchOptionToggle({palette:this.palette,label:'Y轴倒置',value:this.editorLookParameters().invertY,
-        onChange:(value: boolean): void => {
-          if (value===this.editorLookParameters().invertY) return
-          this.pushUndo(); const next: LookParameters=this.editorLookParameters(); next.invertY=value; this.updateEditorLook(next)
-        }})
       if (this.lookPolicies?.mode === 'independent' && this.selectedLookSource === 'physical') {
         Text('物理鼠标使用直接输入，不应用跟手度平滑；原保存值保留。').fontSize(13).fontColor(this.palette.muted)
       } else {
-        TouchOptionSlider({palette:this.palette,label:'视角跟手度',value:this.editorLookParameters().smoothing*100,minimum:10,maximum:100,step:5,suffix:'%',
+        TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'视角跟手度',value:this.editorLookParameters().smoothing*100,minimum:10,maximum:100,step:5,suffix:'%',
           onChange:(value: number,mode: SliderChangeMode): void => { this.setLookNumber_('smoothing',value/100,mode) }})
       }
-      TouchOptionSlider({palette:this.palette,label:'视角加速',value:this.editorLookParameters().acceleration*100,minimum:0,maximum:100,step:5,suffix:'%',
+      TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'视角加速',value:this.editorLookParameters().acceleration*100,minimum:0,maximum:100,step:5,suffix:'%',
         onChange:(value: number,mode: SliderChangeMode): void => { this.setLookNumber_('acceleration',value/100,mode) }})
-      Text('陀螺仪继承触控来源的灵敏度和Y倒置，独立积分，不叠加手指平滑或加速。').fontSize(12).fontColor(this.palette.muted)
-      TouchOptionToggle({palette:this.palette,label:'触觉反馈',description:'方案级，设备支持时生效；关闭不影响按键与释放。',value:this.haptic,
-        onChange:(value: boolean): void => { if (value!==this.haptic) { this.pushUndo(); this.haptic=value } }})
-      Button(this.lookAdvanced ? '收起来源设置' : '高级 · 各来源独立设置 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
-        .onClick((): void => { this.lookAdvanced=!this.lookAdvanced })
-      if (this.lookAdvanced) {
-        TouchOptionToggle({palette:this.palette,label:'各来源独立视角',value:this.lookPolicies?.mode === 'independent',
-          description:'首次开启复制当前手感；关闭仍保留各来源数值。',onChange:(value: boolean): void => { this.setIndependentLook(value) }})
-        if (this.lookPolicies?.mode === 'independent') {
-          ForEach(['physical','touch','gamepad','external'],(source: string) => {
-            Button(this.lookSourceName(source as LookPolicySource)).type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
-              .backgroundColor(this.selectedLookSource===source ? this.palette.surfaceActive : this.palette.surface)
-              .fontColor(this.palette.text).onClick((): void => { this.selectLookSource(source as LookPolicySource) })
-          },(source: string): string => source)
-        }
-      }
     }.width('100%')
+  }
+
+  @Builder
+  LookPrimary_() {
+    if (this.lookPolicies?.mode==='independent') {
+      InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'编辑来源'}) {
+        ForEach([['touch','physical'],['gamepad','external']],(pair: string[]) => {
+          Row({space:4}) {
+            ForEach(pair,(source: string) => {
+              TouchOptionChoice({palette:this.palette,wide:this.wide_(),label:this.lookSourceName(source as LookPolicySource),selected:this.selectedLookSource===source,
+                onChoose:(): void=>{this.selectLookSource(source as LookPolicySource)}}).layoutWeight(1)
+            },(source: string): string => source)
+          }.width('100%')
+        },(pair: string[]): string => pair[0])
+      }
+    }
+    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'镜头参数'}) { this.GlobalTabContent() }
+  }
+
+  @Builder
+  LookSecondary_() {
+    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'方向与反馈'}) {
+      TouchOptionToggle({palette:this.palette,wide:this.wide_(),label:'Y轴倒置',value:this.editorLookParameters().invertY,
+        onChange:(value: boolean): void => {
+          if (value===this.editorLookParameters().invertY) return
+          this.setLookInversion_(value)
+        }})
+      TouchOptionToggle({palette:this.palette,wide:this.wide_(),label:'触觉反馈',description:'方案级，设备支持时生效；关闭不影响按键与释放。',value:this.haptic,
+        onChange:(value: boolean): void => this.setHaptic_(value)})
+    }
+    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'输入来源'}) {
+      TouchOptionToggle({palette:this.palette,wide:this.wide_(),label:'各来源独立视角',value:this.lookPolicies?.mode === 'independent',
+        description:this.lookPolicies?.mode==='independent'?'当前编辑：'+this.lookSourceName(this.selectedLookSource):'当前使用共享视角设置',
+        onChange:(value:boolean):void=>{this.setIndependentLook(value)}})
+      Text('陀螺仪跟随触控来源的灵敏度和 Y 轴方向。').fontSize(12).fontColor(this.palette.muted)
+    }
+  }
+
+  @Builder
+  LookPage_() {
+    InputSettingsColumns({wide:this.wide_(),primary:():void=>{this.LookPrimary_()},secondary:():void=>{this.LookSecondary_()}})
   }
 
   /** 同一滑条手势只在首次真实改变前记录检查点。 */

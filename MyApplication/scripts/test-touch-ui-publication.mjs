@@ -179,7 +179,7 @@ function pointerOnlyContract() {
     assert.deepEqual(f.trace.filter(e=>e.phase==='button'),[],'纯移动/滚轮不得补造LEFT');
     const outputs=f.trace.filter(e=>e.phase===(part==='wheel'?'wheel':'move'));
     assert.equal(outputs.length,2);assert.equal(outputs.every(e=>e.token===token),true);
-    if(part==='wheel')assert.deepEqual(outputs.map(e=>e.steps),[3,2]);else assert.deepEqual(outputs.map(e=>e.dx),[85,42.5]);
+    if(part==='wheel')assert.deepEqual(outputs.map(e=>e.steps),[-3,-2]);else assert.deepEqual(outputs.map(e=>e.dx),[85,42.5]);
     f.view.touchSurface.reconcile();f.view.confirmTouchLayout_();assert.equal(f.view.touchSurface.admits(f.view.uiPublicationToken),true);
     results.push({part,outputs});
   }

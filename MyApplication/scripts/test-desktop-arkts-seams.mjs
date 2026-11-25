@@ -50,15 +50,6 @@ const taskOwner = {
 };
 const updater = { recoverActivity: () => [], recover: noop,
   setAbilityForeground: value => lifecycleEvents.push(['updater-foreground', value]) };
-// 加载真实诊断Want解析；普通Want必须确实绕过新通道，不能用一个永远false的替身掩盖冲突。
-const observationWant=load('entry/src/main/ets/components/InputObservationTestWant.ets',name=>{
-  if(name==='commons')return commons;
-  if(name==='entry/ProductBuildProfile')return {ProductBuildProfile:{}};
-  if(name==='libentry.so')return {default:native};
-  if(name.endsWith('GameSessionHost'))return {getGameSessionHost:()=>assert.fail('ordinary Want cannot create diagnostic Host')};
-  if(name.endsWith('EntryInputObservationPort'))return load('entry/src/main/ets/components/EntryInputObservationPort.ets',()=>({}));
-  return {};
-});
 // onCreate 将首帧后的准备闭包交给真实进程交接类。这里直接装载生产类，
 // 不能返回空模块让 install 报错，也不能用无行为 install 替身吞掉本轮生命周期依赖。
 // 此套件仍只验证 Ability 错误Want/准入初始化顺序；实际prepare的等待/重试另有开屏回归。
@@ -88,21 +79,8 @@ const jdkQualificationWant=load('entry/src/main/ets/devtools/JdkQualificationWan
   };
   throw new Error('Unexpected JDK qualification dependency: '+name);
 });
-// EntryAbility新增了整合包QA Want通道。装载真实识别/准入函数，证明普通启动和
-// 桌面错误交接不会触发该通道；文件、下载和探针业务一旦被误调用，立即让用例失败。
-const modpackDownloadWant=load('entry/src/main/ets/components/ModpackDownloadTestWant.ets',name=>{
-  if(name==='commons')return commons;
-  if(name==='entry/ProductBuildProfile')return {ProductBuildProfile:{product:'default'}};
-  if(['@kit.AbilityKit','@kit.CoreFileKit','feature_core','feature_system','mods',
-    '../export/ExportArchiveIO','../product/ProductIdentityCollector'].includes(name)){
-    return new Proxy({}, {get:(_,member)=>assert.fail('ordinary Want cannot enter modpack QA: '+name+'.'+String(member))});
-  }
-  throw new Error('Unexpected modpack QA dependency: '+name);
-});
 const Ability = load('entry/src/main/ets/entryability/EntryAbility.ets', name => {
   if(name.endsWith('RuntimeDownloadValidation'))return runtimeValidation;
-  if(name.endsWith('ModpackDownloadTestWant'))return modpackDownloadWant;
-  if(name.endsWith('InputObservationTestWant'))return observationWant;
   if(name.endsWith('LauncherStartupRuntime'))return launcherStartupRuntime;
   if (name.endsWith('ModAudioRuntime')) return { ModAudioRuntime: {
     attach: context => { audioEvents.push(['attach', context]); lifecycleEvents.push(['audio-attach', context]); },
@@ -131,13 +109,13 @@ const Ability = load('entry/src/main/ets/entryability/EntryAbility.ets', name =>
   if (name === 'feature_core') return { getTaskActivityOwner: () => taskOwner,
     setDownloadNativeEngine: engine => lifecycleEvents.push(['download-engine', engine]) };
   if (name === 'libentry.so') return { default: native };
+  // 桌面生命周期用例使用发行产品的空 QA 装配。
+  if (name === 'entry/ProductQa') return { ProductQa: { activate: () => false, detach: noop } };
   if (name === 'entry/ProductBuildProfile') return { ProductBuildProfile: {} };
   if (name === 'entry/ProductInputProfile') return { ProductInputProfile: {
     initialize: noop, selection: () => ({ isolatedGameProcess: false }) } };
   if (name === 'launch') return { SessionMarker: { readAndClear: () => null } };
-  if (name.endsWith('LogShareConnectivityProbe')) return { runLogShareConnectivityWant: noop };
   // 自更新属于独立服务，本用例只核对Ability既有启动错误交接；不执行网络或安装事务。
-  if (name.endsWith('SideloadUpdateTestWant')) return { runSideloadUpdateTestWant: noop };
   if (name.endsWith('InstallFence')) return { InstallFence: { init: noop } };
   if (name.endsWith('SideloadUpdateService')) return { SideloadUpdateService: { get: () => updater } };
   if (name.endsWith('ProductIdentityCollector')) return { collectProductIdentity: () => ({}) };

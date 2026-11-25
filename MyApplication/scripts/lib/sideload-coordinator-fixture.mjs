@@ -48,7 +48,7 @@ async function fixture({journal,account='valid',applicationResponse,signingLooku
  // 核实平台边界单独计数，AA 唤醒回归必须证明调用了旧执行权裁决，而没有重走下载/签名/派发。
  const counters={download:0,sign:0,dispatch:0,prepare:0,revoke:0,observe:0,complete:0,cleanup:0,ledgerEnds:0,
   leases:0,keygen:0,authRequests:0,connections:0,closeStarted:0,closeSettled:0},faults={rename:false,shortWrite:false};
- const fetchGate=deferred(),signGate=deferred(),connectionGate=deferred(),closeGate=deferred(); let encryptionGate;
+ const fetchGate=deferred(),signGate=deferred(),connectionGate=deferred(),closeGate=deferred();
  const mapped=p=>{
   const virtual=String(p);assert(virtual==='/sandbox'||virtual.startsWith('/sandbox/'),'only fixture sandbox');
   const resolved=path.resolve(physical,virtual.slice('/sandbox'.length).replace(/^[/\\]+/,''));
@@ -130,7 +130,7 @@ async function fixture({journal,account='valid',applicationResponse,signingLooku
  const key=crypto.randomBytes(32);
  /** 硬件cipher边界以真实宿主AES-GCM模拟；真实Vault的来源证明/写盘逻辑不替换。 */
  class HardwareCipher{
-  async encrypt(text){if(encryptionGate)await encryptionGate.promise;const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',key,iv),bytes=Buffer.concat([c.update(text,'utf8'),c.final()]);return{iv:iv.toString('base64'),ciphertext:bytes.toString('base64'),tag:c.getAuthTag().toString('base64')};}
+  async encrypt(text){const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',key,iv),bytes=Buffer.concat([c.update(text,'utf8'),c.final()]);return{iv:iv.toString('base64'),ciphertext:bytes.toString('base64'),tag:c.getAuthTag().toString('base64')};}
   async decrypt(blob){const d=crypto.createDecipheriv('aes-256-gcm',key,Buffer.from(blob.iv,'base64'));d.setAuthTag(Buffer.from(blob.tag,'base64'));return Buffer.concat([d.update(Buffer.from(blob.ciphertext,'base64')),d.final()]).toString('utf8');}
  }
  // 授权平台边界逐次记录真实对象与begin。gate可控制URL返回/异常晚于关闭、重登及Runtime换代。
@@ -283,7 +283,7 @@ async function fixture({journal,account='valid',applicationResponse,signingLooku
  },async createAndWait(spec,progress){counters.download++;if(delayDownload)await fetchGate.promise;fs.writeFileSync(mapped(spec.files[0].localPath),data);progress({taskId:1,bytesDone:data.length,bytesTotal:data.length,speedBps:5,finished:true});},cancel(){},purgeTask:()=>true,async awaitTaskReleased(){}})};
  update=load('update/src/main/ets/SideloadUpdateModels.ets');Object.assign(update,load('update/src/main/ets/SideloadTransactionPolicy.ets'),load('update/src/main/ets/GitHubUpdateAssetResolver.ets'),load('update/src/main/ets/AppUpdatePolicy.ets'),load('update/src/main/ets/UpdateChecker.ets'),load('update/src/main/ets/AppArtifactReceiptResolver.ets'));
  const {SigningVault}=load('entry/src/main/ets/sideload/SigningVault.ets'),vault=new SigningVault(context);
- if(!expireMaterialFirst&&applicationResponse===undefined&&!signingLookupFailure&&!signingRequestFailure&&!transientSigningFailures)await vault.importBundle(JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',
+ if((!expireMaterialFirst || materialFailureCount>0)&&applicationResponse===undefined&&!signingLookupFailure&&!signingRequestFailure&&!transientSigningFailures)await vault.importBundle(JSON.stringify({schema:1,keyAlias:'fixture',keyPassword:'test-only',storePassword:'test-only',signAlg:'SHA256withECDSA',
   p12Base64:Buffer.from('p12 fixture').toString('base64'),certificateBase64:Buffer.from('cert fixture').toString('base64'),profileBase64:Buffer.from('profile fixture').toString('base64')}));
  const {SideloadUpdateCoordinator:Coordinator}=load('entry/src/main/ets/sideload/SideloadUpdateCoordinator.ets');coordinator=Coordinator.get(context);
  const {SideloadUpdateViewModel:ViewModel}=load('entry/src/main/ets/sideload/SideloadUpdateViewModel.ets');
@@ -305,7 +305,7 @@ async function fixture({journal,account='valid',applicationResponse,signingLooku
   coordinator.setAbilityForeground(false);coordinator.cancel();coordinator.closeLogin();
   // 人工挂起的边界必须先解除，否则连接/签名/导入的真实 finally 永远没有机会释放句柄。
   fetchGate.resolve();signGate.resolve();connectionGate.resolve('A'.repeat(64));closeGate.resolve();
-  encryptionGate?.resolve();faults.ledgerGate?.resolve();for(const operation of authBegins)operation.gate.resolve();
+  faults.ledgerGate?.resolve();for(const operation of authBegins)operation.gate.resolve();
   let timeout;try{
    await Promise.race([(async()=>{while(pending.size)await Promise.allSettled([...pending]);})(),
     new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('fixture asynchronous teardown timed out; retained '+physical)),10000);})]);
@@ -316,7 +316,7 @@ async function fixture({journal,account='valid',applicationResponse,signingLooku
  });
  return{coordinator,core,load,rows,counters,faults,fetchGate,signGate,connectionGate,closeGate,authBegins,authSessions,render,mountContent,context,environment,mapped,kitfs,vault,storage,runtimePlanApi,
   selectUri(uri,virtual){mapped(virtual);selectedUris.set(uri,virtual);},
-  setObservation(v){observation=v;},authorize(index=authBegins.length-1){account='valid';const operation=authBegins[index];if(operation){operation.auth.valid=true;operation.callback(true,'fixture success');}else authObject.valid=true;},expireAccount(){account='expired';authObject.valid=false;},setEncryptionGate(g){encryptionGate=g;}};
+  setObservation(v){observation=v;},authorize(index=authBegins.length-1){account='valid';const operation=authBegins[index];if(operation){operation.auth.valid=true;operation.callback(true,'fixture success');}else authObject.valid=true;},expireAccount(){account='expired';authObject.valid=false;}};
 }
 /** 完整旧持久记录由真实Repository加载；不靠修改Coordinator private字段构造结果。 */
 const record=(phase='verified')=>({schema:1,id:oldId,phase,asset:{...target,tag:'v1.5.0',versionCode:phase==='verified'?1:2,versionName:'1.5.0'},

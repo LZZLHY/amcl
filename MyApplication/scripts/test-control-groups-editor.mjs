@@ -13,7 +13,7 @@ const owner=ast.statements.find(n=>n.name?.getText(ast)==='LayoutEditor');
 const names=['buildProfile','loadProfile','cloneGamepad','currentDeviceModel','selectedItem','refreshControls','pushUndo','undo',
   'repairEditorGroups_','editorGroupVisible_','editorCanvasOrder_','applyGroupDraft_','chooseControlGroup_','toggleGroupPreview_',
   'createControlGroup_','renameControlGroup_','setGroupInitialVisible_','moveGroupOrder_','duplicateControlGroup_',
-  'groupDeletionDescription_','deleteControlGroup_','moveSelectedToGroup_','currentGroup_','filteredControlGroups_',
+  'groupDeletionDescription_','beginGroupDeletion_','clearGroupDeletion_','deleteControlGroup_','moveSelectedToGroup_','currentGroup_','filteredControlGroups_',
   'phaseName_','selectGroupPhase_','selectedGroupAction_','phaseActionIndices_','groupActionSummary_','selectGroupAction_','moveGroupAction_','removePhaseTarget_','selectedBindingLabel_','phaseTargets_','setPhaseTargets_','togglePhaseTarget_','currentPhaseKeys_','applyPhaseKeys_','selectControlIdentity_','pruneInvisibleSelection_','currentPhaseAutoKeep_',
   'secondaryEditingDefinition_','captureEditorRoute_','syncSecondarySelection_'];
 const declarations=names.map(name=>{const method=owner.members.find(n=>n.name?.getText(ast)===name);assert.ok(method,name);return method.getText(ast);});
@@ -51,8 +51,9 @@ const beforeCopy=JSON.stringify(view.buildProfile());view.duplicateControlGroup_
 const copy=view.currentControlGroup;assert.notEqual(copy,tools);
 assert.ok(view.controls.some(item=>item.controlGroupId===copy&&item.groupActions?.[0].targets[0]===copy));
 view.undo();assert.equal(JSON.stringify(view.buildProfile()),beforeCopy);
-view.chooseControlGroup_(tools);view.deletingGroup=tools;const beforeDelete=JSON.stringify(view.buildProfile());
-assert.match(view.groupDeletionDescription_(),/1.*成员/);view.deleteControlGroup_(true);
+view.chooseControlGroup_(tools);view.editorMounted=true;view.editorGeneration=1;view.activeSheet='native-groups';
+assert.equal(view.beginGroupDeletion_(tools),true);const beforeDelete=JSON.stringify(view.buildProfile());
+assert.match(view.groupDeletionDescription_(),/1.*成员/);view.keepGroupMembers_();
 assert.equal(view.controlGroups.some(g=>g.id===tools),false);
 assert.equal(view.controls.some(c=>c.groupActions?.some(a=>a.targets.includes(tools))),false);
 view.undo();assert.equal(JSON.stringify(view.buildProfile()),beforeDelete);

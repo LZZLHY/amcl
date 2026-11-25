@@ -1,11 +1,11 @@
 /**
- * JVM 退出请求事实的读取边界。原生 hook 只原子发布有界 JSON；启动器确认游戏锁已释放后
+ * JVM 退出请求事实的读取边界。原生 hook 只原子发布有界 JSON；启动器确认无活跃游戏后
  * 才读取、按本局身份归档，并交给 SessionOutcomeResolver 裁决。它不是 waitpid/OS 退出码。
  * 不删除原生记录，归档或历史写盘失败后仍可按 activityId 幂等重试。
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { AppLogger, LOG_DOMAIN_LAUNCH, ledgerManifest, ledgerDirOf,
-  ensureDirSync, ensureEvidenceDirectoryAsync, writeEvidenceTextAtomic, writeEvidenceTextAtomicAsync, ledgerManifestAsync, LedgerOutcome } from 'commons';
+import { AppLogger, LOG_DOMAIN_LAUNCH, ledgerManifest, ledgerDirOf, ledgerManifestAsync, LedgerManifest, LedgerOutcome,
+  ensureDirSync, ensureEvidenceDirectoryAsync, writeEvidenceTextAtomic, writeEvidenceTextAtomicAsync } from 'commons';
 import { McSessionInfo } from './SessionMarker';
 import { readRecoveryTextAsync } from './SessionRecoveryState';
 
@@ -20,6 +20,9 @@ export interface JvmExitEvidence {
   timestamp: number;
 }
 
+/** 手机退出交接只发布同进程的正常 JVM 请求，与独立进程记录使用不同来源。 */
+export const PHONE_JVM_EXIT_SOURCE: string = 'phone-jvm-exit';
+
 /** 只接受非空普通文件；原生使用临时文件 rename 发布，不读取未完成的临时记录。 */
 function readBoundedText(path: string): string | undefined {
   try {
@@ -33,6 +36,17 @@ function readBoundedText(path: string): string | undefined {
 /** 避免浮点主键、负值或类型强转参与活动身份比较。 */
 function positiveInteger(value: number): boolean {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/** 先核对账本和退出事实身份，再按来源区分手机与独立进程的 PID 和退出码约束。 */
+function matchesJvmExit(evidence: JvmExitEvidence | null, manifest: LedgerManifest): boolean {
+  if (evidence === null || evidence.schema !== 1 || evidence.activityId !== manifest.activityId
+    || !positiveInteger(evidence.pid) || !positiveInteger(evidence.parentPid) || manifest.ownerPid !== evidence.pid
+    || !Number.isInteger(evidence.exitCode) || evidence.exitCode < -2147483648 || evidence.exitCode > 2147483647
+    || !positiveInteger(evidence.timestamp) || evidence.timestamp < manifest.startedAt
+    || evidence.timestamp > Date.now()) return false;
+  if (evidence.source === PHONE_JVM_EXIT_SOURCE) return evidence.pid === evidence.parentPid && evidence.exitCode === 0;
+  return evidence.source === 'jvm-exit' && evidence.pid !== evidence.parentPid;
 }
 
 /** 小型生产者发布记录使用真正异步 FileIO；正文参与输入身份，不依赖大小或秒级时间。 */
@@ -58,12 +72,7 @@ export async function readJvmExitEvidenceAsync(filesDir: string, activityId: num
   if (text.length === 0 || text.length > 4096) return undefined;
   let evidence: JvmExitEvidence;
   try { evidence = JSON.parse(text) as JvmExitEvidence; } catch (_) { return undefined; }
-  if (evidence === null || evidence.schema !== 1 || evidence.source !== 'jvm-exit'
-    || evidence.activityId !== activityId || !positiveInteger(evidence.pid) || !positiveInteger(evidence.parentPid)
-    || evidence.pid === evidence.parentPid || manifest.ownerPid !== evidence.pid
-    || !Number.isInteger(evidence.exitCode) || evidence.exitCode < -2147483648 || evidence.exitCode > 2147483647
-    || !positiveInteger(evidence.timestamp) || evidence.timestamp < manifest.startedAt
-    || evidence.timestamp > Date.now()) return undefined;
+  if (!matchesJvmExit(evidence, manifest)) return undefined;
   const directory: string = ledgerDirOf(filesDir, activityId);
   const capturePath: string = directory + '/capture-game.json';
   const captureText: string = await readRecoveryTextAsync(capturePath, 4096);
@@ -95,13 +104,7 @@ export function readJvmExitEvidence(filesDir: string, activityId: number): JvmEx
   if (text === undefined) return undefined;
   let evidence: JvmExitEvidence;
   try { evidence = JSON.parse(text) as JvmExitEvidence; } catch (e) { return undefined; }
-  if (evidence === null || evidence === undefined || evidence.schema !== 1 || evidence.source !== 'jvm-exit'
-    || evidence.activityId !== activityId || !positiveInteger(evidence.pid) || !positiveInteger(evidence.parentPid)
-    || evidence.pid === evidence.parentPid || manifest.ownerPid !== evidence.pid
-    || typeof evidence.exitCode !== 'number' || !Number.isInteger(evidence.exitCode)
-    || evidence.exitCode < -2147483648 || evidence.exitCode > 2147483647
-    || !positiveInteger(evidence.timestamp) || evidence.timestamp < manifest.startedAt
-    || evidence.timestamp > Date.now()) return undefined;
+  if (!matchesJvmExit(evidence, manifest)) return undefined;
   const ledgerDir: string = ledgerDirOf(filesDir, activityId);
   const capturePath: string = ledgerDir + '/capture-game.json';
   try {

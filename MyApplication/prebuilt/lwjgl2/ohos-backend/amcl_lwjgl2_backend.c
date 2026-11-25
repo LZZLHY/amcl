@@ -77,7 +77,7 @@ static uint64_t s_control_consumer = 0;
 static uint64_t s_control_target = 0;
 /* 独立于旧Sys JNI版本的私有输入配对协议；仅实际AMCLDisplay初始化成功后置ready。
  * 不FindClass探测Display，不提前初始化游戏类，不把GLFW窗口存在当配对成功。 */
-#define AMCL_L2_CONTROL_PROTOCOL ((jint)0x4c324432)
+#define AMCL_L2_CONTROL_PROTOCOL ((jint)0x4c324433)
 #define AMCL_L2_LOOK_PROTOCOL ((jint)0x4c324c31)
 /* 独立Keyboard表来自同neutral/Core owner；原POD仅在完整Java create成功后登记。
  * 不以window、Mouse或control consumer存在代称键盘资源已经完成，不复用generation。 */
@@ -307,6 +307,11 @@ static PFN_ib_getCursorSnapshot p_ib_cursor_snapshot = NULL;
 static PFN_ib_getCursor    p_ib_cx = NULL;
 static PFN_ib_getCursor    p_ib_cy = NULL;
 static PFN_ib_l2NextEvent  p_ib_next = NULL;
+/* 仅持有菜单设位使用有界Next；常规轮询沿旧符号进入，旧owner缺能力时不偷用全局坐标。 */
+typedef uint64_t (*PFN_ib_menuWarp)(uint32_t, uint64_t, double, double);
+typedef int (*PFN_ib_l2NextThrough)(int*, int*, int*, int*, int*, uint64_t);
+static PFN_ib_menuWarp p_ib_menu_warp;
+static PFN_ib_l2NextThrough p_ib_next_through;
 static PFN_ib_setGrabState p_ib_set_grab = NULL;
 /* ⭐ typed 通道的显式激活（2026-09-05）。
  * 物理键/按钮/滚轮自 bit10 打开后**不再进 legacy ring**，它们只在宿主的 typed pull
@@ -328,6 +333,8 @@ static void resolve_input(void) {
     p_ib_cx       = (PFN_ib_getCursor)dlsym(s_glfw, "inputBridge_getCursorX");
     p_ib_cy       = (PFN_ib_getCursor)dlsym(s_glfw, "inputBridge_getCursorY");
     p_ib_next     = (PFN_ib_l2NextEvent)dlsym(s_glfw, "inputBridge_l2NextEvent");
+    p_ib_menu_warp = (PFN_ib_menuWarp)dlsym(s_glfw, "inputBridge_requestCarriedMenuWarpV1");
+    p_ib_next_through = (PFN_ib_l2NextThrough)dlsym(s_glfw, "inputBridge_l2NextThroughV1");
     p_ib_set_grab = (PFN_ib_setGrabState)dlsym(s_glfw, "inputBridge_setGrabState");
     p_ib_l2_set_active = (PFN_ib_l2SetActive)dlsym(s_glfw, "inputBridge_l2SetActive");
     s_input_resolved = 1;
@@ -789,6 +796,31 @@ JNIEXPORT void JNICALL Java_org_lwjgl_opengl_AMCLDisplay_nSetGrab(JNIEnv *env, j
     resolve_input();
     if (p_ib_set_grab != NULL) p_ib_set_grab(grab ? 1 : 0);
     A2LOG("nSetGrab: %d (core=%s)", grab ? 1 : 0, p_ib_set_grab != NULL ? "yes" : "no");
+}
+
+/* 始终使用本 Java 实例的实际 consumer 与目标。Y 按原 poll/事件使用的窗口高只转换一次。 */
+JNIEXPORT jlong JNICALL Java_org_lwjgl_opengl_AMCLDisplay_nRequestMenuWarp(
+        JNIEnv* env, jclass cls, jlong consumer, jint x, jint y) {
+    if (!l2_require_input_class(env, cls) || !l2_require_input_ready(env)) return 0;
+    resolve_input();
+    if (!p_ib_menu_warp || !p_ib_next_through || !s_window || !p_fbsize ||
+        !s_control_consumer || s_control_consumer != (uint64_t)consumer ||
+        s_control_target != (uint64_t)(uintptr_t)s_window) return 0;
+    int width = 0, height = 0;
+    p_fbsize(s_window, &width, &height);
+    if (width <= 0 || height <= 0) return 0;
+    return (jlong)p_ib_menu_warp(2u, s_control_target, x, (double)height - y);
+}
+
+/* 和普通Next返回完全相同的五整数记录。不得越过原设位顺序去领取后来的松键或窗口事件。 */
+JNIEXPORT jboolean JNICALL Java_org_lwjgl_opengl_AMCLDisplay_nNextEventThrough(
+        JNIEnv* env, jclass cls, jintArray out, jlong untilOrder) {
+    if (!l2_require_input_class(env, cls) || !l2_require_input_ready(env)) return JNI_FALSE;
+    jint row[5];
+    if (!untilOrder || !p_ib_next_through ||
+        !p_ib_next_through(&row[0], &row[1], &row[2], &row[3], &row[4], (uint64_t)untilOrder)) return JNI_FALSE;
+    (*env)->SetIntArrayRegion(env, out, 0, 5, row);
+    return (*env)->ExceptionCheck(env) ? JNI_FALSE : JNI_TRUE;
 }
 
 /* ===================== AMCLContextImplementation ===================== */

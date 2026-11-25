@@ -100,6 +100,8 @@ constexpr int kMenuEvent = 1008;
 constexpr int kScrollEvent = 1007;
 constexpr int kInputResetEvent = 1009;
 constexpr int kCursorEvent = 1010;
+constexpr int kCarriedWarpEvent = 1018;
+constexpr int kSdlCarriedMotionEvent = 1019;
 constexpr int kPress = 1;
 constexpr int kRelease = 0;
 constexpr int kMenuMove = 0;
@@ -589,6 +591,7 @@ struct CausalConsumer {
     int pullLeft = 0;
     std::vector<CausalPulse> pullPulses;
     bool ordered = false;
+    bool markSdlCarried = false;
 
     explicit CausalConsumer(Harness& observed, int backendId)
         : harness(observed), backend(backendId) {}
@@ -607,19 +610,19 @@ struct CausalConsumer {
         return 1;
     }
 
-    void Drain() {
+    void Drain(uint64_t maxOrder = UINT64_MAX) {
         if (backend == 0) {
-            if (ordered) {
+            if (ordered || maxOrder != UINT64_MAX) {
                 inputBridgeStartPumping();
-                inputBridge_pumpOrdered(&harness, DrainGlfwTyped, this, amclInputInteractionFence());
+                inputBridge_pumpOrdered(&harness, DrainGlfwTyped, this, maxOrder == UINT64_MAX ? amclInputInteractionFence() : maxOrder);
                 inputBridgeStopPumping();
             } else Pump(harness);
             return;
         }
         int type = 0, a = 0, b = 0, c = 0, d = 0;
-        const uint64_t fence = amclInputInteractionFence();
+        const uint64_t fence = maxOrder == UINT64_MAX ? amclInputInteractionFence() : maxOrder;
         for (int budget = 0; budget < 64; ++budget) {
-            uint64_t ceiling = UINT64_MAX;
+            uint64_t ceiling = maxOrder;
             uint64_t legacyOrder = UINT64_MAX;
             if (backend == 2 && ordered) {
                 legacyOrder = inputBridge_sdlPeekOrder();
@@ -632,8 +635,11 @@ struct CausalConsumer {
                     continue;
                 }
             }
-            const bool got = backend == 1 ? inputBridge_l2NextEvent(&type, &a, &b, &c, &d) != 0
-                : inputBridge_sdlNextThrough(&type, &a, &b, &c, &d, ceiling) != 0;
+            const auto sdlNext = markSdlCarried ? inputBridge_sdlNextCarriedThroughV1 : inputBridge_sdlNextThrough;
+            const bool got = backend == 1 ? (maxOrder == UINT64_MAX
+                ? inputBridge_l2NextEvent(&type, &a, &b, &c, &d)
+                : inputBridge_l2NextThroughV1(&type, &a, &b, &c, &d, maxOrder)) != 0
+                : sdlNext(&type, &a, &b, &c, &d, ceiling) != 0;
             if (!got) {
                 // 与真实OPENHARMONY_PumpOrderedEvents保持同一消费循环：没有最终边沿
                 // 不等于没有进展。pending超期/旧token退出会推进队首，必须重新peek后归并。
@@ -642,9 +648,9 @@ struct CausalConsumer {
                 return;
             }
             if (type == kInputResetEvent) { pullLeft = 0; continue; }
-            if (type == kCursorEvent) {
+            if (type == kCursorEvent || type == kCarriedWarpEvent || type == kSdlCarriedMotionEvent) {
                 const auto point = DecodeCursorWire(a, b, c, d);
-                pullPulses.push_back({'m', 0, -1, point.first, point.second, pullLeft});
+                pullPulses.push_back({'m', type == kCursorEvent ? 0 : type, -1, point.first, point.second, pullLeft});
             } else if (type == kButtonEvent) {
                 if (a == 0) pullLeft = b != kRelease;
                 double x = 0, y = 0;
@@ -1185,6 +1191,129 @@ void TestMenuWheelAndToolCursorScopes(Harness& harness){
     }
 }
 
+// 按26.2 MouseHandler的可观察顺序：onMove在菜单也累积，右键松手同步关屏，
+// handleAccumulatedMovement在本轮稍后按当前grab状态转身，之后才清掉累计值。
+struct MenuExitFrame {
+    double x=400,y=500,dx=0,dy=0,turnX=0,turnY=0;
+    bool grabbed=false,ignoreFirstMove=false;
+    size_t consumed=0;
+    void Read(const CausalConsumer& consumer) {
+        const auto& pulses=consumer.Pulses();
+        for(;consumed<pulses.size();++consumed){
+            const auto& pulse=pulses[consumed];
+            if(pulse.kind=='m'){
+                if(!ignoreFirstMove){dx+=pulse.x-x;dy+=pulse.y-y;}
+                ignoreFirstMove=false;
+                x=pulse.x;y=pulse.y;
+            } else if(pulse.kind=='b'&&pulse.code==1&&pulse.action==kRelease){
+                CHECK(pulse.x==x&&pulse.y==y);
+                grabbed=true;
+                ignoreFirstMove=true;
+            }
+        }
+    }
+    void HandleMovement() {
+        if(grabbed){turnX+=dx;turnY+=dy;}
+        dx=dy=0;
+    }
+};
+
+void CheckCarriedMenuRelease(CausalConsumer& consumer) {
+    const int backend=consumer.backend;
+    // 右键从世界带入菜单，UP可只带末样，也可与此前MOVE同坐标。
+    // 观察实际游戏入口处的坐标与边沿，在菜单消费本帧位移后才回到世界。
+    for(bool terminalMoves:{false,true}){
+        consumer.Start();
+        inputBridge_publishMenuCursor(400,500);consumer.Drain();
+        inputBridge_pushEvent(kButtonEvent,1,kPress,0,0);consumer.Drain();
+        MenuExitFrame frame;
+        frame.consumed=consumer.Pulses().size();
+        inputBridge_publishTouchMenuRelativeV1(kMenuMove,0,9,6,999,799);
+        if(terminalMoves)inputBridge_publishTouchMenuRelativeV1(kMenuMove,0,21,9,999,799);
+        inputBridge_publishTouchMenuRelativeV1(kMenuEnd,0,0,0,0,0);
+        inputBridge_pushEvent(kButtonEvent,1,kRelease,0,0);
+        consumer.Drain();
+        frame.Read(consumer);
+        const double endX=terminalMoves?430:409,endY=terminalMoves?515:506;
+        CHECK(frame.x==endX&&frame.y==endY);
+        if(backend!=1){
+            // GLFW在同轮开头就可能present；一次通知仍不足以证明游戏处理了菜单位移。
+            if(backend==0){inputBridge_notifyFramePresented();consumer.Drain();frame.Read(consumer);}
+            frame.HandleMovement();
+            CHECK(frame.turnX==0&&frame.turnY==0&&!frame.grabbed);
+            consumer.Present();frame.Read(consumer);
+        }
+        CHECK(frame.grabbed);
+        if(backend!=1){frame.HandleMovement();CHECK(frame.turnX==0&&frame.turnY==0);}
+        unsigned presses=0,releases=0;
+        for(const auto& pulse:consumer.Pulses())if(pulse.kind=='b'){
+            CHECK(pulse.code==1);
+            if(pulse.action==kPress)++presses;
+            if(pulse.action==kRelease){++releases;CHECK(pulse.x==endX&&pulse.y==endY);}
+        }
+        CHECK(presses==1&&releases==1);
+        if(backend==0){
+            // 同MC重抓顺序，首次新样本用于重锚；下一笔实际世界位移仍须到达相机。
+            inputBridge_setLookCursor(500,400);
+            inputBridge_setGrabState(1);
+            inputBridge_addLookDelta(1,0);consumer.Drain();frame.Read(consumer);frame.HandleMovement();
+            inputBridge_addLookDelta(3,-2);consumer.Drain();frame.Read(consumer);frame.HandleMovement();
+            CHECK(frame.turnX==3&&frame.turnY==-2);
+        }
+    }
+    if(backend!=1){
+        // 未呈现时严格保序，但超时或真实触控域退休后必须交还已持有的右键。
+        for(bool retire:{false,true}){
+            inputBridge_testSetMenuNowNs(1000000000ULL);
+            consumer.Start();
+            inputBridge_pushEvent(kButtonEvent,1,kPress,0,0);consumer.Drain();
+            inputBridge_publishTouchMenuRelativeV1(kMenuMove,0,17,6,999,799);
+            inputBridge_publishTouchMenuRelativeV1(kMenuEnd,0,0,0,0,0);
+            inputBridge_pushEvent(kButtonEvent,1,kRelease,0,0);
+            inputBridge_pushEvent(kKeyEvent,70,0,kPress,0);
+            consumer.Drain();
+            inputBridge_testSetMenuNowNs(1499000000ULL);consumer.Drain();
+            for(const auto& pulse:consumer.Pulses()){
+                CHECK(!(pulse.kind=='b'&&pulse.action==kRelease)&&pulse.kind!='k');
+            }
+            if(retire)inputBridge_retireTouchMenuScopeV1();
+            else inputBridge_testSetMenuNowNs(1500000000ULL);
+            consumer.Drain();
+            const auto& out=consumer.Pulses();
+            CHECK(out.size()>=2&&out[out.size()-2].kind=='b'&&out[out.size()-2].action==kRelease);
+            CHECK(out.back().kind=='k'&&out.back().code==70);
+            inputBridge_pushEvent(kKeyEvent,70,0,kRelease,0);consumer.Drain();
+        }
+        inputBridge_testSetMenuNowNs(0);
+    }
+    if (backend==2) {
+        // SDL泵最后一次Next已经返回坐标，空队列只Peek后呈现；停稳再松手应立即结束。
+        consumer.Start();
+        inputBridge_pushEvent(kButtonEvent,1,kPress,0,0);consumer.Drain();
+        inputBridge_publishMenuCursor(400,500);consumer.Drain();
+        inputBridge_publishTouchMenuRelativeV1(kMenuMove,0,12,5,999,799);
+        int type=0,a=0,b=0,c=0,d=0;
+        CHECK(inputBridge_sdlNextThrough(&type,&a,&b,&c,&d,UINT64_MAX)==1&&type==kCursorEvent);
+        CHECK(DecodeCursorWire(a,b,c,d)==std::make_pair(412.0,505.0));
+        CHECK(inputBridge_sdlPeekOrder()==UINT64_MAX);
+        inputBridge_sdlNotifyFramePresented();
+        inputBridge_publishTouchMenuRelativeV1(kMenuEnd,0,0,0,0,0);
+        inputBridge_pushEvent(kButtonEvent,1,kRelease,0,0);
+        consumer.Drain();
+        CHECK(consumer.Pulses().back().kind=='b'&&consumer.Pulses().back().action==kRelease);
+
+        // 光标已经到达边界时，向边界外滑动没有产生改变坐标的鼠标样本。
+        consumer.Start();
+        inputBridge_publishMenuCursor(999,799);consumer.Drain();
+        inputBridge_pushEvent(kButtonEvent,1,kPress,0,0);consumer.Drain();
+        inputBridge_publishTouchMenuRelativeV1(kMenuMove,0,12,5,999,799);
+        inputBridge_publishTouchMenuRelativeV1(kMenuEnd,0,0,0,0,0);
+        inputBridge_pushEvent(kButtonEvent,1,kRelease,0,0);
+        consumer.Drain();
+        CHECK(consumer.Pulses().back().kind=='b'&&consumer.Pulses().back().action==kRelease);
+    }
+}
+
 /** 相对量是按共同顺序消费的delta，不能在producer用旧desired/ACK累计成会覆盖后到absolute的坐标。 */
 void TestOrderedRelativeAndGestureCancellation(Harness& harness){
     for(int backend=0;backend<3;++backend){
@@ -1204,6 +1333,8 @@ void TestOrderedRelativeAndGestureCancellation(Harness& harness){
         inputBridge_getCursorSnapshot(&x,&y);CHECK(x==302&&y==400);
         inputBridge_publishTouchMenuToolRelativeV1(2000,-2000,999,799);consumer.Drain();
         inputBridge_getCursorSnapshot(&x,&y);CHECK(x==999&&y==0);
+
+        CheckCarriedMenuRelease(consumer);
 
         // BEGIN只认领pointer-only手势；CANCEL在poll前到达时撤掉它的cursor/wheel/delta，不补LEFT。
         consumer.Start();inputBridge_publishMenuCursor(15,25);consumer.Drain();
@@ -1500,6 +1631,142 @@ void TestSdlMenuLogicalAndPresentedTargetIdentity(Harness& harness) {
 // 本宿主可用test-only入口分别检查三种cursor选择，但仍处于同一个真实进程，
 // 共同look owner的会话不能随测试循环改绑；保留超过JS安全整数的原64位样本。
 constexpr uint64_t kFixtureProcessSession = 9007199254740994ULL;
+/** 平台触点准入由独立组合套件覆盖；此处在真实consumer的最后出口观察模组设位及其后的松手。 */
+void TestCarriedMenuProgramWarp(Harness& harness) {
+    const uint64_t glfwTarget = (uint64_t)(uintptr_t)&harness;
+    for (int backend = 0; backend < 3; ++backend) {
+        inputBridge_testResetMenuCursorSelectionV1();
+        inputBridge_glfwSetActive(&harness, 0);
+        inputBridge_l2SetActive(0);
+        inputBridge_sdlSetActive(0);
+        CausalConsumer consumer{harness, backend};
+        consumer.Start();
+        const uint32_t selected = (uint32_t)backend + 1;
+        const uint64_t target = backend == 2 ? 992 : glfwTarget;
+        const uint64_t wsi = 60 + selected;
+        const auto publishTarget = [&](uint64_t publication) {
+            if (backend == 2) inputBridge_sdlSetTargetV1(target, publication, wsi);
+            else inputBridge_glfwSetTargetV1(target, publication, wsi);
+        };
+        const auto present = [&]() {
+            if (backend == 2) inputBridge_sdlNotifyFramePresentedForTargetV1(wsi, 700);
+            else if (backend == 0) inputBridge_notifyFramePresentedForTargetV1(wsi, 700);
+        };
+        const auto warp = [&](double x, double y) {
+            return inputBridge_requestCarriedMenuWarpV1(selected, target, x, y);
+        };
+        CHECK(inputBridge_configureMenuCursorConsumerV1(selected, kFixtureProcessSession));
+        publishTarget(6000);
+        present();
+        inputBridge_setCarriedMenuWarpClaimV1(nullptr);
+        CHECK(warp(130, 201) == 0);
+        inputBridge_setCarriedMenuWarpClaimV1([](AmclEnqueueMenuWarpV1 enqueue, void* request) {
+            return enqueue(request);
+        });
+        CHECK(inputBridge_requestCarriedMenuWarpV1(selected, target + 1, 130, 201) == 0);
+        CHECK(inputBridge_requestCarriedMenuWarpV1(selected == 1 ? 2 : 1, target, 130, 201) == 0);
+        CHECK(warp(std::numeric_limits<double>::infinity(), 201) == 0);
+
+        // 重复开屏的同一点也需通知，游戏会在每次开屏时先在自身缓存里回中。
+        for (bool sameAsLast : {false, true}) {
+            inputBridge_publishMenuCursor(sameAsLast ? 130 : 400, sameAsLast ? 201 : 500);
+            inputBridge_pushEvent(kButtonEvent, 1, kPress, 0, 0);
+            consumer.Drain();
+            const size_t before = consumer.Pulses().size();
+            const uint64_t order = warp(130, 201);
+            CHECK(order != 0);
+            inputBridge_publishTouchMenuRelativeV1(kMenuEnd, 0, 0, 0, 0, 0);
+            inputBridge_pushEvent(kButtonEvent, 1, kRelease, 0, 0);
+            consumer.Drain(order);
+            CHECK(consumer.Pulses().size() == before + 1);
+            const auto& point = consumer.Pulses().back();
+            CHECK(point.kind == 'm' && point.x == 130 && point.y == 201);
+            CHECK(backend != 2 || point.code == kCarriedWarpEvent);
+            AmclCommittedMenuCursorV1 committed{};
+            committed.structSize = sizeof(committed);
+            CHECK(inputBridge_getCommittedMenuCursorV1(&committed) && committed.interactionOrder == order);
+            CHECK(committed.x == 130 && committed.y == 201 && committed.logicalTarget == target);
+
+            MenuExitFrame frame;
+            frame.consumed = before;
+            consumer.Drain();
+            frame.Read(consumer);
+            if (backend != 1) {
+                CHECK(!frame.grabbed);
+                frame.HandleMovement();
+                present();
+                if (backend == 0) present();
+                consumer.Drain();
+                frame.Read(consumer);
+            }
+            CHECK(frame.grabbed);
+            CHECK(consumer.Pulses().size() == before + 2);
+            CHECK(consumer.Pulses().back().kind == 'b' && consumer.Pulses().back().action == kRelease);
+            if (backend != 1) {
+                frame.HandleMovement();
+                CHECK(frame.turnX == 0 && frame.turnY == 0);
+            }
+        }
+
+        // 菜单从已设点开始调整，使用相同的五整数坐标负载。只有主动选择新读口的SDL获得
+        // 承接MOVE来源，旧SDL与L2保留1010。普通鼠标位置和工具回归同样走这个真实读口。
+        for (bool optIn : {false, true}) {
+            if (backend != 2 && optIn) continue;
+            consumer.markSdlCarried = optIn;
+            inputBridge_pushEvent(kButtonEvent, 1, kPress, 0, 0);
+            consumer.Drain();
+            const uint64_t order = warp(130, 201);
+            CHECK(order); consumer.Drain(order);
+            const size_t beforeMove = consumer.Pulses().size();
+            inputBridge_publishTouchMenuRelativeV1(kMenuMove, 0, 7, -4, 999, 799);
+            inputBridge_publishTouchMenuRelativeV1(kMenuEnd, 0, 0, 0, 0, 0);
+            inputBridge_pushEvent(kButtonEvent, 1, kRelease, 0, 0);
+            consumer.Drain();
+            CHECK(consumer.Pulses().size() > beforeMove);
+            const auto& motion = consumer.Pulses()[beforeMove];
+            CHECK(motion.kind == 'm' && motion.x == 137 && motion.y == 197);
+            CHECK(motion.code == (optIn ? kSdlCarriedMotionEvent : 0));
+            if (backend == 0) present();
+            present(); consumer.Drain();
+            CHECK(consumer.Pulses().size() == beforeMove + 2);
+            CHECK(consumer.Pulses().back().kind == 'b' && consumer.Pulses().back().action == kRelease);
+            const size_t beforeOther = consumer.Pulses().size();
+            inputBridge_pushEvent(kSdlCarriedMotionEvent, 1, 2, 3, 4);
+            inputBridge_publishMenuCursor(300, 330);
+            inputBridge_publishTouchMenuToolRelativeV1(5, -2, 999, 799);
+            consumer.Drain();
+            CHECK(consumer.Pulses().size() == beforeOther + 2);
+            CHECK(consumer.Pulses()[beforeOther].kind == 'm' && consumer.Pulses()[beforeOther].code == 0);
+            CHECK(consumer.Pulses().back().kind == 'm' && consumer.Pulses().back().code == 0);
+            CHECK(consumer.Pulses().back().x == 305 && consumer.Pulses().back().y == 328);
+        }
+
+        // 底行 (Java Mouse Y=0) 的横移和缩放后的最右列。
+        if (backend == 1) {
+            const uint64_t order = warp(130, 800);
+            CHECK(order); consumer.Drain(order);
+            inputBridge_publishTouchMenuRelativeV1(kMenuMove, 0, 2, 0, 999.75, 799.75);
+            consumer.Drain();
+            CHECK(consumer.Pulses().back().x == 132 && consumer.Pulses().back().y == 800);
+            inputBridge_publishTouchMenuRelativeV1(kMenuMove, 0, 999, -999, 999.75, 799.75);
+            consumer.Drain();
+            CHECK(consumer.Pulses().back().x == 999 && consumer.Pulses().back().y == 1);
+        }
+
+        const size_t before = consumer.Pulses().size();
+        CHECK(warp(23, 32)); publishTarget(6001); consumer.Drain();
+        CHECK(warp(24, 33)); inputBridge_retireTouchMenuScopeV1(); consumer.Drain();
+        CHECK(warp(25, 34)); inputBridge_setGrabState(1); CHECK(warp(25, 34) == 0);
+        inputBridge_setGrabState(0); consumer.Drain();
+        for (size_t i = before; i < consumer.Pulses().size(); ++i) {
+            const auto& point = consumer.Pulses()[i];
+            CHECK(point.kind != 'm' || point.x < 23 || point.x > 25);
+        }
+    }
+    inputBridge_setCarriedMenuWarpClaimV1(nullptr);
+    inputBridge_testResetMenuCursorSelectionV1();
+}
+
 void TestCommittedMenuCursorAuthorityAndCancellation(Harness& harness){
     const uint64_t logical=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&harness));
     for(int backend=0;backend<3;++backend){
@@ -2303,6 +2570,7 @@ int main() {
     TestSdlMenuLogicalAndPresentedTargetIdentity(harness);
     TestCompletedMenuPrefixSurvivesFeedbackPublication(harness);
     TestCommittedMenuCursorAuthorityAndCancellation(harness);
+    TestCarriedMenuProgramWarp(harness);
     TestL2TargetRetiredToolNotReplayedByOverflow(harness);
     TestL2ResetDoesNotCarryGestureBegun(harness);
     CHECK(harness.committedBeforeCallback);

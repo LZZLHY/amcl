@@ -5,9 +5,7 @@
  *   - AppIcon       走 sys.symbol，画线条 / 填充矢量图（chevron / settings / play …）
  *   - LoaderBadge   高层语义组件，输入 LoaderKey 即可（chip / FabricApiCard 用）
  *   - VersionBlockIcon ← 本文件
- *                   按 versionId 推断类别（vanilla 草方块/铁砧/loom/...），
- *                   不需要业务方判断 loader / vanilla 子类别 —— 它内部走
- *                   LoaderCatalog.getMediaForVersion 一站式映射。
+ *                   按实际类别映射方块贴图。只有未显式指定类别的目录项才用 versionId 推断。
  *
  * 设计目标：
  *   - 64×64 像素艺术 PNG（3D 等距投影），关闭插值保留 pixel art 锐利感
@@ -52,18 +50,39 @@ export struct VersionBlockIcon {
    * 覆盖图（整合包图标）的本地绝对路径。非空时渲染该图片(cover)取代方块贴图——
    * 整合包 = 一个版本，显示其项目图标更直观。空串走原方块贴图逻辑。
    */
-  @Prop overrideImagePath: string = '';
+  @Prop @Watch('resetCoverError_') overrideImagePath: string = '';
+  /** 启动器自动化通过同一渲染分支的节点标识区分封面与加载器贴图。 */
+  @Prop iconIdPrefix: string = '';
+  @State private failedCoverPath_: string = '';
+
+  private resetCoverError_(): void {
+    this.failedCoverPath_ = '';
+  }
+
+  /** 解码失败仍有加载器贴图；旧图片迟到的错误不会清除当前实例的封面。 */
+  private coverErrorHandler_(path: string): () => void {
+    return (): void => {
+      if (this.overrideImagePath === path) this.failedCoverPath_ = path;
+    };
+  }
+
+  private iconId_(kind: string): string {
+    return this.iconIdPrefix ? this.iconIdPrefix + '-' + kind : '';
+  }
 
   build() {
-    if (this.overrideImagePath.length > 0) {
+    if (this.overrideImagePath.length > 0 && this.failedCoverPath_ !== this.overrideImagePath) {
       Image(fileUri.getUriFromPath(this.overrideImagePath))
+        .id(this.iconId_('cover'))
         .width(this.iconSize)
         .height(this.iconSize)
         .borderRadius(this.cornerRadius > 0 ? this.cornerRadius : 8)
         .objectFit(ImageFit.Cover)
         .syncLoad(true)
+        .onError(this.coverErrorHandler_(this.overrideImagePath))
     } else {
       Image(getMediaForVersion(this.versionId, this.category))
+        .id(this.iconId_(this.category))
         .width(this.iconSize)
         .height(this.iconSize)
         .borderRadius(this.cornerRadius)

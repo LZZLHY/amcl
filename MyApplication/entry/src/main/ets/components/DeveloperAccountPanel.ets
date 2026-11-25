@@ -1,5 +1,7 @@
 /** 软件更新设置里的常驻账号入口；仅负责展示和Sheet生命周期，授权仍由现有AuthSession执行。 */
 import { common } from '@kit.AbilityKit';
+import { LauncherSkillBus } from '../launcherskill/LauncherSkillBus';
+import { SettingsSkillData, settingFailure, settingKeys, settingText } from '../launcherskill/SettingsSkillValues';
 import { ThemeColors, AppIconName } from 'commons';
 import { DeveloperAccountViewModel } from '../sideload/DeveloperAccountViewModel';
 import { DeveloperAuthState } from '../sideload/DeveloperAuthSession';
@@ -23,8 +25,26 @@ export struct DeveloperAccountPanel {
     // 预览或宿主已退出时无法访问应用私有目录，等下一次出现再绑定授权服务。
     if (!context) return;
     this.model.initialize(context); this.initialized = true; this.syncActive_();
+    LauncherSkillBus.bind('updateAccount',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
+      this.handleAccountSkill_(method,args), (): boolean => this.initialized && this.active && AppStorage.get<boolean>('appInForeground') === true);
   }
-  aboutToDisappear(): void { this.initialized = false; this.model.deactivate(); }
+  aboutToDisappear(): void { LauncherSkillBus.unbind('updateAccount',this); this.initialized = false; this.model.deactivate(); }
+  /** 系统只取得状态，登录和必要授权通过用户原有的系统／网页界面完成。 */
+  private async handleAccountSkill_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
+    if (method !== 'updateAccountAccess' || !settingKeys(args,['operation'])) return settingFailure('invalidArguments');
+    const operation = settingText(args,'operation');
+    if (operation === 'inspect') return {'state':'ready','authorization':this.model.state,'checking':this.model.checking,
+      'loginVisible':this.model.loginVisible,'needsLogin':this.model.needsLogin()};
+    if (operation === 'close' && this.model.loginVisible) { this.model.closeLogin(); return {'state':'cancelled'}; }
+    if (this.model.checking || this.model.loginBusy) return settingFailure('busy');
+    if (operation === 'check' && !this.model.loginVisible) { await this.model.check(); return {'state':'ready','authorization':this.model.state}; }
+    if (operation === 'login' && this.model.needsLogin()) {
+      if (!this.model.loginVisible) await this.model.login();
+      return this.model.loginVisible ? {'state':'needsUser','reason':'developerLogin'} : settingFailure('loginUnavailable');
+    }
+    if (operation === 'retry' && this.model.loginVisible) { await this.model.login(); return {'state':'needsUser','reason':'developerLogin'}; }
+    return settingFailure('operationUnavailable');
+  }
   /** Router隐藏未必卸载组件，因此额外消费页面可见性；离开页面不会留下授权监听器。 */
   private syncActive_(): void {
     if (!this.initialized) return;

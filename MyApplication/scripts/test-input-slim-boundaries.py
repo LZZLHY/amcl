@@ -27,11 +27,17 @@ out = external_output_path(args.out)
 out.mkdir(parents=True, exist_ok=True)
 cursor = (CPP/'platform/cursor_lock.cpp').read_text(encoding='utf-8')
 gamepad = (CPP/'platform/desktop_gamepad.cpp').read_text(encoding='utf-8')
+glfw = (CPP/'glfw/glfw_callbacks.cpp').read_text(encoding='utf-8')
 body = (CPP/'tests/host/input_slim_boundaries.cpp.in').read_text(encoding='utf-8')
 body = body.replace('@CPP@', CPP.as_posix()).replace('@CURSOR@', '\n'.join(function(cursor,s) for s in [
     'AmclCursorLockResult ReleaseCursorLocked(', 'extern "C" AmclCursorLockResult amcl_cursor_lock_set(',
     'extern "C" void amcl_cursor_lock_note_focus_lost(']))
-body = body.replace('@GAMEPAD@', function(gamepad,'bool SetNativeGamepadMode('))
+body = body.replace('@GAMEPAD@', '\n'.join(function(gamepad, s) for s in [
+    'int Find(', 'void PublishGamepadChange(', 'void Neutral(', 'bool UpdateGamepadConnection(', 'void ApplyGamepadButton(', 'void ApplyGamepadAxis(',
+    'bool SetNativeGamepadMode(', 'void SetGamepadFocus(', 'int ReadGamepadTopology(', 'int ReadGamepadChanges(', 'int32_t amclGamepadRead(',
+    'int ReadGamepad(']))
+body = body.replace('@GAMEPAD_READER@', function(glfw, 'static AmclGamepadReadFn gamepadReader('))
+body = body.replace('@GAMEPAD_POLL@', function(glfw, 'void glfwOHOS_PollGamepads('))
 with temporary_directory(prefix='input-slim-boundaries-') as fixture:
     source = Path(fixture)/'boundary.cpp'
     source.write_text(body,encoding='utf-8')

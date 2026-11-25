@@ -32,12 +32,13 @@ int mcLaunchWithProfile(const char* appFilesDir, const char* gameDir,
 /**
  * 数据驱动启动 Minecraft（v4 参数协议）。
  * ArkTS 以字符串数组直传 MC 参数与 JVM 参数，避免逗号拼接拆分导致参数损坏。
+ * returnToLauncherOnExit 只适用于正常退出后由系统重新拉起启动器的同进程游戏。
  */
 int mcLaunchWithProfileV2(const char* appFilesDir, const char* gameDir,
                           const char* jdkVersion, int xmxMb,
                           const char* mainClass, const char* classpath,
                           int mcArgc, const char* const* mcArgv,
-                          int extraJvmArgc, const char* const* extraJvmArgv);
+                          int extraJvmArgc, const char* const* extraJvmArgv, int returnToLauncherOnExit);
 
 /**
  * 获取 MC 启动器状态（进度/错误信息）
@@ -64,6 +65,9 @@ const char* mcCheckFiles(const char* mcDir, const char* mcVersion);
    * MC 是否仍运行。隔离 JVM 已发布退出请求时返回 0，让现有 UI 轮询交还窗口；不重入 JVM。
  */
 int mcIsRunning();
+
+// 前台 UI 认领尚在期限内的唯一重启请求，并在发给系统前封口该局持久日志。
+int mcPrepareLauncherRestart();
 
 /**
    * 隔离退出请求存在时确认 UI 窗口交接，原 hook 保留原始退出码结束；否则沿用立即退出兜底。

@@ -670,7 +670,10 @@ check('profile parser supports quoted/type-suffixed form',
       'otherPointerAccept(&g_l2Pointer,', 'touch-three-consumers'],
     ['SDL shared transaction call', 'lwjglBridgeText', /amclPointerAccept\(&g_sdlMenuState.pointer,/,
       'otherPointerAccept(&g_sdlMenuState.pointer,', 'touch-three-consumers'],
-    ['LWJGL2 relative call', 'lwjglBridgeText', /resolveRelativeMenuEvent\(2,/, 'resolveRelativeMenuEvent(9,', 'touch-three-consumers'],
+    ['LWJGL2 relative call', 'lwjglBridgeText', /resolveMenuCommand\(2,/, 'resolveMenuCommand(9,', 'touch-three-consumers'],
+    ['legacy LWJGL2 entry forwards to bounded reader', 'lwjglBridgeText', /return inputBridge_l2NextThroughV1\(outType, o1, o2, o3, o4, UINT64_MAX\)/, 'return 0', 'touch-three-consumers'],
+    ['SDL legacy entry preserves motion projection', 'lwjglBridgeText', /readSdlNextThrough\(outType, o1, o2, o3, o4, maxOrder, false\)/, 'readSdlNextThrough(outType, o1, o2, o3, o4, maxOrder, true)', 'touch-three-consumers'],
+    ['SDL carried entry preserves shared order and scope', 'lwjglBridgeText', /return readSdlNextThrough\(outType, o1, o2, o3, o4, maxOrder, true\)/, 'return 0', 'touch-three-consumers'],
   ]) {
     const broken = analyzeGateFReadiness(mutate(fixture, key, from, to));
     const contract = prerequisite(broken, 'touch-menu-pointer-contract');

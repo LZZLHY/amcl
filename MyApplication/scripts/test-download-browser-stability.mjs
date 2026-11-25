@@ -69,8 +69,9 @@ assert.equal(defaultTargetPage.targetVersionId_, 'another');
 // 声明接收器只核对真实布局接线：横竖切换调用同一正文入口，四类资源落在同一条件分支。
 const ui = actionUiReceiver(), received = [];
 const Tab = loadActionComponent('entry/src/main/ets/pages/tabs/DownloadTab.ets', 'DownloadTab', {
-  methods: ['build', 'DlTabContent', 'DlModBrowseTab'], render: true, globals: ui.globals,
-  dependencies: { '../ModBrowsePage': { ModBrowsePage: options => { received.push(options); return ui.globals.Column(); } } },
+  methods: ['build', 'DlTabContent', 'DlModBrowseTab', 'aboutToAppear', 'onNavCommand', 'syncVersionVisibility_',
+    'onVersionVisibilityInput_'], render: true, globals: ui.globals,
+  dependencies: { '../../launcherskill/LauncherSkillBus': { LauncherSkillBus: { bind() {} } }, '../ModBrowsePage': { ModBrowsePage: options => { received.push(options); return ui.globals.Column(); } } },
 });
 const tab = new Tab();
 tab.PortraitHeader_ = () => {}; tab.DownloadSidebar_ = () => {};
@@ -82,7 +83,54 @@ for (const landscape of [false, true, false]) {
   }
 }
 assert.equal(received.length, 12);
+// Watch 不会在首次 @Prop 赋值时触发，实际生命周期必须消费冷导航并且只执行一次。
+function cold(command) {
+  const child=new Tab();
+  Object.assign(child,{navCommand:command,dlSubTab:0,consumedNavCommand_:-1,mcVersionList:[],
+    hostVisible:true,versionMounted_:false,versionVisible_:false,versionRequest_:0,cancelVersionMotion_() {}});
+  let reads=0;
+  child.loadVersionList=()=>{reads++;};
+  child.aboutToAppear();
+  return {child, reads:()=>reads};
+}
+for (const cmd of [11,12,13,14,15]) {
+  const {child,reads}=cold(cmd);
+  assert.equal(child.dlSubTab,cmd%10);
+  assert.equal(reads(),0);
+}
+const initial=cold(-1);
+assert.equal(initial.child.dlSubTab,0);
+// 默认落在可见版本页也要校验一次；同一次可见期间重复通知不能重复开请求。
+assert.equal(initial.reads(),1);
+initial.child.syncVersionVisibility_();
+assert.equal(initial.reads(),1);
+const listing=cold(10);
+assert.equal(listing.reads(),1);
+listing.child.onNavCommand();
+assert.equal(listing.reads(),1);
+listing.child.navCommand=21;
+listing.child.onNavCommand();
+assert.equal(listing.child.dlSubTab,1);
+
+// ArkUI 可能先送主 Tab 可见性，也可能先送受控分类。重演两种 Watch 投递顺序，等待本批真正结束。
+for (const sub of [5, 1, 0]) {
+  for (const hostFirst of [true, false]) {
+    const retained = cold(-1), child = retained.child;
+    child.hostVisible = false; child.onVersionVisibilityInput_();
+    const notifyHost = () => { child.hostVisible = true; child.onVersionVisibilityInput_(); };
+    const notifyNav = () => {
+      child.navCommand = 20 + sub; child.onNavCommand();
+      child.onVersionVisibilityInput_();
+    };
+    if (hostFirst) { notifyHost(); notifyNav(); } else { notifyNav(); notifyHost(); }
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(child.dlSubTab, sub);
+    assert.equal(retained.reads(), sub === 0 ? 2 : 1,
+      '同批挂载属性只依据最终选中分类校验；目标 ' + sub + '，可见性先到 ' + hostFirst);
+  }
+}
 fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify({ status: 'passed',
-  groups: ['controlled-kind-and-retained-query', 'default-resource-target-sync-without-overriding-user-choice', 'one-body-path-and-category-mapping'],
+  groups: ['controlled-kind-and-retained-query', 'default-resource-target-sync-without-overriding-user-choice', 'one-body-path-and-category-mapping',
+    'cold-prop-and-hot-navigation', 'retained-tab-batched-visibility-and-navigation-both-orders'],
   scope: 'production host behavior; device pixel/focus acceptance separate' }, null, 2));
 console.log('PASS controlled resource switching and stable portrait/landscape body wiring');
