@@ -1,6 +1,6 @@
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { isVersionInstalled } from 'commons';
+import { isVersionInstalled, MC_INSTALL_PENDING } from 'commons';
 import { safeBaseName } from '../modloader/MavenUtils';
 import { mergeVersionOrder } from './VersionOrdering';
 
@@ -9,6 +9,7 @@ export interface LocalVersionInventory {
   installed: string[];
   orphans: string[];
   error: string;
+  committedPending?: string[];
 }
 
 /** 读取与首页一致的 JAR/元数据判据，保留旧安装及残留目录，最后应用用户保存的顺序。 */
@@ -17,6 +18,7 @@ export async function readLocalVersionInventory(root: string, currentOrder: () =
   const versions: string[] = [];
   const orphans: string[] = [];
   const mtimes = new Map<string, number>();
+  const committedPending: string[] = [];
   let error = '';
   try {
     let entries = await fs.listFile(versionsDir)
@@ -57,6 +59,17 @@ export async function readLocalVersionInventory(root: string, currentOrder: () =
         } catch (e) { /* json missing or malformed */ }
       }
 
+      // 安装意图拥有的目录不得作为残留交给删除入口。成功提交后可列为可用，旧实例仍按原 JSON 条件判断。
+      try {
+        await fs.lstat(dirPath + '/' + MC_INSTALL_PENDING);
+        if (!(jarOk && jsonOk && isVersionInstalled(root, name))) continue;
+        committedPending.push(name);
+      } catch (e) {
+        if ((e as BusinessError).code !== 13900002) {
+          error = (e as Error).message;
+          continue;
+        }
+      }
       if (jarOk && jsonOk) {
         versions.push(name)
       } else {
@@ -66,7 +79,9 @@ export async function readLocalVersionInventory(root: string, currentOrder: () =
   } catch (e) {
     if ((e as BusinessError).code !== 13900002) error = (e as Error).message
   }
-  return { installed: mergeVersionOrder(versions, mtimes, currentOrder()), orphans: orphans, error: error };
+  const result: LocalVersionInventory = { installed: mergeVersionOrder(versions, mtimes, currentOrder()), orphans: orphans, error: error };
+  if (committedPending.length) result.committedPending = committedPending;
+  return result;
 }
 
 /** 输入框与提交时使用同一文件名规则。底层任务仍负责目录归属和执行期独占校验。 */

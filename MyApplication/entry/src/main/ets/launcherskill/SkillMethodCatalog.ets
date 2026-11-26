@@ -197,6 +197,8 @@ export function launcherMethodSpec(method: string): LauncherMethodSpec | undefin
     case "chooseRuntimeUpdateItem": return { domain: "updateNotice", fields: [{ name: "reference", kind: "string", required: true }, { name: "id", kind: "string", required: true }, { name: "selected", kind: "boolean", required: true }] };
     case "answerUpdateNotice": return { domain: "updateNotice", fields: [{ name: "reference", kind: "string", required: true }, { name: "answer", kind: "string", required: true, choices: ["later","review"] }] };
     case "readJavaArchiveImport": return { domain: "runtimeSlots", fields: [{ name: "reference", kind: "string", required: true }] };
+    case "getMobileInputMode": return { domain: "settings", fields: [] };
+    case "setMobileInputMode": return { domain: "settings", fields: [{ name: "mode", kind: "string", required: true, choices: ["auto","gamepad","kbm"] }] };
     case "readUpdatePackageSelection": return { domain: "updatePackageReceipt", fields: [{ name: "reference", kind: "string", required: true }] };
     case "getLauncherState": return { domain: "shell", fields: [] };
     case "retryLauncherInitialization": return { domain: "shell", fields: [] };

@@ -82,6 +82,10 @@ export class RuntimeProductProfile {
   static canChooseInteraction(): boolean {
     return ProductBuildProfile.touchControls && deviceInfo.deviceType === '2in1'
   }
+  /** 手机和平板的虚拟按键显示偏好独立于系统手柄采集能力，也不进入电脑的启动路线。 */
+  static canChooseMobileInput(): boolean {
+    return ProductBuildProfile.touchControls && (deviceInfo.deviceType === 'phone' || deviceInfo.deviceType === 'tablet')
+  }
   /** 设置开关只对平台和产品均支持的真实平板开放；不改变电脑固定隔离与手机页面路线。 */
   static canChooseTabletProcess(): boolean {
     return ProductRuntimePolicy.supportsTabletIsolation(ProductBuildProfile.family,

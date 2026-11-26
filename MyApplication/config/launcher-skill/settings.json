@@ -3692,6 +3692,98 @@
     }
   },
   {
+    "name": "getMobileInputMode",
+    "domain": "settings",
+    "description": "查询手机或平板当前保存的虚拟按键显示偏好。",
+    "args": [],
+    "results": [
+      "ready",
+      "failed",
+      "unavailable",
+      "unknown"
+    ],
+    "output": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "gamepad",
+          "kbm"
+        ]
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "mode"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/MobileInputSkill.ets",
+      "test": "scripts/test-frozen-settings-save.mjs"
+    },
+    "examples": {
+      "ready": {
+        "mode": "auto"
+      }
+    }
+  },
+  {
+    "name": "setMobileInputMode",
+    "domain": "settings",
+    "description": "选择手机或平板的虚拟按键显示方式，立即保存并回读，可在游戏设置中更改。",
+    "args": [
+      {
+        "name": "mode",
+        "type": "string",
+        "description": "自动、手柄或键鼠偏好",
+        "required": true,
+        "enum": [
+          "auto",
+          "gamepad",
+          "kbm"
+        ]
+      }
+    ],
+    "results": [
+      "ready",
+      "failed",
+      "unavailable",
+      "unknown"
+    ],
+    "output": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "gamepad",
+          "kbm"
+        ]
+      }
+    },
+    "requiredOutput": {
+      "ready": [
+        "mode"
+      ]
+    },
+    "verification": {
+      "owner": "entry/src/main/ets/launcherskill/MobileInputSkill.ets",
+      "test": "scripts/test-frozen-settings-save.mjs"
+    },
+    "examples": {
+      "ready": {
+        "mode": "gamepad"
+      }
+    },
+    "echoArgs": {
+      "mode": "mode"
+    },
+    "inputExamples": [
+      {
+        "mode": "gamepad"
+      }
+    ]
+  },
+  {
     "domain": "updatePackageReceipt",
     "name": "readUpdatePackageSelection",
     "description": "按原引用从任意启动器页面查询本地 HAP 是否已转交更新流程，重启后可查最近终态。读取不会再次打开选择器或发起安装。",

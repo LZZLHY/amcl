@@ -4,10 +4,11 @@
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { ensureDirSync } from 'commons';
+import { ensureDirSync, isVersionInstalled, MC_INSTALL_PENDING } from 'commons';
 import { safeBaseName } from '../modloader/MavenUtils';
+import { claimVersionInstall, newVersionInstallOwner } from './VersionInstallLease';
 
-export const MC_INSTALL_PENDING: string = '.amcl-mc-pending.json';
+export { MC_INSTALL_PENDING };
 
 /** 路径由调用者的当前根验证，恢复数据不能把任务带往别的游戏目录。 */
 export interface McInstallSession {
@@ -49,8 +50,8 @@ export function saveMcInstallSession(filesDir: string, session: McInstallSession
   writeMcInstallRecord(dir + '/' + session.id + '.json', session);
 }
 
-/** 只列出当前根的合法未完成计划；损坏、旧根或未知加载器记录原样保留，不自动删除。 */
-export function listMcInstallRecovery(filesDir: string, mcDir: string): McInstallSession[] {
+/** 列出当前根的未完成计划；按实例恢复时才核对该实例是否只剩提交后的 pending。 */
+export function listMcInstallRecovery(filesDir: string, mcDir: string, versionName?: string): McInstallSession[] {
   let result: McInstallSession[] = [];
   let dir = filesDir + '/mc-install-work';
   try {
@@ -60,12 +61,14 @@ export function listMcInstallRecovery(filesDir: string, mcDir: string): McInstal
       try {
         if (!fs.lstatSync(dir + '/' + name).isFile() || fs.lstatSync(dir + '/' + name).isSymbolicLink()) continue;
         let record = JSON.parse(fs.readTextSync(dir + '/' + name)) as McInstallSession;
-        if (record === null || record.schemaVersion !== 1 || record.complete !== false || record.mcDir !== mcDir
+        if (record === null || record.schemaVersion !== 1 || typeof record.complete !== 'boolean' || record.mcDir !== mcDir
           || name !== record.id + '.json' || safeBaseName(record.id) !== record.id
           || safeBaseName(record.gameVersion) !== record.gameVersion || safeBaseName(record.versionName) !== record.versionName
-          || typeof record.loaderVersion !== 'string'
+          || (versionName !== undefined && record.versionName !== versionName) || typeof record.loaderVersion !== 'string'
           || ['', 'fabric', 'forge', 'neoforge', 'quilt', 'optifine'].indexOf(record.loaderType) < 0) continue;
-        result.push(record);
+        // 已提交后若在清除 pending 前退出，仍须把同一 owner 交还给恢复流程。
+        if (!record.complete || (versionName !== undefined && ownsMcInstallDirectory(mcDir + '/versions/' + versionName, record.id)
+          && isVersionInstalled(mcDir, versionName))) result.push(record);
       } catch (e) { /* 不完整记录没有恢复资格，保留原始材料。 */ }
     }
   } catch (e) { /* 首次安装还没有恢复目录。 */ }
@@ -81,4 +84,19 @@ export function ownsMcInstallDirectory(dir: string, owner: string): boolean {
     let receipt = JSON.parse(fs.readTextSync(dir + '/' + MC_INSTALL_PENDING)) as Record<string, string>;
     return receipt['id'] === owner;
   } catch (e) { return false; }
+}
+
+/** 只收尾已签发完成标记且归属匹配的任务，不重新下载或迁移文件。 */
+export function finishCommittedMcInstall(filesDir: string, root: string, version: string): void {
+  const release = claimVersionInstall(root, version, newVersionInstallOwner());
+  try {
+    const dir = root + '/versions/' + version;
+    const record = listMcInstallRecovery(filesDir, root, version).find((r: McInstallSession): boolean => ownsMcInstallDirectory(dir, r.id));
+    if (!record || !isVersionInstalled(root, version)) return;
+    if (!record.complete) {
+      record.complete = true;
+      saveMcInstallSession(filesDir, record);
+    }
+    if (ownsMcInstallDirectory(dir, record.id)) fs.unlinkSync(dir + '/' + MC_INSTALL_PENDING);
+  } finally { release(); }
 }

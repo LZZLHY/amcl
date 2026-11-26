@@ -107,7 +107,7 @@ export struct SkinCapeDetailSheet {
   /** 只公开已持有披风的可选引用；账号、请求和对象在确认返回时再次核对。 */
   private async onlineAppearanceSkill_(method: string,args: SkillFields): Promise<SkillFields> {
     const acc = this.account;
-    if (!this.alive || !acc || !this.appearanceOwner_ || getAccountManager().findById(acc.id) !== this.appearanceOwner_ || getAccountManager().getSelected() !== this.appearanceOwner_ ||
+    if (!this.alive || !acc || !this.appearanceOwner_ || getAccountManager().findById(acc.id) !== this.appearanceOwner_ || getAccountManager().getAvailableSelection() !== this.appearanceOwner_ ||
       acc.type === AccountType.OFFLINE) return { 'state':'unavailable' };
     if (method === 'readPlayerAppearance') {
       return { 'state':'ready', 'appearanceRef':this.appearanceRef_, 'type':acc.type,'hasSkin':!!acc.getSkinUrl(),
@@ -137,7 +137,7 @@ export struct SkinCapeDetailSheet {
         message:cape ? '为当前正版账号穿戴「'+cape.alias+'」' : '脱下当前正版账号的披风',
         buttons:[{text:'取消',color:this.theme.actionText as string},{text:'确认',color:this.theme.actionText as string}]});
       if (result.index !== 1) return { 'state':'cancelled' };
-      if (!this.currentPage_(epoch, acc.id) || getAccountManager().findById(acc.id) !== this.appearanceOwner_ || getAccountManager().getSelected() !== this.appearanceOwner_ ||
+      if (!this.currentPage_(epoch, acc.id) || getAccountManager().findById(acc.id) !== this.appearanceOwner_ || getAccountManager().getAvailableSelection() !== this.appearanceOwner_ ||
         (capeId && !acc.getOwnedCapes().some((c: AccountCape): boolean => c.id === capeId))) return { 'state':'unavailable' };
       await this.applyCape(acc,capeId || null);
       return { 'state':this.currentPage_(epoch,acc.id) && this.capeSuccessMsg && this.activeCapeId===capeId ? 'ready':'unknown' };

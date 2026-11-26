@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-25T14:47:41Z",
+  "generatedAt": "2026-11-26T13:57:59Z",
   "categories": [
     "highlight",
     "added",
@@ -11,16 +11,16 @@
   ],
   "latest": {
     "versionName": "1.0.8",
-    "versionCode": 1001106,
+    "versionCode": 1001114,
     "tag": "v1.0.8",
-    "date": "2026-11-25"
+    "date": "2026-11-26"
   },
   "releases": [
     {
       "versionName": "1.0.8",
-      "versionCode": 1001106,
+      "versionCode": 1001114,
       "tag": "v1.0.8",
-      "date": "2026-11-25",
+      "date": "2026-11-26",
       "prerelease": false,
       "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8",
       "title": "MobileGL 帧率提升、原生手柄与游戏内设置",
@@ -34,11 +34,20 @@
           },
           {
             "type": "highlight",
-            "text": "实体手柄可交给游戏或手柄模组处理。 鸿蒙 API 21 及以上的手机和平板，可在启动器设置中选择「由游戏处理手柄」。默认沿用启动器映射，下局生效。",
-            "markdown": "**实体手柄可交给游戏或手柄模组处理。** 鸿蒙 API 21 及以上的手机和平板，可在启动器设置中选择「由游戏处理手柄」。默认沿用启动器映射，下局生效。",
+            "text": "实体手柄可交给游戏或手柄模组处理。 手机和平板从鸿蒙 API 21 起可在启动器设置中选择「由游戏处理手柄」，下局生效。",
+            "markdown": "**实体手柄可交给游戏或手柄模组处理。** 手机和平板从鸿蒙 API 21 起可在启动器设置中选择「由游戏处理手柄」，下局生效。",
             "details": [
-              "Controlify 等模组可识别已连接的手柄、接收按键和摇杆输入，也能识别拔出与重新连接。API 20 设备继续使用启动器映射。",
+              "默认使用启动器映射。Controlify 等模组可识别已连接的手柄、接收按键和摇杆输入，也能识别拔出与重新连接。API 20 设备继续使用启动器映射。",
               "游戏接管手柄后，方向键操作游戏菜单时不会同时选中屏幕上的虚拟键。虚拟键仍可触摸，设置、摆键和聊天输入仍可用手柄导航。本局输入模式以短消息提示一次。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "手机和平板新增「手柄优先」和「键鼠优先」。",
+            "markdown": "**手机和平板新增「手柄优先」和「键鼠优先」。**",
+            "details": [
+              "在启动器或游戏内的「移动端输入方式」中选择。默认「自动」保留当前触控布局。选「手柄优先」并连接手柄，或选「键鼠优先」并接齐全键盘和鼠标或触控板后，屏幕上只保留「显影」「设置」「聊」。仍可触摸游戏，也可点「显影」展开自己的按键布局。",
+              "游戏内面板会列出已连接的输入设备。断开所需外设会恢复自动收起的按键，手动显隐的选择优先。「由游戏处理手柄」可单独设置。"
             ]
           },
           {
@@ -102,8 +111,8 @@
           },
           {
             "type": "improved",
-            "text": "版本下载页先显示缓存并后台校验，切换类别时已有版本平滑移位。",
-            "markdown": "**版本下载页先显示缓存并后台校验，切换类别时已有版本平滑移位。**",
+            "text": "版本下载页先显示缓存，后台校验，筛选时平滑移位。",
+            "markdown": "**版本下载页先显示缓存，后台校验，筛选时平滑移位。**",
             "details": [
               "每次进入都会检查更新。校验失败仍可浏览缓存并重试。上方插入新版本时，会保留当前阅读位置。",
               "首屏可见的版本依次出现。切换快照等类别时，已有版本平滑移到新位置，新匹配的版本依次显示。向下浏览时，每一行只在第一次滚入屏幕时淡入。关闭系统动画后，列表直接显示。"
@@ -111,8 +120,8 @@
           },
           {
             "type": "improved",
-            "text": "异常退出后，可在同一弹窗查看原因、日志和处理入口。",
-            "markdown": "**异常退出后，可在同一弹窗查看原因、日志和处理入口。**",
+            "text": "异常退出弹窗可查看原因、日志和处理入口。",
+            "markdown": "**异常退出弹窗可查看原因、日志和处理入口。**",
             "details": [
               "原因卡显示本局技术摘要，可展开有关的日志片段。Fabric 缺少依赖时优先显示涉及的模组和依赖名称。可按错误类型进入 JDK、内存、模组或版本管理。",
               "「分析日志」打开本局记录。支持开发者反馈的渠道另有「上传日志给开发者」入口，选好文件、查看脱敏预览并确认后才提交。"
@@ -136,8 +145,8 @@
           },
           {
             "type": "improved",
-            "text": "手机和平板可在更新前查看完整日志，更新中查看步骤与进度。",
-            "markdown": "**手机和平板可在更新前查看完整日志，更新中查看步骤与进度。**",
+            "text": "手机和平板可查看完整更新日志和更新进度。",
+            "markdown": "**手机和平板可查看完整更新日志和更新进度。**",
             "details": [
               "软件更新页突出目标版本、摘要、当前可用操作。长版本号可展开。需要先更新 AMCL 才能修复 JDK 时，会显示原因和处理入口。自动调试连接失败或选择手动连接时，可输入调试端口。",
               "更新推荐优先从官网获取，官网不可用时回退到 GitHub 或 Pages。可从官网、GitHub 或已就绪的镜像下载，也可导入本地官方 HAP，核对发行身份和文件摘要后继续。"
@@ -145,8 +154,8 @@
           },
           {
             "type": "improved",
-            "text": "加强实例、模组、存档和版本文件的操作保护。",
-            "markdown": "**加强实例、模组、存档和版本文件的操作保护。**",
+            "text": "加强实例、模组及存档文件的操作保护。",
+            "markdown": "**加强实例、模组及存档文件的操作保护。**",
             "details": [
               "删除或改名前重新核对选中的文件。删除期间恢复的同名世界会保留。部分删除失败时会提示剩余内容的位置。清理残留实例时会检查活动任务和额外用户文件。",
               "向共享目录导入时会说明影响范围并保留已有同名文件，导出时会核对原文件和目标。已装资源的启停、更新和删除会复核实例及文件，避免对换入的同名项目执行旧操作。"
@@ -159,18 +168,21 @@
           },
           {
             "type": "fixed",
-            "text": "改善启动游戏或调整分辨率后实体鼠标无法转动视角的问题。 #35",
-            "markdown": "**改善启动游戏或调整分辨率后实体鼠标无法转动视角的问题。** [#35](https://github.com/LZZLHY/amcl/issues/35)"
+            "text": "改善启动或调分辨率后实体鼠标无法转动视角的问题。 #35",
+            "markdown": "**改善启动或调分辨率后实体鼠标无法转动视角的问题。** [#35](https://github.com/LZZLHY/amcl/issues/35)"
           },
           {
             "type": "fixed",
-            "text": "修正悬浮鼠标中央滚轮方向，下拖可看列表后面的条目。 #36",
-            "markdown": "**修正悬浮鼠标中央滚轮方向，下拖可看列表后面的条目。** [#36](https://github.com/LZZLHY/amcl/issues/36)"
+            "text": "修正悬浮鼠标滚轮方向，下拖可向后浏览。 #36",
+            "markdown": "**修正悬浮鼠标滚轮方向，下拖可向后浏览。** [#36](https://github.com/LZZLHY/amcl/issues/36)"
           },
           {
             "type": "fixed",
-            "text": "手机游戏内复制的纯文本可粘贴到其他应用。 GLFW 和 SDL3 均支持。 #39",
-            "markdown": "**手机游戏内复制的纯文本可粘贴到其他应用。** GLFW 和 SDL3 均支持。 [#39](https://github.com/LZZLHY/amcl/issues/39)"
+            "text": "手机游戏内复制的文本可跨应用粘贴。 #39",
+            "markdown": "**手机游戏内复制的文本可跨应用粘贴。** [#39](https://github.com/LZZLHY/amcl/issues/39)",
+            "details": [
+              "GLFW 和 SDL3 均支持复制纯文本。"
+            ]
           },
           {
             "type": "fixed",
@@ -182,8 +194,8 @@
           },
           {
             "type": "fixed",
-            "text": "修复虚拟鼠键跨菜单拖动和松手时的光标、视角跳动。",
-            "markdown": "**修复虚拟鼠键跨菜单拖动和松手时的光标、视角跳动。**",
+            "text": "修复虚拟鼠键跨菜单拖动时的光标和视角跳动。",
+            "markdown": "**修复虚拟鼠键跨菜单拖动时的光标和视角跳动。**",
             "details": [
               "按住虚拟鼠键打开游戏菜单后，同一根手指可继续从游戏指定的位置拖动。调节滑杆从当前刻度开始。松手回到世界时，菜单末段的位移不会带动镜头。适配 GLFW、LWJGL2 和 SDL3。",
               "普通虚拟按键的「更多按键设置」可进入触发动作、拖动和显示规则，点按绑定可直接打开选键器。"
@@ -191,69 +203,99 @@
           },
           {
             "type": "fixed",
-            "text": "修复电脑模式下改键、菜单鼠标落点和 SDL 全屏切换的部分问题。",
-            "markdown": "**修复电脑模式下改键、菜单鼠标落点和 SDL 全屏切换的部分问题。**",
+            "text": "改善电脑端改键、菜单鼠标定位与 SDL 全屏切换。",
+            "markdown": "**改善电脑端改键、菜单鼠标定位与 SDL 全屏切换。**",
             "details": [
               "SDL 游戏按当前文本框启用物理输入法，快速切换文本框时忽略上一框迟到的输入。游戏工具取得焦点时释放已按下的修饰键。菜单点击先定位再按下，全屏切换后按游戏逻辑尺寸恢复光标位置。"
             ]
           },
           {
             "type": "fixed",
-            "text": "修复自定义名或改名实例显示错误加载器的问题。",
-            "markdown": "**修复自定义名或改名实例显示错误加载器的问题。**",
+            "text": "修正自定义名和改名实例的加载器显示。",
+            "markdown": "**修正自定义名和改名实例的加载器显示。**",
             "details": [
               "安装任务、下载历史和版本库按实际加载器显示，NeoForge 实例可正确筛选。保留安装时选择的 Fabric API，普通模组任务结束后刷新首页已安装文件数。首次打开资源下载分类时会进入所选分类。"
             ]
           },
           {
             "type": "fixed",
-            "text": "修复部分签名请求、授权文件下载和手机、平板注册失败。",
-            "markdown": "**修复部分签名请求、授权文件下载和手机、平板注册失败。**",
+            "text": "修复部分设备注册、签名请求及授权文件下载失败。",
+            "markdown": "**修复部分设备注册、签名请求及授权文件下载失败。**",
             "details": [
               "改善冷启动后的授权恢复与令牌刷新。账号失效、现装签名不兼容、网络故障和签名服务暂不可用时会分别提示原因。临时故障可在原更新任务中重试。"
             ]
           },
           {
             "type": "fixed",
-            "text": "修复本地整合包在开始安装前关闭详情仍留下临时副本的问题。",
-            "markdown": "**修复本地整合包在开始安装前关闭详情仍留下临时副本的问题。**",
+            "text": "取消导入或放弃本地整合包安装会清理副本。",
+            "markdown": "**取消导入或放弃本地整合包安装会清理副本。**",
             "details": [
+              "开始安装前关闭详情会清理导入副本。安装已经开始时，从恢复面板明确放弃，AMCL 会清理该任务的私有归档和解压目录，保留下载目录里的原包。",
               "通过启动器接口导入时，填错安装名可更正并继续使用原文件。不同整合包的确认、原安装任务和后续排队重试分别回报结果。"
             ]
           },
           {
             "type": "fixed",
-            "text": "修复存储改选、离线外观及控制布局沿用旧操作结果的问题。",
-            "markdown": "**修复存储改选、离线外观及控制布局沿用旧操作结果的问题。**",
+            "text": "修复存储、离线外观和布局显示旧结果的问题。",
+            "markdown": "**修复存储、离线外观和布局显示旧结果的问题。**",
             "details": [
               "玩家改选位置或取消后可读回实际决定。布局、按键组、输入设置、离线账号改名及皮肤披风的保存和取消按原对象处理。改进日志翻页、分享与导出结果的回读。本地 HAP 选取结果在切页或重新打开应用后仍可查询。"
             ]
           },
           {
+            "type": "fixed",
+            "text": "密钥服务故障时保留已保存的账号和选中身份。",
+            "markdown": "**密钥服务故障时保留已保存的账号和选中身份。**",
+            "details": [
+              "暂时读不出的账号可稍后重开账号管理重试。加密失败会停止保存微软登录凭据。旧账号索引中缺失的记录也不会挡住新账号首次安全保存。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复 Forge 重试提前报完成的问题。",
+            "markdown": "**修复 Forge 重试提前报完成的问题。**",
+            "details": [
+              "依赖文件迁移失败后，可在原安装任务上重试。冲突仍在时保留失败状态，依赖迁移成功后才会完成。首页也能识别允许读取版本文件、但不允许列出目录的旧实例。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复模组记录写入不全，补件时保留禁用状态。",
+            "markdown": "**修复模组记录写入不全，补件时保留禁用状态。**",
+            "details": [
+              "安装记录或索引只写入一部分时，会继续写完。写入失败会保留原文件。整合包补件会识别已禁用的模组副本，保留玩家的启用选择。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "同步游戏语言和窗口设置时保留其他配置。",
+            "markdown": "**同步游戏语言和窗口设置时保留其他配置。**",
+            "details": [
+              "读取已有设置失败时保留原文件。需要修改时先完整写出新配置，再替换原件，保留原有键位、亮度等其他设置。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "迁移支持仅含存档的目录，失败时保留原位置。",
+            "markdown": "**迁移支持仅含存档的目录，失败时保留原位置。**",
+            "details": [
+              "选择「迁移数据并切换」后，即使没有已安装版本，也会复制共享存档。读取、复制或保存新位置失败时会停止切换。"
+            ]
+          },
+          {
             "type": "notice",
-            "text": "通用侧载 HAP 须签名后安装。覆盖更新需保留原签名身份。",
+            "text": "侧载 HAP 须签名安装，覆盖更新须沿用原签名。",
             "details": [
               "自定义密钥安装可能仍需用原材料手动更新。同一开发者账号可有不同密钥。"
             ]
           },
           {
             "type": "notice",
-            "text": "部分旧版更新器需要已就绪的镜像推荐。应用内暂未显示更新时，可从官方发布页手动下载。"
+            "text": "部分旧版更新器需等待镜像就绪，可先从官方发布页下载。"
           },
           {
             "type": "notice",
-            "text": "迁移游戏目录即使提示完成，也请保留原目录，核对目标存档。",
-            "details": [
-              "复制出错时可能漏掉文件。原目录只有共享存档、没有已装版本时，也可能只切换位置，存档仍留在原处。"
-            ]
-          },
-          {
-            "type": "notice",
-            "text": "放弃已开始的本地整合包任务，可能留下临时副本。"
-          },
-          {
-            "type": "notice",
-            "text": "整合包补件可能重新启用已禁用的模组，修复后请核对。"
+            "text": "在可选文件页放弃安装后，活动历史可能仍显示「运行中」。"
           }
         ],
         "summary": "本版汇总了自 1.0.7 以来的改动，包含 1.0.8-pre1、pre2 的功能及后续修复。"
@@ -272,6 +314,15 @@
             "details": [
               "Games can discover a controller that is already connected, read buttons and axes, and detect disconnection and reconnection. Devices on API 20 continue to use launcher mapping.",
               "With game input active, navigating a game menu no longer also selects the on-screen buttons. Touch controls still work, and controller navigation remains available in settings, the layout editor and text input. The mode notification appears once per game session."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Phones and tablets can prioritize a gamepad or a keyboard and mouse.",
+            "markdown": "**Phones and tablets can prioritize a gamepad or a keyboard and mouse.**",
+            "details": [
+              "Choose an input preference in the launcher or in-game settings. Automatic keeps your current touch layout. With Gamepad first, connect a controller. With Keyboard and mouse first, connect a full keyboard and either a mouse or a trackpad. The touch layout then keeps just the visibility, settings and chat buttons. You can still play by touch or use the visibility button to bring your layout back.",
+              "The in-game panel lists connected input devices. Disconnecting a required device restores controls that were hidden automatically. Manual visibility choices take precedence. You can choose separately whether the game handles the controller."
             ]
           },
           {
@@ -447,9 +498,10 @@
           },
           {
             "type": "fixed",
-            "text": "Closing a local modpack import before installation starts removes its temporary copy.",
-            "markdown": "**Closing a local modpack import before installation starts removes its temporary copy.**",
+            "text": "Cancelling a local modpack import or abandoning its installation cleans up the temporary copy.",
+            "markdown": "**Cancelling a local modpack import or abandoning its installation cleans up the temporary copy.**",
             "details": [
+              "Closing the details before starting removes the import copy. Once installation has started, abandoning the task from the recovery panel removes its private archive and extracted files. The original package stays in your Downloads folder.",
               "When using the launcher interface, an invalid installation name can be corrected using the selected file. Each modpack confirmation, original installation and queued retry reports its own outcome."
             ]
           },
@@ -462,6 +514,46 @@
             ]
           },
           {
+            "type": "fixed",
+            "text": "Saved game accounts and your account selection are preserved if the system key service is unavailable.",
+            "markdown": "**Saved game accounts and your account selection are preserved if the system key service is unavailable.**",
+            "details": [
+              "If an account is temporarily unavailable, reopen account management later to retry. AMCL stops saving Microsoft sign-in credentials if encryption fails. A missing record in an older account index no longer prevents a new account from being saved securely for the first time."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed Forge installation retries reporting completion too early.",
+            "markdown": "**Fixed Forge installation retries reporting completion too early.**",
+            "details": [
+              "Retry the original installation task after a dependency fails to move. The task stays failed while a conflict persists and completes once the dependencies are in place. The home screen also recognizes older instances whose version files can be read even if the folder cannot be listed."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed incomplete mod installation records and disabled mods being re-enabled during modpack repair.",
+            "markdown": "**Fixed incomplete mod installation records and disabled mods being re-enabled during modpack repair.**",
+            "details": [
+              "If an installation record or index is only partly written, AMCL continues writing. If the write fails, the original file is preserved. Modpack repair recognizes disabled copies and keeps your choice of enabled mods."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Syncing game language and window settings on launch preserves existing options.",
+            "markdown": "**Syncing game language and window settings on launch preserves existing options.**",
+            "details": [
+              "If the existing settings cannot be read, AMCL keeps the original file. When a change is needed, it writes the complete replacement first, preserving other options such as key bindings and brightness."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Game folder migration now copies worlds even when no versions are installed.",
+            "markdown": "**Game folder migration now copies worlds even when no versions are installed.**",
+            "details": [
+              "When you choose “Migrate data and switch”, AMCL also copies shared saves from a folder containing only worlds. If reading, copying or saving the new location fails, AMCL continues using the original folder."
+            ]
+          },
+          {
             "type": "notice",
             "text": "Sign the universal sideload HAP before installation. Updating in place requires the installed signing identity. A custom key may require a manual update with the original signing material. One developer account can hold several keys."
           },
@@ -471,18 +563,7 @@
           },
           {
             "type": "notice",
-            "text": "After migrating your game folder, keep the original until you have checked your worlds in the destination, even if AMCL says the migration is complete.",
-            "details": [
-              "A copy error can leave files behind. If the original folder has shared worlds but no installed versions, AMCL may also switch folders without copying those worlds."
-            ]
-          },
-          {
-            "type": "notice",
-            "text": "Abandoning a local modpack from the recovery list after installation starts can still leave a copy of its archive in private app storage."
-          },
-          {
-            "type": "notice",
-            "text": "Check which mods are enabled after repairing missing pack files. A mod you previously disabled may be enabled again."
+            "text": "If you abandon a modpack installation while it is waiting for optional files, activity history may still show it as running after the installation has stopped."
           }
         ],
         "summary": "This release includes 1.0.8-pre1, pre2 and the subsequent changes since 1.0.7."

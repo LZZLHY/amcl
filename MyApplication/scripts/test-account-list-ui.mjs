@@ -27,7 +27,7 @@ const deferred = () => { let resolve; const promise = new Promise(yes => { resol
 const settle = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
 
 /** 每个 fixture 独立持有延后凭据结果、账号集合和原生弹窗回调，不共用模块缓存。 */
-function fixture(sourceOverrides) {
+function fixture(sourceOverrides, recovery) {
   const one = deferred(), two = deferred();
   const account = (id, usable) => ({ id, uuid: 'uuid-' + id, type: 'msa',
     getDisplayName: () => 'Player-' + id, getSkinUrl: () => null, getSkinVariant: () => null,
@@ -35,7 +35,15 @@ function fixture(sourceOverrides) {
     serialize: () => { throw new Error('查看身份不能序列化秘密'); } });
   const state = { selected: 'one', accounts: [account('one', one), account('two', two)],
     selectCalls: [], removals: [], dialogs: [], notifications: 0 };
-  const manager = { list: () => [...state.accounts], getSelectedId: () => state.selected,
+  const manager = { isReady: () => true, list: () => [...state.accounts], getSelectedId: () => state.selected,
+    getAvailableSelection: () => state.accounts.find(item => item.id === state.selected),
+    get hasUnavailableAccounts() { return recovery !== undefined && !recovery.ready; },
+    async reload(onlyUnavailable) {
+      assert.equal(onlyUnavailable, true);
+      await recovery.promise;
+      recovery.ready = true;
+      state.selected = 'two';
+    },
     findById: id => state.accounts.find(item => item.id === id),
     select: async id => { state.selectCalls.push(id); state.selected = id; },
     remove: async id => { state.removals.push(id); state.accounts = state.accounts.filter(item => item.id !== id); } };
@@ -64,8 +72,32 @@ async function loginRace(sourceOverrides) {
   assert.equal(f.subject.currentLoginState, 'usable');
   f.subject.aboutToDisappear();
 }
+// 持久索引首项暂不可读，页面上的唯一可用账号必须仍是一行可选择的账号。
+{
+  const { subject, state } = fixture();
+  state.selected = '';
+  state.accounts.splice(0, 1);
+  subject.refresh();
+  assert.equal(subject.currentAcc, null);
+  assert.deepEqual(Array.from(subject.otherAccs, account => account.id), ['two']);
+  await subject.selectAccount('two');
+  assert.equal(subject.currentId, 'two');
+  assert.deepEqual(state.selectCalls, ['two']);
+  subject.aboutToDisappear();
+}
 await loginRace();
 pass('迟到的本地凭据状态不能覆盖新账号，文案不伪称远端令牌有效');
+
+{
+  const recovery = deferred();
+  const { subject, state } = fixture(undefined, recovery);
+  assert.equal(subject.currentId, 'one');
+  recovery.resolve(); await settle();
+  assert.equal(subject.currentId, 'two');
+  assert.equal(state.notifications, 1);
+  subject.aboutToDisappear();
+  pass('重开账号页后等待密钥恢复结果，并按重新读到的原选择同步首页');
+}
 
 await assert.rejects(() => loginRace({ [SOURCE]: source => source.replaceAll(
   'if (this.alive && epoch === this.loginStateEpoch && acc.id === this.currentId)', 'if (this.alive)') }),
@@ -150,7 +182,7 @@ function operationFixture() {
       if (state.roleError) throw state.roleError;
       state.name = 'Switched';
     } };
-  const manager = { list: () => [account], getSelectedId: () => 'one',
+  const manager = { isReady: () => true, list: () => [account], getSelectedId: () => 'one', getAvailableSelection: () => account,
     persistOne: async () => {
       state.persistCalls++; await state.persistGate.promise;
       if (state.persistError) throw state.persistError;

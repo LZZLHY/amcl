@@ -16,12 +16,14 @@ export function compileTouchGroups(profile: LayoutProfile, layout: RuntimeTouchL
       if(group.secondary===true){definition.secondary=true;definition.hidePrimary=group.hidePrimary===true}
       return definition
     }), controls:[] }
+  // 保留本局完整组定义；精简只是临时投影，Native仍保存一级显隐和当前展开的二级组。
+  if (layout.systemControlsOnly) result.systemControlsOnly = true
   for (let index: number = 0; index < controls.length; index++) {
     const entry = layout.find(controls[index].id)
     const item: ControlItem | undefined = entry?.item
     const parent: ControlItem | undefined = entry !== undefined && entry.parentId.length > 0 ? layout.find(entry.parentId)?.item : undefined
     const groupId: string | undefined = item?.controlGroupId ?? parent?.controlGroupId
-    const group: number = groupId === undefined ? -1 : ids.indexOf(groupId)
+    const group: number = layout.systemControlsOnly || groupId === undefined ? -1 : ids.indexOf(groupId)
     const secondary: boolean = item?.secondaryAction !== undefined
     const phases: boolean = item !== undefined && (secondary || item.phaseBindings !== undefined || (item.groupActions?.length ?? 0) > 0)
     const binding: TouchGroupSchemaControl = { group:group,phases:phases,fcl:item?.gesturePolicy === 'fcl',mouseTool:item?.systemAction === 'mouse',rank:index,bindings:[] }

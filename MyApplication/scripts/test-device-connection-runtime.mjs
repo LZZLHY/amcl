@@ -76,6 +76,85 @@ await test('real Monitor list await and sync detail reentry never revive removed
  assert.notEqual(monitor.captureConnection(7,true,false).connection,fresh);
 });
 
+await test('mobile device list, full keyboard and physical controller readiness follow actual inventory', async () => {
+  let changed;
+  let ids = [4, 1, 2, 3];
+  let unavailable;
+  let keyboardType = 2;
+  let typeUnavailable = false;
+  const info = new Map([
+    [1, { name: '触控板', sources: ['touchpad'] }],
+    [2, { name: '音量键', sources: ['keyboard'] }],
+    [3, { name: '虚拟手柄', sources: ['joystick'], isVirtual: true }],
+    [4, { name: '屏幕', sources: ['touchscreen'] }],
+    [5, { name: '蓝牙键盘', sources: ['keyboard'] }],
+    [6, { name: '手柄一', sources: ['joystick'] }],
+    [7, { name: '手柄二', sources: ['joystick'] }],
+  ]);
+  const sdk = {
+    on: (_topic, listener) => { changed = listener; },
+    getDeviceList: async () => ids.slice(),
+    getDeviceInfoSync: id => {
+      if (id === unavailable) throw Error('detail temporarily unavailable');
+      return info.get(id);
+    },
+    getKeyboardTypeSync: id => {
+      if (typeUnavailable) throw Error('cannot classify keyboard');
+      return id === 5 ? keyboardType : 1;
+    },
+    KeyboardType: { ALPHABETIC_KEYBOARD: 2 },
+  };
+  const monitor = environment({ '@ohos.multimodalInput.inputDevice': { default: sdk } })
+    .load(prefix + 'InputDeviceMonitor.ets').getInputDeviceMonitor();
+  let notices = 0;
+  const observe = () => notices++;
+  monitor.addDeviceListListener(observe);
+  monitor.ensureStarted();
+  await flush();
+  assert.deepEqual(monitor.connectedDevices().map(row => row.id), [1, 2, 4]);
+  assert.deepEqual(monitor.mobileControlCapability(), { mouse: true, keyboard: false, gamepad: false });
+  assert.equal(monitor.hasKeyboard(), true, 'desktop source bits keep their original meaning');
+  ids = [1, 5, 6, 7];
+  await monitor.refreshCapability();
+  const rows = monitor.connectedDevices();
+  assert.equal(rows[2].name, '手柄一');
+  rows[2].sources.length = 0;
+  assert.deepEqual(monitor.connectedDevices()[2].sources, ['joystick']);
+  assert.deepEqual(monitor.mobileControlCapability(), { mouse: true, keyboard: true, gamepad: true });
+  ids = [1, 5, 7];
+  const previousCount = notices;
+  changed({ type: 'remove', deviceId: 6 });
+  await flush();
+  assert.ok(notices > previousCount, 'removing one of two controllers updates list while capabilities stay constant');
+  assert.equal(monitor.mobileControlCapability().gamepad, true);
+  assert.deepEqual(monitor.connectedDevices().map(row => row.name), ['触控板', '蓝牙键盘', '手柄二']);
+  unavailable = 5;
+  await monitor.refreshCapability();
+  assert.equal(monitor.mobileControlCapability().keyboard, true, 'same keyboard is still in the inventory');
+  assert.equal(monitor.sourcesForConnection(monitor.captureConnection(5, true, false).connection), undefined,
+    'an old display description cannot authorize delivery on a temporarily unconfirmed source');
+  unavailable = undefined;
+  typeUnavailable = true;
+  await monitor.refreshCapability();
+  assert.equal(monitor.mobileControlCapability().keyboard, true, 'same full keyboard survives a failed type query');
+  typeUnavailable = false;
+  keyboardType = 1;
+  await monitor.refreshCapability();
+  assert.equal(monitor.mobileControlCapability().keyboard, false, 'successful new type replaces old type');
+  keyboardType = 2;
+  await monitor.refreshCapability();
+  assert.equal(monitor.mobileControlCapability().keyboard, true);
+  typeUnavailable = true;
+  changed({ type: 'remove', deviceId: 5 });
+  changed({ type: 'add', deviceId: 5 });
+  await flush();
+  assert.equal(monitor.mobileControlCapability().keyboard, false, 'new lease cannot inherit same-ID full keyboard');
+  monitor.removeDeviceListListener(observe);
+  const finalCount = notices;
+  await monitor.refreshCapability();
+  assert.equal(notices, finalCount);
+});
+
 await test('real Runtime axis fact freezes eight values and original activation across beforeSample/old timer',()=>{
  const env=environment(),m=env.load(prefix+'InputDeviceConnectionLease.ets'),{GamepadManager}=env.load(prefix+'GamepadManager.ets'),{GameInputRuntime}=env.load(prefix+'GameInputRuntime.ets');
  const registry=new m.InputDeviceConnectionRegistry(),connection=registry.observeAdd(7).originalConnection,calls=[];

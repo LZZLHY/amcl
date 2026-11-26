@@ -4,6 +4,7 @@
  * 缺失文件保留精确身份并提交部分收据；目录、格式或持久记录错误属于致命失败，保留恢复现场。
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { ActivityLogger, LOG_DOMAIN_DOWNLOAD, ensureDirSync, removeDirRecursive,
   MODPACK_PENDING_FILE } from 'commons';
 import { DownloadManager, DownloadFileSpec, DownloadTaskSpec, DownloadTaskView,
@@ -18,10 +19,11 @@ import { ModpackSnapshot, ModpackMissingItem, writeModpackSnapshot, readModpackS
   MODPACK_ICON_FILE, MODPACK_SNAPSHOT_FILE } from './ModpackSnapshot';
 import { processModpackLaunchConfig } from './ModpackPostProcessor';
 import { ModpackInstallSession, ModpackOverrideReceipt, modpackWorkDir, saveModpackSession, loadModpackSession,
-  recoverModpackSessionForWrite, loadRecoveryPreview, hasModpackOverrideJournalEvidence, cleanupDismissedModpackWork,
+  recoverModpackSessionForWrite, loadRecoveryPreview, hasModpackOverrideJournalEvidence, cleanupDismissedModpackWork, releaseLegacyModpackImport,
   writeModpackJsonAtomic, ModpackSourceReceipt, saveModpackSource, loadModpackSource, ModpackRecoveryKind,
   assertModpackRecoveryAvailable, readModpackRecoveryDismissal, saveModpackRecoveryDismissal } from './ModpackInstallSession';
 import { assertNoModpackJournalWriter } from './ModpackOverrideJournal';
+import { disableFilename } from './ModInstaller';
 
 const TAG = 'ModpackInstaller';
 /** CF 文件的精确解析结果；目录来自模块/项目元数据，绝不把 ZIP 一律塞进 mods。 */
@@ -220,8 +222,8 @@ export class ModpackInstaller {
     this.phase_(req, 'pack', '正在准备整合包归档', 0, 1);
     let archive = work + '/archive.zip';
     if (req.archivePath !== undefined && req.archivePath.length > 0) {
-      // 复制到任务独占目录，用户再次导入同名文件不能改变已排队任务的输入。
-      await fs.copyFile(req.archivePath, archive);
+      // 选择器已直接交付本任务归档；旧来源和其他借读文件仍需复制。
+      if (req.archivePath !== archive) await fs.copyFile(req.archivePath, archive);
     } else {
       if ((req.archiveUrl ?? '').length === 0) throw new Error('整合包来源无效');
       let urls: string[] = [req.archiveUrl!];
@@ -520,7 +522,7 @@ export class ModpackInstaller {
       session.complete = true;
       saveModpackSession(req.filesDir, session);
       fs.unlinkSync(versionDir + '/' + MODPACK_PENDING_FILE);
-      this.cleanupCommittedCache_(req, session);
+      await this.cleanupCommittedCache_(req, session);
       this.phase_(req, 'done', session.missing.length > 0 ? '安装完成，部分内容待补齐' : '整合包安装完成', 1, 1);
       new ActivityLogger(this.activityId).info(TAG, 'install committed: ' + session.id
         + ' missing=' + session.missing.length, LOG_DOMAIN_DOWNLOAD);
@@ -716,6 +718,15 @@ export class ModpackInstaller {
     } catch (e) { return false; }
   }
 
+  /** 补件也尊重玩家对模组做的禁用改名；冲突只记缺件，不生成另一个启用文件。 */
+  private async preserveDisabled_(session: ModpackInstallSession, file: ModpackFile, target: string, disabled: string): Promise<void> {
+    if (pathExists(target) || !await this.matches_(disabled, file)) {
+      this.addMissing_(session, file, '检测到已禁用模组与清单冲突，已保留现有文件；请核对模组目录');
+    } else if (session.installedFiles.indexOf(file.path) < 0) {
+      session.installedFiles.push(file.path);
+    }
+  }
+
   /** 批量下载到独占 staging，逐文件校验/激活；已安装内容和用户改动在补齐时不被覆盖。 */
   private async downloadFiles_(req: ModpackInstallRequest, session: ModpackInstallSession, versionDir: string): Promise<void> {
     let stage = modpackWorkDir(req.filesDir, session.id) + '/files';
@@ -741,6 +752,11 @@ export class ModpackInstaller {
       paths.add(file.path);
       if (session.overrideFiles.indexOf(file.path) >= 0) continue;
       let target = versionDir + '/' + file.path;
+      const disabled = disabledModTarget(file.path, target);
+      if (disabled.length > 0) {
+        await this.preserveDisabled_(session, file, target, disabled);
+        continue;
+      }
       if (session.installedFiles.indexOf(file.path) >= 0
         && (fileExists(target) || (file.path.startsWith('saves/') && dirExists(target.substring(0, target.length - 4))))) continue;
       if (await this.matches_(target, file)) {
@@ -812,6 +828,13 @@ export class ModpackInstaller {
         // 已下载的私有缓存继续用于恢复；先复制、校验、刷盘到目标旁边，再同文件系统
         // 改名发布，避免 app files -> 外部 Download 的 EXDEV，取消也不会留半写入最终文件。
         let staged = await this.copyForActivation_(local, versionDir, file.path, session);
+        // 下载和暂存均有异步等待，最终改名前复核期间出现的禁用选择。
+        const disabled = disabledModTarget(file.path, target);
+        if (disabled.length > 0) {
+          await this.preserveDisabled_(session, file, target, disabled);
+          fs.unlinkSync(staged);
+          continue;
+        }
         if (pathExists(target)) {
           this.addMissing_(session, file, '目标在复制期间已被创建，已保留现有内容');
           fs.unlinkSync(staged);
@@ -887,6 +910,13 @@ export class ModpackInstaller {
           let old = fs.lstatSync(dst);
           if (!old.isFile() || old.isSymbolicLink()) throw new Error('覆盖目标不是普通文件：' + rel);
         }
+        // 作者覆盖也跟随玩家实际使用的文件名，原有内容校验和覆盖层顺序照常执行。
+        const activePath = dst;
+        const disabled = disabledModTarget(rel, activePath);
+        if (disabled.length > 0) {
+          if (pathExists(activePath)) throw new Error('启用和禁用模组同时存在，已保留：' + rel);
+          dst = disabled;
+        }
         let digest = await computeFileSha1(src);
         let actual = fileExists(dst) ? await computeFileSha1(dst) : '';
         if (!new RegExp('^[a-f0-9]{40}$').test(digest)
@@ -937,6 +967,8 @@ export class ModpackInstaller {
         ensureInstanceParent(versionDir, rel);
         if (pathExists(dst) && (!fs.lstatSync(dst).isFile() || fs.lstatSync(dst).isSymbolicLink()))
           throw new Error('覆盖目标在复制期间变成非普通文件：' + rel);
+        if (disabledModTarget(rel, activePath) !== disabled || (disabled.length > 0 && pathExists(activePath)))
+          throw new Error('复制期间模组启用状态发生变化，请重试：' + rel);
         fs.renameSync(staging, dst);
         let parent = fs.openSync(dst.substring(0, dst.lastIndexOf('/')), fs.OpenMode.READ_ONLY);
         try { fs.fsyncSync(parent.fd); } finally { fs.closeSync(parent); }
@@ -973,7 +1005,7 @@ export class ModpackInstaller {
    * 收据提交后保留小型计划和来源身份，释放已应用的归档/覆盖缓存。
    * 部分安装保留失败文件的 native 续传材料；缓存清理失败只记日志，不推翻已交付实例。
    */
-  private cleanupCommittedCache_(req: ModpackInstallRequest, session: ModpackInstallSession): void {
+  private async cleanupCommittedCache_(req: ModpackInstallRequest, session: ModpackInstallSession): Promise<void> {
     if (!session.overridesApplied || !this.purgeNativeOwners()) return;
     let work = modpackWorkDir(req.filesDir, session.id);
     try {
@@ -981,16 +1013,8 @@ export class ModpackInstaller {
       // 内包和完整实例的展开层同样只属于本安装；收据提交后补齐仅依赖持久计划。
       removeDirRecursive(work + '/payloads');
       if (session.missing.length === 0) removeDirRecursive(work + '/files');
+      if (req.archivePath !== undefined) await releaseLegacyModpackImport(req.filesDir, session.id, req.archivePath);
       try { fs.unlinkSync(work + '/archive.zip'); } catch (e) { /* 不存在或稍后清理 */ }
-      // 本地选择器产生的输入目录由一次随机任务独占；外部原始文件不属于此清理范围。
-      let prefix = req.filesDir + '/modpack-import/';
-      let imported = req.archivePath ?? '';
-      if (imported.startsWith(prefix)) {
-        let parts = imported.substring(prefix.length).split('/');
-        if (parts.length === 2 && safeBaseName(parts[0]) === parts[0] && safeBaseName(parts[1]) === parts[1]) {
-          removeDirRecursive(prefix + parts[0]);
-        }
-      }
     } catch (e) {
       new ActivityLogger(this.activityId).warn(TAG, '已提交整合包的缓存清理未完成', e as Error, LOG_DOMAIN_DOWNLOAD);
     }
@@ -1011,7 +1035,9 @@ export class ModpackInstaller {
       } else {
         // 缺基座但仍有 WAL 时，无法证明哪些字节只是可再生暂存，保留原件等待人工核对。
         if (hasModpackOverrideJournalEvidence(req.filesDir, req.sessionId)) throw new Error('覆盖日志缺少基座，无法安全清理');
+        const released = await releaseLegacyModpackImport(req.filesDir, req.sessionId);
         removeDirRecursive(work);
+        if (!released) throw new Error('已取消，旧导入来源未能核实，已保留');
         return;
       }
     }
@@ -1033,9 +1059,12 @@ export class ModpackInstaller {
     if (hasModpackOverrideJournalEvidence(req.filesDir, session.id)) {
       // 迁移后的旧 WAL 仍用于追溯。显式取消只关闭恢复入口并清理缓存，不删历史原件。
       saveModpackRecoveryDismissal(req.filesDir, session.id, 'install');
-      if (!cleanupDismissedModpackWork(req.filesDir, session.id)) throw new Error('已放弃安装，暂存未完全清理');
+      if (!await cleanupDismissedModpackWork(req.filesDir, session.id)) throw new Error('已放弃安装，暂存未完全清理');
     } else {
-      removeDirRecursive(modpackWorkDir(req.filesDir, session.id));
+      const work = modpackWorkDir(req.filesDir, session.id);
+      const released = await releaseLegacyModpackImport(req.filesDir, session.id);
+      removeDirRecursive(work);
+      if (!released) throw new Error('已取消，旧导入来源未能核实，已保留');
     }
     this.session_ = undefined;
   }
@@ -1214,6 +1243,21 @@ function fileExists(path: string): boolean {
 }
 function pathExists(path: string): boolean {
   try { fs.lstatSync(path); return true; } catch (e) { return false; }
+}
+
+/** 未发现禁用文件才能按启用名发布。读取失败交给现有失败流程，避免重新启用玩家的模组。 */
+function disabledModTarget(relative: string, target: string): string {
+  if (!relative.startsWith('mods/') || !/\.(jar|zip)$/i.test(relative)) return '';
+  const disabled = disableFilename(target);
+  try {
+    const stat = fs.lstatSync(disabled);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('禁用模组不是普通文件：' + relative);
+    return disabled;
+  } catch (error) {
+    const code = String((error as BusinessError).code);
+    if (code === '13900002' || code === 'ENOENT') return '';
+    throw error as Error;
+  }
 }
 
 /** 逐层拒绝目标父目录链接；只做字符串包含检查不足以阻止写入被重定向到实例外。 */

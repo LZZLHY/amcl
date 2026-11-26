@@ -143,7 +143,7 @@ function developerModule(product) {
 }
 
 function fixture(catalog, source, changes = {}, themeExports = {}, sheetExports = {}) {
-  const capability = { run: true, store: false, publisher: true, touch: true, chooseInteraction: false,
+  const capability = { run: true, store: false, publisher: true, touch: true, chooseInteraction: false, mobileInput:true,
     tabletProcess: false, nativeGamepad: false, developer: false, fixedRefreshRate: true, ...changes };
   const calls = { jvm: [], committedJvm: [], choices: [], storage: [], routes: [], back: [], pixels: [], rects: [], focusClears: 0 };
   let jvmGate, jvmFailure;
@@ -170,7 +170,7 @@ function fixture(catalog, source, changes = {}, themeExports = {}, sheetExports 
     './SettingsCatalog': catalog, 'launch': {},
     'entry/ProductDeveloperSettings': developerModule(changes.product ?? 'default'), 'entry/ProductTouchSettings': {},
     'entry/ProductInputProfile': { ProductInputProfile: { supportsTouchLayouts: () => capability.touch,
-      canChooseInteraction: () => capability.chooseInteraction, canChooseTabletProcess: () => capability.tabletProcess,
+      canChooseInteraction: () => capability.chooseInteraction, canChooseMobileInput: () => capability.mobileInput, canChooseTabletProcess: () => capability.tabletProcess,
       canChooseNativeGamepad: () => capability.nativeGamepad } },
     '../../components/TouchLearningStore': { TouchLearningStore: class { request() { return true; } } },
   };
@@ -393,7 +393,7 @@ async function main() {
   });
 
   await group('目录能力矩阵、unique ids与管理态边界', () => {
-    const keys = ['run', 'store', 'publisher', 'touch', 'chooseInteraction', 'tabletProcess', 'nativeGamepad', 'developer', 'fixedRefreshRate'];
+    const keys = ['run', 'store', 'publisher', 'touch', 'chooseInteraction', 'mobileInput', 'tabletProcess', 'nativeGamepad', 'developer', 'fixedRefreshRate'];
     for (let mask = 0; mask < (1 << keys.length); mask++) {
       const c = Object.fromEntries(keys.map((key, bit) => [key, Boolean(mask & (1 << bit))]));
       const sections = catalog.settingsSections(c), items = catalog.settingsItems(c);
@@ -404,6 +404,7 @@ async function main() {
       for (const id of ['memory', 'virtual-memory', 'java', 'jvm', 'frame-rate', 'language', 'graphics', 'resolution', 'jdk-source', 'jdk-update']) assert.equal(ids.has(id), c.run, id);
       for (const id of ['input', 'layouts', 'touch-help']) assert.equal(ids.has(id), c.run && c.touch, id);
       assert.equal(ids.has('interaction'), c.run && c.chooseInteraction);
+      assert.equal(ids.has('mobile-input'), c.run && c.touch && c.mobileInput);
       assert.equal(ids.has('fixed-refresh-rate'), c.run && c.fixedRefreshRate);
       assert.equal(ids.has('gamepad'), c.run && c.nativeGamepad); assert.equal(ids.has('developer'), c.run && c.developer);
       assert.equal(ids.has('process'), c.run && c.tabletProcess); assert.equal(ids.has('window'), c.run && !c.tabletProcess);

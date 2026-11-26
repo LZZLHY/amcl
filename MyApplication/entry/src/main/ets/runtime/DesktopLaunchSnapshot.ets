@@ -48,7 +48,7 @@ export class DesktopLaunchSnapshot {
     await DesktopFileDrop.clearPrevious(context)
     const manager = getAccountManager()
     await manager.init(context)
-    const account = manager.getSelected()
+    const account = manager.getSelectedForLaunch()
     const storedAccount: boolean = manager.findById(account.id) === account
     let refreshed: boolean = false
     try { await account.refresh(); refreshed = true }

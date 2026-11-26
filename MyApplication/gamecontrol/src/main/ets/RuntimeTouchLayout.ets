@@ -51,11 +51,19 @@ export function clampRuntimeTouchRect(rect: TouchControlRect, width: number, hei
   return result
 }
 
+/** 移动外设精简布局只影响运行投影；不占用原有三档的循环值或布局存档字段。 */
+export const TOUCH_SYSTEM_CONTROLS_ONLY: number = 3
+
 /**
  * 模式0全显、1菜单、2隐藏；强显覆盖场景/全局档，但不覆盖显式隐藏、解绑或仅游戏控件的能力边界。
+ * 单独的外设三键档按系统职责取入口，普通键的强显及第四个鼠标工具均不占用热区。
  * 先消除无效热区，再处理用户强显；鼠标入口与其它系统工具共用该规则，只有恢复显隐入口跳过全局档。
  */
 export function runtimeTouchControlVisible(item: ControlItem, grabbed: boolean, visibility: number): boolean {
+  if (visibility === TOUCH_SYSTEM_CONTROLS_ONLY) {
+    return item.type === ControlType.BUTTON &&
+      (item.systemAction === 'visibility' || item.systemAction === 'edit' || item.systemAction === 'input')
+  }
   if (item.hidden || (item.visibilityOverride ?? 'auto') === 'force_hide') return false
   if (item.type === ControlType.BUTTON && item.systemAction === undefined && !hasControlAction(item)) return false
   if ((item.visibilityOverride ?? 'auto') === 'force_show') return grabbed ||
@@ -86,6 +94,8 @@ export class RuntimeTouchEntry {
  */
 export class RuntimeTouchLayout {
   context: RuntimeTouchContext = new RuntimeTouchContext()
+  /** 随几何冻结，确认期间即使用户再改偏好，仍按实际安装的本次投影退休旧控件。 */
+  systemControlsOnly: boolean = false
   entries: RuntimeTouchEntry[] = []
   controls: ControlItem[] = []
   overlays: RuntimeTouchOverlay[] = []
@@ -122,6 +132,7 @@ export function appendRuntimeTouchOverlay(layout: RuntimeTouchLayout, id: string
 export function cloneRuntimeTouchLayout(source: RuntimeTouchLayout): RuntimeTouchLayout {
   const value = new RuntimeTouchLayout()
   value.context=copyRuntimeContext(source.context)
+  value.systemControlsOnly=source.systemControlsOnly
   for (const entry of source.entries) {
     const copy = new RuntimeTouchEntry(entry.item)
     copy.parentId=entry.parentId; copy.childIndex=entry.childIndex
@@ -179,12 +190,16 @@ export function projectRuntimeTouchLayout(profile: LayoutProfile, context: Runti
   gui: GameGuiState, grabbed: boolean, visibility: number, drawers: Map<string, boolean>): RuntimeTouchLayout {
   const layout = new RuntimeTouchLayout()
   layout.context = copyRuntimeContext(context)
+  layout.systemControlsOnly = visibility === TOUCH_SYSTEM_CONTROLS_ONLY
   if (!context.valid) return layout
   const width: number = context.widthVp(), height: number = context.heightVp()
   const controls: ControlItem[] = projectGameHotbar(profile, profile.controls, gui, width, height)
   const roots: RuntimeTouchEntry[] = []
   for (const item of controls) {
     if (!runtimeTouchControlVisible(item, grabbed, visibility)) continue
+    // 导入方案可有重复的系统动作。精简档沿布局候选的顺序选同一首个入口，完整布局仍保留原件。
+    if (visibility === TOUCH_SYSTEM_CONTROLS_ONLY && roots.some((root: RuntimeTouchEntry): boolean =>
+      root.item.systemAction === item.systemAction)) continue
     const entry: RuntimeTouchEntry = projectedEntry(item, profile, context, touchControlRect(item, profile, width, height))
     roots.push(entry)
   }

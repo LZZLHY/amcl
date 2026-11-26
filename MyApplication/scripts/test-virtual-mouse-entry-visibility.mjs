@@ -59,8 +59,8 @@ function hintMouseCallback(view,token,sourceOverrides={}) {
 }
 
 /** 每个场景独立实例/Native事实；使用真实TouchSurfaceController核零触点、冻结和UI确认。 */
-function fixture({sourceOverrides={},rejectCancel=()=>false}={}) {
-  const effects={bounds:[],moves:[],buttons:[],cancels:[],schemas:[],toasts:[]};
+function fixture({sourceOverrides={},rejectCancel=()=>false,mobilePreference,deviceMonitor}={}) {
+  const effects={bounds:[],moves:[],buttons:[],cancels:[],schemas:[],toasts:[],retired:[]};
   // 两个其它输入域故意保持按住；面板释放只能清自己的prefix，不得调用全局reset。
   const nativeHeld=new Map([['physical:shift',340],['direct:left',-1]]);
   let state={version:1,status:'idle',surface:'7',session:'3',policy:'1',schemaGeneration:'1',grabEpoch:'1',
@@ -106,9 +106,11 @@ function fixture({sourceOverrides={},rejectCancel=()=>false}={}) {
   const view=subject(['mouseEntryVisible_','mouseEntryPresented_','canOpenMouse_','mousePanelVisible_',
     'retireHiddenMouse_','openMouse','closeMouse','mouseFrame','syncMouseBounds','registerRegions',
     'sendControlSchema','presentTouchCandidate_','confirmTouchLayout_','touchNodeId_','touchMarkerId_',
-    'cycleVisMode','collapseHiddenDrawers','admitTouchAction_','reconcileTouchSurface_','reconcileGroupRestore_','arktsTouchContactCount_',
+    'cycleVisMode','updateMobileLayout_','startMobileInput_','finishEditor_','onPageActiveChanged','systemButtonLabel','collapseHiddenDrawers','admitTouchAction_','reconcileTouchSurface_','reconcileGroupRestore_','arktsTouchContactCount_',
     'triggerCode','addUiBlock','clampEntryRect'],{
-      ...layout,...runtime,...capability,...geometry,TouchSurfaceCandidate,testNapi:native,
+      ...layout,...runtime,...capability,...geometry,TouchSurfaceCandidate,testNapi:native,VIS_ALL:0,VIS_MENU:1,VIS_HIDE:2,
+      MobileInputPreference:mobilePreference,getInputDeviceMonitor:()=>deviceMonitor,
+      AppLogger:{warn(){}},GAME_CONTROLS_TAG:'GameControls',LOG_DOMAIN_UI:1,
       getInputSurfaceContextStore:()=>({snapshot:()=>context}),hasEntryTouchModal:()=>false,
       reconcileEntryTouchModals(){},releaseEntryTouchModal:()=>true,
     },sourceOverrides);
@@ -116,17 +118,18 @@ function fixture({sourceOverrides={},rejectCancel=()=>false}={}) {
   profile.controls=profile.controls.filter(item=>item.systemAction==='mouse'||item.systemAction==='visibility');
   assert.ok(profile.controls.some(item=>item.systemAction==='mouse'),'真实默认布局必须有鼠标入口');
   Object.assign(view,{mounted:true,pageActive:true,isGrabbed:false,editing:false,imeOpen:false,fieldImeOpen:false,
-    profile,desiredProfile:layout.cloneLayout(profile),runtimeLayout:new runtime.RuntimeTouchLayout(),
+    profile,desiredProfile:layout.cloneLayout(profile),runtimeLayout:new runtime.RuntimeTouchLayout(),mobileInputMode:'auto',autoVisMode:0,
     uiPublicationToken:'',presentedCandidateId:'',profileVer:0,globalVisMode:0,drawerOpen:new Map(),
     guiState:new gui.GameGuiState(),guiHint:false,tutorialOpen:false,editorTrialing:false,appearanceGeneration:1,
     compWidth:800,compHeight:600,density:2,menuGeometryX:600,menuGeometryY:400,mouseGeometry:new mouse.FloatingMouseFrame(),
     mouseController:new EntryVirtualMouse(),mouseOpen:false,layoutObserverRegistered:true,
     buttonFingerIds:new Map(),scrollFingerIds:new Map(),hotbarFingerId:new Map(),dragLookFinger:new Map(),
     blockedUiFingers:new Set(),joystickFingerId:-1,unresolvedSurfaceModal:undefined,
-    touchSession:{setRuntimeContext(){},setGuiViewport(){},schemaOptions:()=>undefined,setTouchAdmission(){}},
-    syncGuideBounds(){},ensureTouchLayoutObserver_(){},ensureTouchFeedback_(){},
+    touchSession:{setRuntimeContext(){},setGuiViewport(){},schemaOptions:()=>undefined,setTouchAdmission(){},setActive(){}},
+    onLayoutChanged(){view.registerRegions();},releaseEditorLease_(){},resumeEditorInput_(){},maybeOpenLearning(){},
+    releaseControlInputs(id){effects.retired.push(id);},syncGuideBounds(){},ensureTouchLayoutObserver_(){},ensureTouchFeedback_(){},
   });
-  view.getUIContext=()=>({vp2px:value=>value*2,getPromptAction:()=>({showToast:args=>effects.toasts.push(args)}),
+  view.getUIContext=()=>({getHostContext:()=>({filesDir:'test'}),vp2px:value=>value*2,getPromptAction:()=>({showToast:args=>effects.toasts.push(args)}),
     getComponentUtils:()=>({getRectangleById:id=>{
       if(id===view.touchMarkerId_())return {size:{width:2,height:2}};
       const entry=view.runtimeLayout.entries.find(e=>view.touchNodeId_(e.item.id)===id);
@@ -138,6 +141,7 @@ function fixture({sourceOverrides={},rejectCancel=()=>false}={}) {
   view.registerRegions();view.confirmTouchLayout_();
   assert.equal(view.touchSurface.admits(view.uiPublicationToken),true,'夹具先完成原Native/UI确认');
   return {view,effects,nativeHeld,model:view.mouseController.model,
+    grab:()=>{state={...state,grabbed:true,grabEpoch:'2'};view.isGrabbed=true;view.registerRegions();},
     confirm:()=>view.confirmTouchLayout_(),tick:()=>view.reconcileTouchSurface_(),
     setDesired:next=>{view.desiredProfile=layout.cloneLayout(next);return view.registerRegions();}};
 }
@@ -146,6 +150,141 @@ function fixture({sourceOverrides={},rejectCancel=()=>false}={}) {
 function check(name,run){run();cases++;console.log('PASS '+name);}
 /** Native工具域的剩余持有，排除特意留住的physical/direct对照。 */
 function toolHolds(f){return [...f.nativeHeld].filter(([owner])=>owner.startsWith('mouse-panel-'));}
+
+check('监听健康但写入通知读失败，前台/退出面板依唯一落盘值更新三键；没有重复写入或注册',()=>{
+  for (const boundary of ['foreground','settings']) {
+    const context={filesDir:'test'},file=context.filesDir+'/mobile-input-mode';
+    let value='auto',unreadable=false,writes=0,reads=0,starts=0;
+    const watchers=new Set(),devices=new Set();
+    const fileIo={
+      readTextSync(path){assert.equal(path,file);reads++;if(unreadable)throw Error('locked');return value;},
+      createWatcher(_dir,_mask,callback){return {
+        start(){starts++;watchers.add(callback);},stop(){watchers.delete(callback);}
+      };}
+    };
+    const processView=()=>makePureEtsLoader({'@kit.CoreFileKit':{fileIo},commons:{AppLogger:{warn(){}},
+      AtomicFileWriter:{write(path,mode){assert.equal(path,file);writes++;value=mode;}}},
+      'entry/ProductInputProfile':{ProductInputProfile:{canChooseMobileInput:()=>true}}
+    })('entry/src/main/ets/runtime/MobileInputPreference.ets').MobileInputPreference;
+    const launcher=processView(),game=processView();
+    const f=fixture({mobilePreference:game,deviceMonitor:{
+      mobileControlCapability:()=>({gamepad:true,mouse:false,keyboard:false}),
+      addDeviceListListener:cb=>devices.add(cb),removeDeviceListListener:cb=>devices.delete(cb)
+    }});
+    const v=f.view,profile=capability.buildLayoutCandidate(layout.getDefaultLayout()).profile;
+    f.setDesired(profile);f.confirm();v.startMobileInput_(1);
+    if (boundary==='foreground') v.pageActive=false;
+    else v.editing=true;
+    launcher.save(context,'gamepad');
+    unreadable=true;const beforeEvent=reads;
+    for (const callback of watchers) callback({fileName:file,event:0x80});
+    assert.ok(reads>beforeEvent);assert.equal(v.globalVisMode,0);
+    assert.equal(v.mobileInputRetryPending,false);assert.equal(watchers.size,1);
+    unreadable=false;const beforeReturn=reads;
+    if (boundary==='foreground') {v.pageActive=true;v.onPageActiveChanged();}
+    else v.finishEditor_(profile);
+    f.confirm();
+    assert.equal(reads,beforeReturn+1);assert.equal(starts,1);assert.equal(writes,1);
+    assert.deepEqual(v.runtimeLayout.entries.map(entry=>entry.item.systemAction).sort(),['edit','input','visibility']);
+    assert.deepEqual(f.effects.schemas.at(-1).controls.map(entry=>entry.id),v.runtimeLayout.entries.map(entry=>entry.item.id));
+    v.stopMobileInput();v.mounted=false;v.onPageActiveChanged();v.editing=true;v.finishEditor_(profile);
+    assert.equal(reads,beforeReturn+1);assert.equal(watchers.size,0);assert.equal(devices.size,0);
+  }
+});
+
+check('首次监听或读取失败，保存修复后退出设置或返回前台会重新订阅；销毁时迟到的注册不能复活',()=>{
+  for (const failure of ['watcher','read']) {
+    let value='broken',failWatch=failure==='watcher',watchCount=0,starts=0,disappearOnRead;
+    const listeners=new Set(),devices={gamepad:true,keyboard:false,mouse:false};
+    const mobilePreference=makePureEtsLoader({
+      '@kit.CoreFileKit':{fileIo:{
+        readTextSync(){disappearOnRead?.();return value;},
+        createWatcher(){let live=false;return {
+          start(){starts++;if(failWatch)throw Error('watcher unavailable');live=true;watchCount++;},
+          stop(){if(live){live=false;watchCount--;}}
+        };}
+      }},
+      'entry/ProductInputProfile':{ProductInputProfile:{canChooseMobileInput:()=>true}},
+      commons:{AppLogger:{warn(){}},AtomicFileWriter:{write(_path,mode){value=mode;}}}
+    })('entry/src/main/ets/runtime/MobileInputPreference.ets').MobileInputPreference;
+    const f=fixture({mobilePreference,deviceMonitor:{mobileControlCapability:()=>devices,
+      addDeviceListListener:cb=>listeners.add(cb),removeDeviceListListener:cb=>listeners.delete(cb)}});
+    const v=f.view,profile=capability.buildLayoutCandidate(layout.getDefaultLayout()).profile;
+    f.setDesired(profile);f.confirm();v.startMobileInput_(1);
+    assert.equal(v.mobileInputRetryPending,true);assert.equal(v.globalVisMode,0);
+    assert.equal(watchCount,0);assert.equal(listeners.size,1);
+    mobilePreference.save({filesDir:'test'},'gamepad');
+    v.editing=true;v.finishEditor_(profile);
+    f.confirm();
+    assert.deepEqual(v.runtimeLayout.entries.map(entry=>entry.item.systemAction).sort(),['edit','input','visibility']);
+    if (failure==='watcher') {
+      assert.equal(v.mobileInputRetryPending,true);assert.equal(watchCount,0);
+      devices.gamepad=false;[...listeners][0]();f.confirm();assert.equal(v.globalVisMode,0);
+      // 监听持续不可用时，重新前台读取另一进程已经保存的新偏好，仍由同一设备清单事件驱动。
+      mobilePreference.save({filesDir:'test'},'kbm');devices.keyboard=true;devices.mouse=true;
+      v.onPageActiveChanged();f.confirm();assert.equal(v.globalVisMode,runtime.TOUCH_SYSTEM_CONTROLS_ONLY);
+      failWatch=false;v.onPageActiveChanged();
+    }
+    assert.equal(v.mobileInputRetryPending,false);assert.equal(watchCount,1);assert.equal(listeners.size,1);
+    const activeStarts=starts;
+    v.startMobileInput_(1);v.onPageActiveChanged();v.editing=true;v.finishEditor_(profile);
+    assert.equal(starts,activeStarts);assert.equal(listeners.size,1);
+    const stale=[...listeners][0];v.stopMobileInput();v.stopMobileInput=undefined;
+    v.appearanceGeneration++;v.mounted=false;devices.gamepad=false;stale();
+    assert.equal(v.globalVisMode,runtime.TOUCH_SYSTEM_CONTROLS_ONLY);
+    v.mounted=true;v.startMobileInput_(1);assert.equal(starts,activeStarts);
+    // 同步初读期间销毁：注册返回后清理刚取得的watcher，不覆盖后来页面的取消函数。
+    disappearOnRead=()=>{v.mounted=false;v.appearanceGeneration++;v.stopMobileInput();v.stopMobileInput=undefined;};
+    v.startMobileInput_(2);
+    assert.equal(v.stopMobileInput,undefined);assert.equal(watchCount,0);assert.equal(listeners.size,0);
+  }
+});
+
+check('指定外设到齐才自动收起，显影和断开/重连按手动意图，同一候选呈现三键并撤走旧热区',()=>{
+  let preference='auto',devices={gamepad:true,keyboard:true,mouse:true},saved,hotplug;
+  const f=fixture({mobilePreference:{available:()=>true,subscribe(_context,listener){
+    saved=listener;listener(preference);return ()=>{saved=undefined;};
+  }},deviceMonitor:{mobileControlCapability:()=>devices,addDeviceListListener(cb){hotplug=cb;},
+    removeDeviceListListener(cb){assert.equal(cb,hotplug);hotplug=undefined;}}});
+  const v=f.view,original=capability.buildLayoutCandidate(layout.getDefaultLayout()).profile;
+  const custom=original.controls.find(item=>item.systemAction==='input');
+  custom.id='custom-chat';custom.xPct=.37;custom.keyOrMouse=72;custom.keys=[72];
+  const duplicate=layout.cloneItem(custom);duplicate.id='second-chat';original.controls.push(duplicate);
+  original.controls.find(item=>item.id==='key_F3').visibilityOverride='force_show';
+  const before=JSON.stringify(original);
+  f.setDesired(original);f.confirm();v.startMobileInput_(1);
+  const ids=()=>v.runtimeLayout.entries.map(entry=>entry.item.id);
+  const compact=()=>{
+    f.confirm();assert.deepEqual(ids().slice().sort(),['custom-chat','sys_edit','sys_vis']);
+    assert.deepEqual(f.effects.schemas.at(-1).controls.map(c=>c.id),ids());
+    assert.equal(v.runtimeLayout.find('custom-chat').item.xPct,.37);
+    assert.deepEqual(v.runtimeLayout.find('custom-chat').item.keys,[72]);
+    assert.equal(v.systemButtonLabel(v.runtimeLayout.find('sys_vis').item),'显影');
+  };
+  const full=()=>{f.confirm();assert.ok(ids().includes('key_F3')&&ids().includes('second-chat'));};
+  full();devices={keyboard:true,mouse:false,gamepad:false};saved('kbm');full();
+  devices={...devices,keyboard:false,mouse:true};hotplug();full();
+  devices={...devices,keyboard:true};hotplug();compact();
+  assert.ok(f.effects.retired.includes('key_F3'));
+  devices={...devices,mouse:false};hotplug();full(); // 自动收起由缺设备撤销。
+  devices={...devices,mouse:true};hotplug();compact();v.cycleVisMode();full();
+  devices={...devices,mouse:false};hotplug();devices={...devices,mouse:true};hotplug();full();
+  v.cycleVisMode();compact();devices={...devices,keyboard:false};hotplug();compact(); // 手动收起不被拔线打开。
+  saved('gamepad');full();devices={...devices,gamepad:true};hotplug();compact();
+  f.grab();compact();saved('auto');full();
+  v.cycleVisMode();f.confirm();assert.equal(v.globalVisMode,1);hotplug();assert.equal(v.globalVisMode,1);
+  for (const restored of [1,2]) {
+    saved('gamepad');compact();devices={...devices,gamepad:false};hotplug();f.confirm();
+    assert.equal(v.globalVisMode,restored);
+    if (restored===2) assert.deepEqual(ids().slice().sort(),['key_F3','sys_vis']);
+    assert.equal(v.systemButtonLabel(v.runtimeLayout.find('sys_vis').item),'显影');
+    v.cycleVisMode();full();assert.equal(v.globalVisMode,0);
+    saved('auto');f.confirm();assert.equal(v.globalVisMode,restored);v.cycleVisMode();f.confirm();
+    devices={...devices,gamepad:true};hotplug();
+  }
+  assert.equal(JSON.stringify(original),before);assert.equal(JSON.stringify(v.desiredProfile),before);
+  v.stopMobileInput();assert.equal(saved,undefined);assert.equal(hotplug,undefined);
+});
 
 check('入口遵循全显/仅菜单/全隐和scene/hidden/force覆盖，恢复入口仍可用',()=>{
   const profile=layout.getDefaultLayout(),entry=profile.controls.find(item=>item.systemAction==='mouse');

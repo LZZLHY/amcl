@@ -232,7 +232,7 @@ try {
   assert.notEqual(abandonLog, tornLog);
   fs.writeFileSync(abandoned.work + '/cache.part', 'owned cache');
   commitModpackRecoveryAbandonment(abandoned.files, abandoned.id, 'install');
-  assert.equal(sessions.cleanupDismissedModpackWork(abandoned.files, abandoned.id), true);
+  assert.equal(await sessions.cleanupDismissedModpackWork(abandoned.files, abandoned.id), true);
   assert.equal(fs.existsSync(abandoned.work + '/cache.part'), false);
   assert.equal(fs.readFileSync(abandoned.work + '/session.json', 'utf8'), abandoned.raw);
   assert.equal(actualHash(abandoned.log), tornLog);

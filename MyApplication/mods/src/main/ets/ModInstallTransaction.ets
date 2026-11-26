@@ -1,7 +1,7 @@
 /** Directory-scoped, recoverable activation of a complete mod set. */
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { computeFileSha1, safeBaseName, safeRelPath } from 'feature_core';
-import { removeDirRecursive, AppLogger, LOG_DOMAIN_DOWNLOAD } from 'commons';
+import { removeDirRecursive, AtomicFileWriter, AppLogger, LOG_DOMAIN_DOWNLOAD } from 'commons';
 
 const JOURNAL = '.amcl-mod-transaction.json';
 const tails = new Map<string, Promise<void>>();
@@ -85,7 +85,8 @@ export function createModStaging(dir: string): string {
 
 export function writeModFile(path: string, text: string): void {
   const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-  try { fs.writeSync(file.fd, text); fs.fsyncSync(file.fd); }
+  // 恢复日志和暂存索引都须完整写入后才能发布，避免截断文件通过自身摘要校验。
+  try { AtomicFileWriter.writeFully(file.fd, text); fs.fsyncSync(file.fd); }
   finally { fs.closeSync(file); }
 }
 

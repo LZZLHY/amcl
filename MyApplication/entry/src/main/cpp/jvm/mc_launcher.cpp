@@ -28,6 +28,7 @@
 #include "mc_launcher.h"
 #include "jvm_launcher.h"
 #include "game_process_exit.h"
+#include "game_options.h"
 #include "runtime_bootstrap_contract.h"
 #include "game_java_temp_directory.h"
 #include "input_launch_plan.h"
@@ -677,130 +678,6 @@ extern "C" const char* mcCheckFiles(const char* mcDir, const char* mcVersion) {
 //  不再预加载 org.lwjgl.*；JNI 与 SDL 准备属于实际消费者及其 native 实例。
 //  Phase 5: LAUNCH_MAIN     调用 AmclLauncher.main()
 // ============================================================
-
-// 强制 options.txt fullscreen:false（移动设备始终全屏渲染，MC 的全屏切换会破坏触摸坐标）
-static void forceOptionsFullscreenOff(const std::string& gameDir) {
-    std::string optPath = gameDir + "/options.txt";
-    FILE* f = fopen(optPath.c_str(), "r");
-    if (!f) return; // 首次启动，options.txt 还不存在
-
-    // 读取全部内容
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    std::string content(sz, '\0');
-    fread(&content[0], 1, sz, f);
-    fclose(f);
-
-    // 查找并替换 fullscreen:true → fullscreen:false
-    const char* needle = "fullscreen:true";
-    const char* replacement = "fullscreen:false";
-    size_t pos = content.find(needle);
-    if (pos == std::string::npos) return; // 已经是 false，无需修改
-
-    // 只替换第一个匹配（key_key.fullscreen 不受影响，因为那个是 key_key.fullscreen:key.keyboard.f11）
-    content.replace(pos, strlen(needle), replacement);
-
-    f = fopen(optPath.c_str(), "w");
-    if (f) {
-        fwrite(content.c_str(), 1, content.size(), f);
-        fclose(f);
-        AMCL_LOG_I(LOG_TAG, "Forced options.txt fullscreen:false (mobile always fullscreen)");
-    }
-}
-
-// ============================================================
-//  游戏语言（options.txt 的 lang 键）——启动器权威写入
-// ============================================================
-// 支持的游戏语言白名单。**必须与 ArkTS commons/GameLanguages.ets 的 GAME_LANGUAGES
-// code 集合保持一致**（改一处改两处）。未知/空 → 不处理，保持 MC 默认行为。
-static bool isSupportedGameLang(const std::string& lang) {
-    static const char* kLangs[] = {
-        "zh_cn", "zh_tw", "zh_hk", "en_us", "en_gb", "ja_jp", "ko_kr",
-        "ru_ru", "de_de", "fr_fr", "es_es", "pt_br", "it_it", "vi_vn",
-    };
-    for (const char* l : kLangs) {
-        if (lang == l) return true;
-    }
-    return false;
-}
-
-// 把游戏语言写进 options.txt 的 lang 键（启动器权威：每次启动按用户在启动器里选择的
-// 语言校正，使"设置页 / 版本选项"的语言选择真正生效）。对齐 PCL2 的 options.txt lang
-// 写入，但 AMCL 把 lang 作为启动器控制的权威值（每次启动写入）。
-//
-// options.txt 为 "key:value" 逐行文本。
-//   · 文件不存在（首启）→ 创建仅含一行 lang 的最小文件，MC 首次即用选定语言、其余项补齐。
-//   · 已存在 → 替换已有 lang 行；没有 lang 行则追加。内容无变化时不写盘。
-//
-// 说明：lang code 采用现代 MC（1.11+）小写格式（AMCL 适配 1.13+）。若未来接入 ≤1.10，
-// 需按版本纪元把末两位改大写（zh_CN），届时在此按 gameDir 内 version 判定处理。
-static void applyGameLanguage(const std::string& gameDir, const std::string& lang) {
-    if (lang.empty()) return;  // 未指定（理论上不会，全局默认 zh_cn）→ 保持 MC 默认
-    if (!isSupportedGameLang(lang)) {
-        AMCL_LOG_W(LOG_TAG, "applyGameLanguage: unsupported lang '%{public}s', skip", lang.c_str());
-        return;
-    }
-    std::string optPath = gameDir + "/options.txt";
-    FILE* f = fopen(optPath.c_str(), "r");
-    if (!f) {
-        // 首启：options.txt 还不存在，写一个只含 lang 的最小文件（MC 会补齐其余项）。
-        FILE* w = fopen(optPath.c_str(), "w");
-        if (w) {
-            fprintf(w, "lang:%s\n", lang.c_str());
-            fclose(w);
-            AMCL_LOG_I(LOG_TAG, "applyGameLanguage: created options.txt with lang:%{public}s", lang.c_str());
-        } else {
-            AMCL_LOG_W(LOG_TAG, "applyGameLanguage: cannot create options.txt");
-        }
-        return;
-    }
-
-    // 读取全部内容
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    std::string content(sz > 0 ? (size_t)sz : 0, '\0');
-    if (sz > 0) fread(&content[0], 1, (size_t)sz, f);
-    fclose(f);
-
-    // 逐行处理：替换已有 "lang:" 行，否则末尾追加。保留其它行原样。
-    std::istringstream in(content);
-    std::ostringstream out;
-    std::string line;
-    bool replaced = false;
-    bool first = true;
-    while (std::getline(in, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();  // 容忍 CRLF
-        if (!first) out << "\n";
-        if (line.compare(0, 5, "lang:") == 0) {
-            out << "lang:" << lang;
-            replaced = true;
-        } else {
-            out << line;
-        }
-        first = false;
-    }
-    if (!replaced) {
-        if (!first) out << "\n";
-        out << "lang:" << lang;
-    }
-    out << "\n";
-
-    std::string newContent = out.str();
-    if (newContent == content) {
-        AMCL_LOG_I(LOG_TAG, "applyGameLanguage: lang already %{public}s, no change", lang.c_str());
-        return;
-    }
-    FILE* w = fopen(optPath.c_str(), "w");
-    if (w) {
-        fwrite(newContent.c_str(), 1, newContent.size(), w);
-        fclose(w);
-        AMCL_LOG_I(LOG_TAG, "applyGameLanguage: set lang:%{public}s", lang.c_str());
-    } else {
-        AMCL_LOG_W(LOG_TAG, "applyGameLanguage: failed to rewrite options.txt");
-    }
-}
 
 // 设备不支持 MC 官方 Vulkan 后端时，拒绝本次启动并保留 options.txt 的
 // preferredGraphicsBackend:"vulkan"（不静默改写用户偏好）。
@@ -2566,9 +2443,10 @@ static int launchWithProfileImpl(const char* appFilesDir, const char* gameDir,
 
     // 移动宿主拥有全屏显示区域；桌面的真实窗口桥已准备时保留玩家窗口模式偏好。
     // 不按renderer名称猜设备，也不让降低游戏像素顺带关闭桌面全屏。
-    if (amclDesktopHostResolve() == nullptr) forceOptionsFullscreenOff(gameDirStr);
-    // 按启动器选择的游戏语言校正 options.txt 的 lang（全局默认 zh_cn / 单版本可覆盖）。
-    applyGameLanguage(gameDirStr, gameLang);
+    // 全屏和语言在同一次完整读写中提交；读写失败时继续启动，让游戏使用已有偏好。
+    if (!amcl::updateGameOptions(gameDirStr, gameLang, amclDesktopHostResolve() == nullptr)) {
+        AMCL_LOG_W(LOG_TAG, "无法确认 options.txt 更新，继续启动");
+    }
     if (graphicsPlan.api != "VULKAN" && !rejectUnsupportedVulkanPreference(gameDirStr)) {
         recordGraphicsLaunchFailure(-6, "preference", "game_vulkan_preference_conflict", graphicsPlan.profile);
         g_mcStatus = "游戏 Vulkan 偏好与当前 OpenGL 计划冲突；图形偏好保持不变";

@@ -24,6 +24,20 @@ export class AtomicWriteError extends Error {
 }
 
 export class AtomicFileWriter {
+  /** 写完指定描述符上的全部内容。调用者负责同步和发布；短写按字节续写，无进展即失败。 */
+  static writeFully(fd: number, data: string | Uint8Array): void {
+    const bytes: Uint8Array = typeof data === 'string' ? stringToUtf8(data) : data;
+    let position: number = 0;
+    while (position < bytes.byteLength) {
+      const chunk: Uint8Array = bytes.slice(position, Math.min(position + 65536, bytes.byteLength));
+      const written: number = fs.writeSync(fd, chunk.buffer as ArrayBuffer);
+      if (!Number.isInteger(written) || written <= 0 || written > chunk.byteLength) {
+        throw new Error('文件写入未取得有效字节数');
+      }
+      position += written;
+    }
+  }
+
   /**
    * 成功返回只表示完整 durable；任何失败抛 AtomicWriteError，不能直接触发安装或重生成密钥。
    * 使用独占临时文件和64KiB块，循环处理成功短写；Uint8Array子视图只写其自身范围。
@@ -48,16 +62,7 @@ export class AtomicFileWriter {
       directoryOwned = true;
       temporary = temporaryDirectory + '/content.pending';
       opened = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.NOFOLLOW);
-      const bytes: Uint8Array = typeof data === 'string' ? stringToUtf8(data) : data;
-      let position: number = 0;
-      while (position < bytes.byteLength) {
-        const chunk: Uint8Array = bytes.slice(position, Math.min(position + 65536, bytes.byteLength));
-        const written: number = fs.writeSync(opened.fd, chunk.buffer as ArrayBuffer);
-        if (!Number.isInteger(written) || written <= 0 || written > chunk.byteLength) {
-          throw new Error('文件写入未取得有效字节数');
-        }
-        position += written;
-      }
+      AtomicFileWriter.writeFully(opened.fd, data);
       fs.fsyncSync(opened.fd);
       fs.closeSync(opened); opened = undefined;
       fs.renameSync(temporary, path);

@@ -513,7 +513,7 @@ for (const [pattern,message] of [
 }
 
 /** 执行真实工具菜单 Builder。只记录按钮的事件和面板挂载，判断逻辑保留在 ArkUI 生产源码。 */
-function renderEditorOverlay(controls) {
+function renderEditorOverlay(controls,mobileInputAvailable=false) {
   const file='entry/src/main/ets/components/GameControls.ets';
   const source=fs.readFileSync(path.join(root,file),'utf8');
   const tree=compiler.createSourceFile(file,source,compiler.ScriptTarget.Latest,true);
@@ -528,8 +528,9 @@ function renderEditorOverlay(controls) {
   const chain=(attributes={})=>new Proxy(attributes,{get:(target,name,receiver)=>
     Reflect.has(target,name)?Reflect.get(target,name,receiver):()=>receiver});
   const draw=()=>chain();
-  new Function('module','Column','Text','Button','padding','InputSettingsEditor','GameResolutionPanel','LayoutEditor',
-    compiled.outputText)(module,draw,draw,draw,draw,value=>settings.push(value),value=>panels.push(value),value=>layouts.push(value));
+  new Function('module','Column','Text','Button','padding','InputSettingsEditor','GameResolutionPanel','LayoutEditor','MobileInputPreference',
+    compiled.outputText)(module,draw,draw,draw,draw,value=>settings.push(value),value=>panels.push(value),value=>layouts.push(value),
+      {available:()=>mobileInputAvailable});
   module.exports.prototype.EditorOverlay.call(controls);
   return {settings,panels,layouts};
 }
@@ -546,15 +547,18 @@ for (const [device,api,interaction,allowLiveResolution] of [
   assert.equal(controls.allowLiveResolution,allowLiveResolution,'真实包装必须按设备传递本局分辨率资格');
   controls.palette={}; controls.compWidth=800; controls.compHeight=500;
   await controls.openEditor();
-  const entry=renderEditorOverlay(controls).settings[0];
+  const mobileInputAvailable=device==='phone'||device==='tablet';
+  const entry=renderEditorOverlay(controls,mobileInputAvailable).settings[0];
+  assert.equal(entry.allowMobileInput,mobileInputAvailable,'游戏设置目录传递移动端输入方式资格');
   assert.equal(entry.inGameSettings,true);
   assert.equal(entry.allowLiveResolution,allowLiveResolution,'实际设置目录接收对应设备的分辨率资格');
   entry.onOpenGameTool('resolution');
   assert.equal(controls.editorMode,allowLiveResolution?'resolution':'settings','绕过目录直接回调也必须执行产品准入');
   if (!allowLiveResolution) controls.editorMode='resolution';
-  const {panels}=renderEditorOverlay(controls);
+  const {panels}=renderEditorOverlay(controls,mobileInputAvailable);
   assert.equal(panels.length,allowLiveResolution?1:0,'只有移动触控能挂载本局分辨率面板');
   if (allowLiveResolution) {
+    assert.equal(panels[0].allowMobileInput,mobileInputAvailable,'分辨率侧栏沿用当前输入设备资格');
     assert.equal(controls.editorMode,'resolution');
     panels[0].onNavigate('menu');
     assert.equal(renderEditorOverlay(controls).settings[0].initialSection,'menu');

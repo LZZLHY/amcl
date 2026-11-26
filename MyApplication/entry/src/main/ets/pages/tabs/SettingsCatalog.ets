@@ -13,6 +13,7 @@ export interface SettingsCapabilities {
   publisher: boolean;
   touch: boolean;
   chooseInteraction: boolean;
+  mobileInput: boolean;
   tabletProcess: boolean;
   nativeGamepad: boolean;
   developer: boolean;
@@ -108,6 +109,8 @@ export function settingsItems(c: SettingsCapabilities): SettingsItem[] {
       items.push({ id: 'input', section: 'controls', title: '手感与输入', description: '视角、触觉反馈与手柄映射', keywords: '触控 输入 灵敏度 视角 手柄 死区 陀螺仪' });
       items.push({ id: 'layouts', section: 'controls', title: '操控方案', description: '管理布局、触控、视角与手柄设置', keywords: '触控 布局 按键 摇杆 编辑' });
       items.push({ id: 'touch-help', section: 'controls', title: '触控操作帮助', description: '进入游戏世界后学习真实控件', keywords: '触控 帮助 教学 引导 操作' });
+      if (c.mobileInput) items.push({ id: 'mobile-input', section: 'controls', title: '移动端输入方式',
+        description: '自动、手柄优先或键鼠优先', keywords: '手机 平板 输入设备 键盘 鼠标 触控板 虚拟按键 显影' });
     }
     if (c.chooseInteraction) items.push({ id: 'interaction', section: 'controls', title: '电脑游戏交互', description: '自动、触屏或键鼠', keywords: '电脑 交互 鼠标 键盘 触屏 重启' });
     if (c.nativeGamepad) items.push({ id: 'gamepad', section: 'controls', title: '由游戏处理手柄', description: '游戏控制器模组与启动器映射', keywords: '手柄 控制器 模组 原生 映射' });

@@ -20,7 +20,7 @@ export class TouchSurfaceCandidate {
     this.layoutValue = cloneRuntimeTouchLayout(layout)
     this.schemaValue = JSON.parse(JSON.stringify(schema)) as ControlSchemaMsg
     this.capabilityIssueValue = capabilityIssue
-    this.semanticKey = JSON.stringify([this.layoutValue.context.key, this.profileValue.controls,
+    this.semanticKey = JSON.stringify([this.layoutValue.context.key, this.layoutValue.systemControlsOnly, this.profileValue.controls,
       this.profileValue.globalScale, this.profileValue.globalOpacity, this.schemaValue, this.capabilityIssueValue])
   }
   get id(): string { return this.identity }

@@ -246,8 +246,8 @@ export class DownloadTask {
     this.filesDir = filesDir;
     this.directoryOwner_ = directoryOwner ?? newVersionInstallOwner();
     if (directoryOwner === undefined) {
-      let previous = listMcInstallRecovery(filesDir, mcDir).find((record: McInstallSession): boolean =>
-        record.gameVersion === gameVersion && record.versionName === versionName
+      let previous = listMcInstallRecovery(filesDir, mcDir, versionName).find((record: McInstallSession): boolean =>
+        record.gameVersion === gameVersion
         && record.loaderType === (loaderType ?? '') && record.loaderVersion === loaderVersion);
       this.installSession_ = previous ?? { schemaVersion: 1, id: this.directoryOwner_, gameVersion: gameVersion,
         versionName: versionName, loaderType: loaderType ?? '', loaderVersion: loaderVersion, mcDir: mcDir, complete: false };
@@ -411,7 +411,12 @@ export class DownloadTask {
     // 只有匹配持久 owner 的未交付普通实例可清理；整合包目录交给父安装器。
     let targetDir = this.mcDir + '/versions/' + this.versionName;
     if (this.installSession_ !== undefined && ownsMcInstallDirectory(targetDir, this.directoryOwner_)
-      && !isVersionInstalled(this.mcDir, this.versionName)) removeDirRecursive(targetDir);
+      && !isVersionInstalled(this.mcDir, this.versionName)) {
+      // 迁库失败时主 JAR 和 JSON 也可能已经落地。只清安装器独占的文件，保留玩家加入的存档或配置。
+      const owned = [MC_INSTALL_PENDING, this.versionName + '.jar', this.versionName + '.json'];
+      if (fs.listFileSync(targetDir).every((name: string): boolean => owned.indexOf(name) >= 0))
+        removeDirRecursive(targetDir);
+    }
     if (this.installSession_ !== undefined) {
       this.installSession_.complete = true;
       saveMcInstallSession(this.filesDir, this.installSession_);

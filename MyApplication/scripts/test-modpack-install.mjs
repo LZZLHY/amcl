@@ -35,7 +35,8 @@ function remove(dir){const p=path.resolve(dir);assert.ok(p.startsWith(path.resol
   fs.rmSync(p,{recursive:true,force:true});}
 function mkdir(dir){fs.mkdirSync(dir,{recursive:true});}
 let receiptFault=false;
-const io={...fileIo,mkdirSync:(p,recursive=false)=>fs.mkdirSync(p,{recursive}),copyFile:fs.promises.copyFile,
+const io={...fileIo,mkdirSync:(p,recursive=false)=>fs.mkdirSync(p,{recursive}),copyFile:fs.promises.copyFile,rmdirSync:fs.rmdirSync,
+  lstatSync(p){const stat=fs.lstatSync(p); return Object.assign(stat,{ctime:stat.ctimeMs});},
   // Windows 不支持目录 fsync；只替换该平台边界，普通文件依然执行真实刷盘。
   fsyncSync(fd){if(!fs.fstatSync(fd).isDirectory())fs.fsyncSync(fd);},
   openSync(p,flags){if(receiptFault&&p.endsWith('.amcl-modpack.json.writing'))throw new Error('injected receipt disk full');return fileIo.openSync(p,flags);}};
@@ -103,7 +104,7 @@ const core={...productionPathPolicy(),...U,...Lease,DownloadManager:{instance:()
 // 保持这个边界显式，避免用伪ZIP字节去冒充生产中央目录预检。
 const controlledPackage={preflightModpackArchive(){},async discoverModpackPackages(){return [
   {id:'controlled-root',kind:archiveFormat,root:'extracted',title:'Controlled archive',archiveChain:[]}];}};
-const load=loader({feature_core:core,commons:common,'@kit.CoreFileKit':{fileIo:io},'./ModpackPackage':controlledPackage,
+const load=loader({feature_core:core,commons:common,'@kit.CoreFileKit':{fileIo:io,hash:{async hash(p,algorithm){return digest(fs.readFileSync(p),algorithm);}}},'./ModpackPackage':controlledPackage,
   // 宿主只替代 TaskPool 提交边界，交付判定和缓存清理仍执行工作线程的真实业务入口。
   './ModpackRecoveryTasks':{
     async readModpackRecoveryKind(filesDir,id){return I.inspectModpackRecovery(filesDir,id);},
@@ -238,16 +239,31 @@ assert.equal(Snapshot.readModpackSnapshot(req.mcDir+'/versions/Partial').missing
 passed('required missing file cannot report full success; unselected optional files are not installed');
 
 // 部分完成后再恢复，原实例补齐失败的文件，用户配置与存档保持原字节。
-archiveManifest=mr('Repair',[mrFile('good.jar'),mrFile('retry.jar')]);overrides={'overrides/config/user.cfg':'pack defaults'};
+archiveManifest=mr('Repair',[mrFile('good.jar'),mrFile('turned-off.jar'),mrFile('edited.jar'),mrFile('retry.jar')]);overrides={'overrides/config/user.cfg':'pack defaults'};
 req=request('repair');failures=new Set(['retry.jar']);let installer=new I.ModpackInstaller();let result=await installer.installFromArchive(req);
 assert.equal(result.missing.length,1);session=installer.getSession();dir=req.mcDir+'/versions/Repair';
 mkdir(dir+'/saves/world');fs.writeFileSync(dir+'/saves/world/level.dat','user world');fs.writeFileSync(dir+'/config/user.cfg','user edits');
+// 通过正常的模组管理入口禁用两项：相同字节继续算已交付，被替换过的禁用文件必须提示冲突。
+const toggle=new (load('mods/src/main/ets/ModInstaller.ets').ModInstaller)(dm);
+for(const name of ['turned-off.jar','edited.jar']){
+  const active=dir+'/mods/'+name;
+  assert.equal(toggle.setEnabled(active,false),active+'.disabled');
+}
+fs.writeFileSync(dir+'/mods/edited.jar.disabled','player bytes');
 failures.clear();downloaded=[];const baseBefore=baseBuilds;
 const resumed=new I.ModpackInstaller();result=await resumed.installFromArchive({...req,sessionId:session.id});
-assert.equal(result.versionName,'Repair');assert.equal(result.missing.length,0);assert.equal(baseBuilds,baseBefore);
+assert.equal(result.versionName,'Repair');assert.equal(baseBuilds,baseBefore);
+assert.deepEqual(Array.from(result.missing, f=>f.path),['mods/edited.jar']);
+assert.match(result.missing[0].reason,/已禁用模组/);
+assert.deepEqual(downloaded.flatMap(s=>Array.from(s.files,f=>path.basename(f.localPath))),['retry.jar']);
+assert.equal(fs.readFileSync(dir+'/mods/edited.jar.disabled','utf8'),'player bytes');
+for(const name of ['turned-off.jar','edited.jar'])assert.equal(fs.existsSync(dir+'/mods/'+name),false);
+fs.writeFileSync(dir+'/mods/edited.jar.disabled','content edited.jar');
+result=await new I.ModpackInstaller().installFromArchive({...req,sessionId:session.id});
+assert.equal(result.missing.length,0);assert.equal(fs.existsSync(dir+'/mods/edited.jar'),false);
 assert.equal(fs.readFileSync(dir+'/config/user.cfg','utf8'),'user edits');assert.equal(fs.readFileSync(dir+'/saves/world/level.dat','utf8'),'user world');
 assert.equal(downloaded.flatMap(s=>s.files).length,1);assert.equal(fs.existsSync(req.mcDir+'/versions/Repair (2)'),false);
-passed('restart-style repair downloads only missing files into original instance and preserves user config/world');
+passed('repair downloads only missing B, preserves enabled and disabled A, reports disabled content conflicts and keeps user config/world');
 
 // 同名 standard loader 目录是用户内容；新的安装不会再运行猜测式残留删除。
 archiveManifest=mr('Safe');overrides={};req=request('stray');const stray=req.mcDir+'/versions/fabric-loader-0.16.0-1.20.1';
@@ -355,6 +371,29 @@ const obsoleteTask=new Task({...req,title:'Early',requireConfirmation:false});
 await assert.rejects(obsoleteTask.start(),/已放弃/);
 passed('source-only abandon cleans its private archive, retains the original input and leaves other sessions visible');
 
+// 升级前已在等确认的旧导入仍在独立选择器目录。只清最后一位消费者的输入，无法证明时只清任务独占缓存。
+const oldPick=request('old-picker');
+const oldFolder=oldPick.filesDir+'/modpack-import/'+Lease.newVersionInstallOwner();
+mkdir(oldFolder);const oldCopy=oldFolder+'/pack.mrpack';fs.copyFileSync(oldPick.archivePath,oldCopy);
+archiveManifest=mr('Old picker',[mrFile('old-choice.jar','optional')]);
+const oldRows=[];
+for (let n=0;n<2;n++){
+  const t=new Task({...oldPick,archivePath:oldCopy,sessionId:Lease.newVersionInstallOwner(),title:'Old picker'});
+  await registry.enqueue(t);await turn();assert.equal(t.view.requiresConfirmation,true);oldRows.push(t.getSession().id);
+}
+assert.equal(await abandonModpackRecovery(oldPick.filesDir,oldRows[0],'install'),true);
+assert.ok(fs.existsSync(oldCopy));
+assert.equal(await abandonModpackRecovery(oldPick.filesDir,oldRows[1],'install'),true);
+assert.equal(fs.existsSync(oldFolder),false);assert.deepEqual(fs.readFileSync(oldPick.archivePath),archiveBytes);
+mkdir(oldFolder);fs.copyFileSync(oldPick.archivePath,oldCopy);
+const replacedTask=new Task({...oldPick,archivePath:oldCopy,title:'Replaced old input'});
+await registry.enqueue(replacedTask);await turn();
+const replacedId=replacedTask.getSession().id;fs.writeFileSync(oldCopy,'replacement');
+assert.equal(await abandonModpackRecovery(oldPick.filesDir,replacedId,'install'),false);
+assert.equal(fs.readFileSync(oldCopy,'utf8'),'replacement');
+assert.equal(fs.existsSync(Sessions.modpackWorkDir(oldPick.filesDir,replacedId)+'/archive.zip'),false);
+passed('legacy abandon releases the last shared picker copy and clears owned caches even when an input was replaced');
+
 // 持久关闭与物理清理是两个结果。清理失败不让已经成功放弃的记录重新回到列表。
 req=request('abandon-cleanup-failure');archiveManifest=mr('Keep temporary data');
 installer=new I.ModpackInstaller();await installer.prepare(req);
@@ -413,6 +452,24 @@ assert.deepEqual(calls,[[10,20]]);assert.ok(fs.existsSync(req.mcDir+'/versions/C
 assert.equal(fs.existsSync(req.mcDir+'/versions/CF/mods/resource.zip'),false);
 passed('CurseForge exact file identity and resource directory survive the full install pipeline');
 
+// CF 可能只提供字节数；补 B 时按原匹配规则接受同尺寸的禁用 A，不额外要求摘要。
+archiveManifest={...archiveManifest,name:'SizeOnly',files:[{projectID:1,fileID:1,required:true},{projectID:2,fileID:2,required:true}]};
+const sizeReq={...request('cf-size-only'),resolveCfFile:async(pid)=>{
+  const filename='size-'+pid+'.jar',url='https://example.invalid/'+filename;
+  bodies.set(url,resource);
+  return {filename,targetDirectory:'mods',urls:[url],size:resource.length};
+}};
+failures.add('size-2.jar');
+installer=new I.ModpackInstaller();
+assert.equal((await installer.installFromArchive(sizeReq)).missing.length,1);
+const disabledA=sizeReq.mcDir+'/versions/SizeOnly/mods/size-1.jar';
+assert.equal(toggle.setEnabled(disabledA,false),disabledA+'.disabled');
+failures.clear();downloaded=[];
+assert.equal((await installer.installFromArchive({...sizeReq,sessionId:installer.getSession().id})).missing.length,0);
+assert.deepEqual(downloaded.flatMap(s=>Array.from(s.files,f=>path.basename(f.localPath))),['size-2.jar']);
+assert.equal(fs.existsSync(disabledA),false);assert.deepEqual(fs.readFileSync(disabledA+'.disabled'),resource);
+passed('size-only CurseForge repair keeps disabled A and downloads only B');
+
 /** 页面/仓库方法使用生产 AST 抽取，宿主只提供输入/输出边界和观察器。 */
 function methodClass(relative,names,bindings={}){
   const source=fs.readFileSync(path.join(root,relative),'utf8');
@@ -436,8 +493,10 @@ passed('server distributions remain identified/excluded and CurseForge history c
 const Controller=load('mods/src/main/ets/ModSearchController.ets').ModSearchController;
 const supportsCustomResourceSave=kind=>['mod','resourcepack','shader'].includes(kind);
 const Filter=methodClass('entry/src/main/ets/pages/ModBrowsePage.ets',
-  ['applyFiltersToController','usesCustomResourceSave_','currentBrowseKind_','activeLoaderFilter_'],{...Types,...Repo,supportsCustomResourceSave});
-const f=new Filter();Object.assign(f,{ctrl_:new Controller({}),kindIdx_:3,queryInput_:'known pack',gameVersionInput_:'1.20.1',loaderInput_:'',sortExplicit_:false,sortInput_:Repo.SortBy.DOWNLOADS});
+  ['applyFiltersToController','resourceContext_','usesCustomResourceSave_','currentBrowseKind_','activeLoaderFilter_'],{...Types,...Repo,supportsCustomResourceSave});
+const f=new Filter();Object.assign(f,{ctrl_:new Controller({}),appliedResourceContext_:'',resourceContextRevision_:0,
+  resolveCurseForgeFileMode:()=>C.CurseForgeFileSourceMode.MIRROR_FIRST,kindIdx_:3,queryInput_:'known pack',
+  gameVersionInput_:'1.20.1',loaderInput_:'',sortExplicit_:false,sortInput_:Repo.SortBy.DOWNLOADS});
 f.applyFiltersToController();assert.equal(f.ctrl_.getState().sortBy,Repo.SortBy.RELEVANCE);assert.equal(f.ctrl_.getState().loader,'');
 f.sortExplicit_=true;f.sortInput_=Repo.SortBy.UPDATED;f.applyFiltersToController();assert.equal(f.ctrl_.getState().sortBy,Repo.SortBy.UPDATED);
 const browseSource=fs.readFileSync(path.join(root,'entry/src/main/ets/pages/ModBrowsePage.ets'),'utf8');
@@ -573,6 +632,7 @@ passed('recovery row renders separate resume and dismiss actions, and only the c
  */
 let pickLocalArchive;
 const localArchiveChoice=new Promise(resolve=>{pickLocalArchive=resolve;});
+const pickedOriginal=slash(path.join(fixture,'picker-original.mrpack'));fs.writeFileSync(pickedOriginal,archiveBytes);
 const Browse=methodClass('entry/src/main/ets/pages/ModBrowsePage.ets',
   ['installModpackFromSheet','importLocalModpack_','confirmLocalModpack_','resumeModpack_','closeModpackRecovery_',
     'retireModpackRecoveryScan_','setHeaderCollapsed','resolveCurseForgeFileMode','onlyOfficialModpackFiles_'],{
@@ -582,7 +642,9 @@ const Browse=methodClass('entry/src/main/ets/pages/ModBrowsePage.ets',
     createModpackFileResolver:()=>async()=>undefined,getDownloadTaskRegistry:()=>registry,
     sanitizeVersionName:I.sanitizeVersionName,validateModpackVersionName:I.validateModpackVersionName,
     displayTitleOf:p=>p.title,
-    GameArchiveIO:{importResourceFile:()=>localArchiveChoice},
+    GameArchiveIO:{async importResourceFile(_ctx,dir,_exts,packArchive){
+      const choice=await localArchiveChoice;assert.equal(packArchive,true);mkdir(dir);
+      fs.copyFileSync(pickedOriginal,dir+'/archive.zip');return choice;}},
     Curve:{FastOutSlowIn:'fast-out-slow-in'},
   });
 const browserTasks=[],browserLayoutCalls=[];const browser=new Browse();
@@ -602,13 +664,24 @@ browser.installModpackFromSheet({id:'pack',title:'Pack',source:Types.ModSource.M
   {id:'pack-v'},{url:'https://example.invalid/pack.mrpack',filename:'pack.mrpack',size:1});
 assert.equal(browserTasks[0].getInstallRoot(),'/settings/current');
 assert.equal(browserTasks[0].getInstallName(),'Pack');
-browser.mcDir='/settings/changed';
+const pickedRoot=slash(path.join(fixture,'picked-game'));browser.mcDir=pickedRoot;
 const importing=browser.importLocalModpack_();browser.mcDir='/settings/changed-after-picker';
 pickLocalArchive({cancelled:false,ok:true,name:'local.mrpack'});await importing;
 assert.equal(browserTasks.length,1,'本地选择文件后先打开下载详情，不直接入队');
 assert.equal(browser.showLocalModpackDetail_,true);browser.localModpackName_='Local Custom';browser.confirmLocalModpack_();
-assert.equal(browserTasks[1].getInstallRoot(),'/settings/changed','Local import snapshots the settings root before awaiting the picker');
+assert.equal(browserTasks[1].getInstallRoot(),pickedRoot,'Local import snapshots the settings root before awaiting the picker');
 assert.equal(browserTasks[1].getInstallName(),'Local Custom');
+archiveFormat='modrinth';archiveManifest=mr('Local picker',[mrFile('pick-optional.jar','optional')]);overrides={};
+await registry.enqueue(browserTasks[1]);await turn();assert.equal(browserTasks[1].view.requiresConfirmation,true);
+const pickedFiles=browser.uiCtx().filesDir;
+const pickedId=browserTasks[1].getSession().id;
+const pickedWork=Sessions.modpackWorkDir(pickedFiles,pickedId);
+assert.deepEqual(fs.readFileSync(pickedWork+'/archive.zip'),fs.readFileSync(pickedOriginal));
+assert.ok(fs.existsSync(pickedWork+'/extracted'));assert.equal(fs.existsSync(pickedFiles+'/modpack-import'),false);
+assert.equal(await abandonModpackRecovery(pickedFiles,pickedId,'install'),true);
+assert.equal(fs.existsSync(pickedWork+'/archive.zip'),false);assert.equal(fs.existsSync(pickedWork+'/extracted'),false);
+assert.deepEqual(fs.readFileSync(pickedOriginal),archiveBytes);assert.equal(Sessions.listModpackRecovery(pickedFiles).length,0);
+passed('local picker task abandoned while waiting for optional files releases its sole private copy and keeps the external archive');
 // 执行生产具名处理和真实名称校验，纠错应复用本次最初的文件引用。
 const PreparePack=methodClass('entry/src/main/ets/launcherskill/BrowseSkill.ets',['run'],{
   ResourceKind:Types.ResourceKind,LauncherSkillBus:{awaitingUser(){}},util:{generateRandomUUID:crypto.randomUUID},

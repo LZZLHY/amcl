@@ -25,7 +25,6 @@ import { OfflineAccount } from './OfflineAccount';
 import { MicrosoftAccount } from './MicrosoftAccount';
 import { AuthlibInjectorAccount } from './AuthlibInjectorAccount';
 import { AccountStorage } from './AccountStorage';
-import { HuksAesGcm256Provider } from './HuksCryptoProvider';
 
 import { AppLogger, ProcessPreferences } from 'commons';
 import { LOG_DOMAIN_ACCOUNT } from 'commons';
@@ -42,6 +41,9 @@ export class AccountManager {
   /** 仅用于主进程编辑时惰性初始化共享库；独立游戏进程不写库元数据。 */
   private context: Context | null = null;
   private accounts: Account[] = [];
+  /** 索引仍拥有暂时不可读的账号；打开面板或下次启动时只重试这些记录。 */
+  private deferredIds: Set<string> = new Set<string>();
+  get hasUnavailableAccounts(): boolean { return this.deferredIds.size > 0; }
   private selectedId: string = '';
   private _ready: boolean = false;
   private _initPromise: Promise<void> | null = null;
@@ -56,9 +58,14 @@ export class AccountManager {
   isReady(): boolean { return this._ready; }
 
   async init(context: Context): Promise<void> {
-    if (this._initPromise) return this._initPromise;
+    if (this._initPromise) {
+      await this._initPromise;
+      if (this.hasUnavailableAccounts) await this.reload(true);
+      return;
+    }
     this._initPromise = this._doInit(context);
-    return this._initPromise;
+    try { await this._initPromise; }
+    catch (error) { this._initPromise = null; throw error as Error; }
   }
 
   private async _doInit(context: Context): Promise<void> {
@@ -66,15 +73,6 @@ export class AccountManager {
     this.storage = new AccountStorage(context);
     if (!ProcessPreferences.isGameProcess()) {
       getAppearanceLibrary().setUsageGuard((assetId: string): boolean => this.isAppearanceAssetUsed(assetId));
-    }
-    // 探测 HUKS；可用 → 升级 storage.cryptoProvider；不可用 → 保留默认 PlaintextCryptoProvider
-    let huksProvider = new HuksAesGcm256Provider();
-    if (await huksProvider.isAvailable()) {
-      this.storage.setCryptoProvider(huksProvider);
-    } else {
-      AppLogger.warn(TAG,
-        'HUKS unavailable; using PlaintextCryptoProvider (insecure, accounts NOT encrypted at rest)',
-        null, LOG_DOMAIN_ACCOUNT);
     }
     await this.reload();
     this._ready = true;
@@ -89,47 +87,50 @@ export class AccountManager {
   /**
    * 从持久化重新加载所有账户。
    *
-   * 异步：需触发 storage.decrypt() 解密 MicrosoftAccount 敢感字段。
-   * 解密失败的账户 → 静默丢弃（款项中有 warn），不阐断其他账户。
+   * 与账号写入串行。重试时保留已加载对象，避免失效已打开的编辑草稿或确认操作。
    */
-  async reload(): Promise<void> {
+  async reload(onlyUnavailable: boolean = false): Promise<void> {
+    await this.enqueueMutation(async (): Promise<void> => { await this.loadAccounts(onlyUnavailable); });
+  }
+
+  private async loadAccounts(onlyUnavailable: boolean): Promise<void> {
     if (!this.storage) {
       this.accounts = [];
       this.selectedId = '';
       return;
     }
-    let ids = this.storage.getAccountIds();
+    if (onlyUnavailable && !this.hasUnavailableAccounts) return;
+    const ids = this.storage.getAccountIds();
+    const deferred = new Set<string>();
     let loaded: Account[] = [];
     for (let id of ids) {
-      let rec = this.storage.loadRecord(id);
-      if (!rec) {
-        AppLogger.warn(TAG, `reload: account ${id} record missing, skipping`, null, LOG_DOMAIN_ACCOUNT);
-        continue;
-      }
-      // 若有 encrypted 字段，先解密为明文负载后交给 deserializeAccount
-      if (rec.encrypted) {
-        try {
-          let plaintext = await this.storage.decrypt(rec.encrypted);
+      const current = onlyUnavailable ? this.findById(id) : undefined;
+      if (current !== undefined) { loaded.push(current); continue; }
+      try {
+        const rec = this.storage.loadRecord(id);
+        if (!rec) continue; // 旧索引中已不存在的记录仍按原行为跳过。
+        if (rec.encrypted) {
+          const plaintext = await this.storage.readCredentials(rec, rec.encrypted);
           rec.encrypted = { iv: '', ciphertext: plaintext, tag: '' };
-        } catch (e) {
-          AppLogger.warn(TAG, `reload: account ${id} decrypt failed (record will be dropped)`,
-            e as Object, LOG_DOMAIN_ACCOUNT);
-          continue;
         }
-      }
-      let acc = this.deserializeAccount(rec);
-      if (acc) {
-        loaded.push(acc);
+        const account = this.deserializeAccount(rec);
+        if (account) loaded.push(account);
+      } catch (_) {
+        AppLogger.warn(TAG, '账号暂不可读，保留原记录和索引以便重试', null, LOG_DOMAIN_ACCOUNT);
+        deferred.add(id);
       }
     }
+    // 读取选中项也可能遭遇 Preferences 故障，成功读完后再一起发布新视图。
+    const selected = this.storage.getSelectedId();
     this.accounts = loaded;
-    this.selectedId = this.storage.getSelectedId();
+    this.deferredIds = deferred;
+    this.selectedId = selected;
     // 校验 selectedId 仍然有效；若指向已删除账户则回退为空（getSelected 会用 fallback）
-    if (this.selectedId.length > 0 && !this.findById(this.selectedId)) {
+    if (this.selectedId.length > 0 && !deferred.has(this.selectedId) && !this.findById(this.selectedId)) {
       AppLogger.warn(TAG, `reload: selectedId ${this.selectedId} no longer exists, clearing`,
         null, LOG_DOMAIN_ACCOUNT);
       this.selectedId = '';
-      if (this.storage) this.storage.setSelectedId('');
+      if (!ProcessPreferences.isGameProcess()) this.storage.setSelectedId('');
     }
   }
 
@@ -189,6 +190,25 @@ export class AccountManager {
     return this.selectedId;
   }
 
+  /** 启动、账号卡与具名查询共用实际身份。首个持久账号暂不可读时，其他账号仍可手动选择。 */
+  getAvailableSelection(): Account | undefined {
+    if (!this._ready) return undefined;
+    if (!this.hasUnavailableAccounts) return this.getSelected();
+    try {
+      const preferred = this.selectedId || this.requireStorage().getAccountIds().find((id: string): boolean =>
+        this.deferredIds.has(id) || this.findById(id) !== undefined);
+      if (preferred === undefined) return this.fallback;
+      return this.findById(preferred);
+    } catch (_) { return undefined; }
+  }
+
+  /** 未恢复本次身份时中止启动，避免误入另一个账号的存档。 */
+  getSelectedForLaunch(): Account {
+    const account = this.getAvailableSelection();
+    if (!account) throw new AccountError('KEY_UNAVAILABLE', '无法恢复本次游戏账号，请重新打开账号管理或选择其他账号');
+    return account;
+  }
+
   // ===== 修改 =====
 
   /**
@@ -200,13 +220,17 @@ export class AccountManager {
   async add(account: Account): Promise<void> {
     await this.enqueueMutation(async (): Promise<void> => {
       const storage: AccountStorage = this.requireStorage();
+      if (this.deferredIds.has(account.id)) throw new AccountError('KEY_UNAVAILABLE', '此账号暂不可读，请稍后重试');
       if (account.type === AccountType.OFFLINE) this.assertOfflineNameAvailable(account.username, account.id);
       const next: Account[] = this.accounts.slice();
       const existingIdx: number = next.findIndex((item: Account): boolean => item.id === account.id);
       if (existingIdx >= 0) next[existingIdx] = account;
       else next.push(account);
       const record: AccountRecord = await this.recordForStorage(account);
-      await storage.saveRecordConfirmed(record, next.map((item: Account): string => item.id));
+      // 从完整的持久索引增量加入，保留未解密账号的顺序和所有权。
+      const ids = storage.getAccountIndexEntries();
+      if (!ids.includes(account.id)) ids.push(account.id);
+      await storage.saveRecordConfirmed(record, ids);
       this.accounts = next;
       AppLogger.info(TAG, `add: id=${account.id} type=${account.type} username=${account.username}`, LOG_DOMAIN_ACCOUNT);
     });
@@ -305,7 +329,7 @@ export class AccountManager {
       if (this.findById(id) === undefined) return;
       const next: Account[] = this.accounts.filter((account: Account): boolean => account.id !== id);
       const selected: string = this.selectedId === id ? '' : this.selectedId;
-      await storage.removeRecordConfirmed(id, next.map((account: Account): string => account.id), selected);
+      await storage.removeRecordConfirmed(id, storage.getAccountIndexEntries().filter((saved: Object): boolean => saved !== id), selected);
       this.accounts = next;
       this.selectedId = selected;
       AppLogger.info(TAG, `remove: id=${id}, ${this.accounts.length} remain`, LOG_DOMAIN_ACCOUNT);
@@ -365,7 +389,7 @@ export class AccountManager {
 
   /** 不能在未初始化时假装保存成功；UI 显示错误并保留原配置。 */
   private requireStorage(): AccountStorage {
-    if (this.storage === null) throw new AccountError('NOT_READY', '账号数据尚未就绪，请稍后重试');
+    if (this.storage === null || !this._ready) throw new AccountError('NOT_READY', '账号数据尚未就绪，请稍后重试');
     return this.storage;
   }
 

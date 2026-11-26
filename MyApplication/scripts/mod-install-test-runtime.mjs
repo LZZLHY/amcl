@@ -97,7 +97,7 @@ export function loader(extra={}, scheduling={}) {
     const mod={exports:{}};cache.set(filename,mod.exports);
     const requireLocal=name=>{
       // 目录策略是生产函数，沿用每个用例注入的 IO；不复制整合包隔离规则。
-      if(name==='commons')return {...mocks.commons,...load('commons/src/main/ets/utils/InstancePaths.ets'),...(extra.commons??{})};
+      if(name==='commons')return {...mocks.commons,...load('commons/src/main/ets/utils/AtomicFileWriter.ets'),...load('commons/src/main/ets/utils/InstancePaths.ets'),...(extra.commons??{})};
       if(name in extra)return extra[name];if(name in mocks)return mocks[name];
       if(name.startsWith('.'))return load(path.resolve(path.dirname(filename),name+'.ets'));
       throw new Error('Unexpected import '+name+' from '+filename);

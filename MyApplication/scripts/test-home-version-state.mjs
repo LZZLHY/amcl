@@ -180,6 +180,7 @@ seed('versions/survival/mods/paused.jar.disabled', 'original disabled mod');
 seed('saves/Shared world/level.dat', 'shared world');
 seed('mods/shared.jar', 'shared mod');
 const kitFiles = { listFile: fs.promises.readdir, stat: fs.promises.stat, readText: p => fs.promises.readFile(p, 'utf8'),
+  async lstat(p) { try { return await fs.promises.lstat(p); } catch (e) { if (e.code === 'ENOENT') e.code = 13900002; throw e; } },
   listFileSync: fs.readdirSync, statSync: fs.statSync, lstatSync: fs.lstatSync, mkdirSync: p => fs.mkdirSync(p, { recursive: true }) };
 const common = { AppLogger: logger, JDK_AUTO: 'auto', isJdkSlotVersion, ProcessPreferences: {
   isGameProcess: () => false,
@@ -210,7 +211,7 @@ const saves = component(source('entry/src/main/ets/components/SavesManagerSheet.
 const Saves = buildClass(methods(saves, ['savesDir', 'refresh', 'onScopeChanged', 'dismissEntry_']), { ...common, fs: kitFiles, hilog: logger, TAG: 'test' });
 const panel = Object.assign(new Saves(), { mcDir: mcRoot, versionId: original, active: true });
 let prefs = new PreferenceManager({ preferencesDir: isolationScope.directory });
-const launcher = Object.assign(new IsolationPage(), { mcVersion: 'other', versionIsolation: prefs.versionIsolation,
+const launcher = Object.assign(new IsolationPage(), { mcVersion: 'other', availableVersions: ['other',original], versionIsolation: prefs.versionIsolation,
   mcRoot: () => mcRoot, getPrefManager_: () => prefs, startupAlive_: true, versionScanEpoch_: 0,
   updateJdkReadyState() {}, forceStoreSourceRecheck_() {}, refreshStoreManager_() {}, safeToast_: assert.fail });
 await prefs.saveLauncherFields({ versionOrder: JSON.stringify(['other', original]) });

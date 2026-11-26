@@ -15,9 +15,8 @@ import { AppLogger } from 'commons';
  *      "被拔掉的这一个是不是手柄"，而那才是"拔键盘要不要连带放掉手柄端"的判据。
  *      两者必须同代次提交，理由见规范 §3.4。
  *
- *      ⚠️ capability **不参与虚拟按键显隐**。`GameControls.capability` 是一条只写不读的
- *      链路（"接键鼠自动隐藏"于 2026-06 刻意解耦删除，待决方案见提案 §9.1）。
- *      这里曾有一条声称相反的假注释，来历与教训见规范 §八 第六条纪律。
+ *      移动端的设备面板和三键呈现读取同一批逐设备详情，排除已知虚拟设备；
+ *      键鼠优先还要求全键盘。桌面光标和旧输入路由继续使用原来的聚合能力。
  *   2. **原始插拔事件** `DeviceChangeEvent { deviceId, added }`
  *      聚合能力丢掉了 deviceId，而 native core 的 held owner 以 `(deviceId, control)`
  *      为键 —— DEVICE_REMOVED 必须携带具体 deviceId 才能只释放该设备的 owner。
@@ -54,6 +53,19 @@ export interface DeviceCapability {
   gamepad: boolean
 }
 
+/** 面板只展示设备名、系统 ID 与输入类型，不公开物理地址等标识。 */
+export interface ConnectedInputDevice {
+  id: number
+  name: string
+  sources: string[]
+}
+
+interface InputDeviceDescription extends ConnectedInputDevice {
+  virtual: boolean
+  fullKeyboard: boolean
+  confirmedSources: boolean
+}
+
 class InputDeviceMonitor {
   // ============ 视图一：聚合能力（+ 与它同代次提交的逐设备手柄身份表）============
   private capability: DeviceCapability = { mouse: false, keyboard: false, gamepad: false }
@@ -70,7 +82,8 @@ class InputDeviceMonitor {
   /** 本模块只拥有应用连接资格，不持Native held或系统generation。 */
   private connections: InputDeviceConnectionRegistry = new InputDeviceConnectionRegistry()
   private connectionListeners: ((event: InputDeviceConnectionChange) => void)[] = []
-  private sourcesByConnection: Map<InputDeviceConnectionLease, string[]> = new Map<InputDeviceConnectionLease, string[]>()
+  private devicesByConnection: Map<InputDeviceConnectionLease, InputDeviceDescription> = new Map()
+  private deviceListListeners: Set<() => void> = new Set()
 
   /** 只读原对象reader；allowsLegacyDeviceField不表示Native consumer已经就绪。 */
   connectionReader(): InputDeviceConnectionReader { return this.connections.reader }
@@ -82,7 +95,39 @@ class InputDeviceMonitor {
 
   /** 原descriptor副本，移除listener能读原lease而不是重入add后的新sameid。 */
   sourcesForConnection(connection: InputDeviceConnectionLease): string[] | undefined {
-    return this.sourcesByConnection.get(connection)?.slice()
+    const item = this.devicesByConnection.get(connection)
+    return item?.confirmedSources ? item.sources.slice() : undefined
+  }
+
+  /** 同类型的多台设备各自保留；调用者拿到独立副本，不会改动实际路由的来源表。 */
+  connectedDevices(): ConnectedInputDevice[] {
+    const devices: ConnectedInputDevice[] = []
+    this.devicesByConnection.forEach((item: InputDeviceDescription): void => {
+      if (!item.virtual) devices.push({ id: item.id, name: item.name, sources: item.sources.slice() })
+    })
+    return devices.sort((left: ConnectedInputDevice, right: ConnectedInputDevice): number => left.id - right.id)
+  }
+
+  /** 手机内置音量键、数字键盘或系统虚拟键盘均不能单独凑成键鼠全套。 */
+  mobileControlCapability(): DeviceCapability {
+    const cap: DeviceCapability = { mouse: false, keyboard: false, gamepad: false }
+    this.devicesByConnection.forEach((item: InputDeviceDescription): void => {
+      if (item.virtual) return
+      if (item.fullKeyboard) cap.keyboard = true
+      if (item.sources.includes('mouse') || item.sources.includes('touchpad')) cap.mouse = true
+      if (item.sources.includes('joystick') || item.sources.includes('gamepad')) cap.gamepad = true
+    })
+    return cap
+  }
+
+  addDeviceListListener(listener: () => void): void { this.deviceListListeners.add(listener) }
+  removeDeviceListListener(listener: () => void): void { this.deviceListListeners.delete(listener) }
+
+  /** 即使聚合能力未变，同类设备换新也要让设备面板重新读取清单。 */
+  private notifyDeviceList(): void {
+    for (const listener of Array.from(this.deviceListListeners)) {
+      try { listener() } catch (error) { AppLogger.warn(TAG, 'device list listener threw: ' + String(error)) }
+    }
   }
   addConnectionListener(listener: (event: InputDeviceConnectionChange) => void): void {
     if (this.connectionListeners.indexOf(listener) < 0) this.connectionListeners.push(listener)
@@ -193,7 +238,9 @@ class InputDeviceMonitor {
       this.notifyConnectionChange(change)
       this.notifyDeviceChange(event) // 旧无lease调用者明确兼容；新Page接上面原对象入口。
       if (!event.added) {
-        if (change.originalConnection !== undefined) this.sourcesByConnection.delete(change.originalConnection)
+        if (change.originalConnection !== undefined && this.devicesByConnection.delete(change.originalConnection)) {
+          this.notifyDeviceList()
+        }
         // listener可能同步add同ID；只能忘已退代的旧raw表，不能删除新代描述。
         if (this.captureConnection(event.deviceId, true, false).connection === undefined) this.gamepadIdentity.forget(event.deviceId)
       }
@@ -227,7 +274,7 @@ class InputDeviceMonitor {
     if (ticket === undefined) return
     const cap: DeviceCapability = { mouse: false, keyboard: false, gamepad: false }
     const gamepadByDevice: Map<number, boolean> = new Map<number, boolean>()
-    const descriptions: Map<InputDeviceConnectionLease, string[]> = new Map<InputDeviceConnectionLease, string[]>()
+    const descriptions: Map<InputDeviceConnectionLease, InputDeviceDescription> = new Map()
     try {
       const ids: number[] = await inputDevice.getDeviceList()
       if (!this.connections.acceptsInventory(ticket)) return
@@ -247,17 +294,37 @@ class InputDeviceMonitor {
             else if (sourceType === 'keyboard') cap.keyboard = true
             else if (sourceType === 'joystick' || sourceType === 'gamepad') { cap.gamepad = true; isGamepad = true }
           }
-          descriptions.set(connection, sourceTypes); gamepadByDevice.set(connection.rawPlatformId, isGamepad)
-        } catch (_) { if (!this.connections.acceptsInventory(ticket, connection)) return }
+          let fullKeyboard: boolean = false
+          if (info.isVirtual !== true && sourceTypes.includes('keyboard')) {
+            try {
+              fullKeyboard = inputDevice.getKeyboardTypeSync(rawId) === inputDevice.KeyboardType.ALPHABETIC_KEYBOARD
+            } catch (_) {
+              // 瞬时查询失败不构成拔键盘。只采纳同一次连接的确认值，重用设备 ID 的新连接从未知开始。
+              fullKeyboard = this.devicesByConnection.get(connection)?.fullKeyboard ?? false
+            }
+          }
+          if (!this.connections.acceptsInventory(ticket, connection)) return
+          descriptions.set(connection, { id: rawId, name: info.name, sources: sourceTypes,
+            virtual: info.isVirtual === true, fullKeyboard: fullKeyboard, confirmedSources: true })
+          gamepadByDevice.set(rawId, isGamepad)
+        } catch (_) {
+          if (!this.connections.acceptsInventory(ticket, connection)) return
+          // 系统仍列出同一次连接，暂时读不到详情时不把玩家的外设画成断开。
+          const previous = this.devicesByConnection.get(connection)
+          // 上次的描述只供设备面板与外设呈现，实体输入分发仍要求当次确认过的来源。
+          if (previous !== undefined) descriptions.set(connection, { id: previous.id, name: previous.name,
+            sources: previous.sources, virtual: previous.virtual, fullKeyboard: previous.fullKeyboard, confirmedSources: false })
+        }
       }
     } catch (error) { AppLogger.warn(TAG, 'refreshCapability failed: ' + String(error)); return }
     if (!this.connections.acceptsInventory(ticket)) return
     // 构成变化而cap布尔不变也必须发布原lease表，不能用UI显隐/模态作为这条维护的owner。
-    this.sourcesByConnection = descriptions
+    this.devicesByConnection = descriptions
     this.gamepadIdentity.commitSnapshot(gamepadByDevice)
     if (cap.mouse !== this.capability.mouse || cap.keyboard !== this.capability.keyboard || cap.gamepad !== this.capability.gamepad) {
       this.capability = cap; this.fireCapability()
     }
+    this.notifyDeviceList()
   }
 
   private fireCapability(): void {

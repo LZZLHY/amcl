@@ -13,7 +13,7 @@ function player(id,type){
 const players = [player('first',types.MICROSOFT)];
 let selected='first',saves=0;
 const manager={isReady:()=>true,list:()=>players.slice(),getSelectedId:()=>selected,
-  findById:id=>players.find(a=>a.id===id),getSelected:()=>players.find(a=>a.id===selected),
+  findById:id=>players.find(a=>a.id===id),getAvailableSelection:()=>players.find(a=>a.id===selected),
   add:async a=>{players.push(a);saves++;},select:async (id,expected)=>{if(expected)assert.equal(manager.findById(id),expected);selected=id;}};
 const env=environment({imports:{account:{getAccountManager:()=>manager,AccountType:types,OfflineAccount:{create:()=>player('added',types.OFFLINE)}},
   feature_core:{reserveTaskActivityId:()=>1,ActivityCategory:{ACCOUNT:'account'},ActivityStatus:{SUCCESS:'success',FAILED:'failed',ABORTED:'abort'},
@@ -35,6 +35,10 @@ async function mountForm() {
   const close=()=>{pendingForm.aboutToDisappear();page.showAddSheet=false;};
   pendingForm.onClose=close;pendingForm.onSuccess=()=>{page.refresh();close();};pendingForm.aboutToAppear();
 }
+const savedSelection = selected;
+selected = '';
+assert.equal((await call('listPlayerAccounts', {})).accounts.some(item => item.selected), false);
+selected = savedSelection;
 const adding=call('addOfflinePlayer',{playerName:'TestPlayer'});await mountForm();const added=await adding;
 assert.equal(added.state,'ready');assert(added.accountRef);assert.equal(selected,'added');assert.equal(saves,1);
 assert.equal((await call('readPlayerLogin',{loginRef:added.loginRef})).accountRef,added.accountRef);

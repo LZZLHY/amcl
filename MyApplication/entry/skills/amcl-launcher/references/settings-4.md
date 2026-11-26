@@ -1,4 +1,4 @@
-# 更新进度、设置交接与文件选择结果
+# 更新进度、设置交接与移动端输入
 
 ### updateAccountAccess
 
@@ -301,30 +301,57 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 {"type":"object","required":["state"],"properties":{"state":{"enum":["waiting","ready","cancelled","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"major":{"type":"string"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["major"]}}]}
 ```
 
-### readUpdatePackageSelection
+### getMobileInputMode
 
-按原引用从任意启动器页面查询本地 HAP 是否已转交更新流程，重启后可查最近终态。读取不会再次打开选择器或发起安装。
+查询手机或平板当前保存的虚拟按键显示偏好。
 
 执行参数
 
 ```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'readUpdatePackageSelection' --args '{"arg1":"picker-1"}')
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'getMobileInputMode' --args '{}')
 ```
 
 ```json
-{"type":"object","properties":{"arg1":{"type":"string","description":"openUpdateSource(localPackage) 返回的本次选择引用","maxLength":16384}},"required":["arg1"],"additionalProperties":false}
+{"type":"object","properties":{},"required":[],"additionalProperties":false}
 ```
 
 执行返回值
 
-- `{"state":"waiting"}`
-- `{"state":"accepted","target":"v1.0.8:1000912:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`
-- `{"state":"cancelled"}`
-- `{"state":"failed","reason":"selectionExpired"}`
-- `{"state":"busy","reason":"anotherRequest"}`
+- `{"state":"ready","mode":"auto"}`
+- `{"state":"failed","reason":"invalidArguments"}`
 - `{"state":"unavailable","reason":"launcherNotReady"}`
 - `{"state":"unknown","reason":"operationUnconfirmed"}`
+- `{"state":"busy","reason":"anotherRequest"}`
 
 ```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["waiting","accepted","cancelled","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"target":{"type":"string","minLength":1}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"accepted"}}},"then":{"required":["target"]}}]}
+{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","unavailable","unknown","busy"]},"reason":{"type":"string"},"mode":{"type":"string","enum":["auto","gamepad","kbm"]}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["mode"]}}]}
+```
+
+### setMobileInputMode
+
+选择手机或平板的虚拟按键显示方式，立即保存并回读，可在游戏设置中更改。
+
+执行参数
+
+```text
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'setMobileInputMode' --args '{"arg1":"gamepad"}')
+```
+
+```json
+{"type":"object","properties":{"arg1":{"type":"string","description":"自动、手柄或键鼠偏好","maxLength":16384,"enum":["auto","gamepad","kbm"]}},"required":["arg1"],"additionalProperties":false}
+```
+
+执行返回值
+
+返回 `mode` 时，该值等于原请求的 `arg1`（mode）。
+
+当请求参数为 `{"mode":"gamepad"}` 时：
+- `{"state":"ready","mode":"gamepad"}`
+- `{"state":"failed","reason":"invalidArguments"}`
+- `{"state":"unavailable","reason":"launcherNotReady"}`
+- `{"state":"unknown","reason":"operationUnconfirmed"}`
+- `{"state":"busy","reason":"anotherRequest"}`
+
+```json
+{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","unavailable","unknown","busy"]},"reason":{"type":"string"},"mode":{"type":"string","enum":["auto","gamepad","kbm"]}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["mode"]}}]}
 ```

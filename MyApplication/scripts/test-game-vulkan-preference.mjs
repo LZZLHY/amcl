@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import { makePureEtsLoader } from './lib/load-pure-ets.mjs';
+import { loadActionComponent } from './lib/unified-actions-fixture.mjs';
 
 const versions = makePureEtsLoader()('commons/src/main/ets/utils/McVersionUtils.ets');
 const load = makePureEtsLoader({ commons: versions });
@@ -14,6 +15,28 @@ const { resolveMinecraftGraphicsRequest, minecraftGraphicsBackendForApi,
   load('launch/src/main/ets/MinecraftGraphicsPreference.ets');
 
 const options = 'renderDistance:12\r\npreferredGraphicsBackend:"vulkan"\r\nstartedCleanly:false\r\n';
+// 启动前的图形选项也会写同一文件。读取异常或短读时不得把原设置当作空文件覆盖。
+{
+  let text = 'key_key.jump:key.keyboard.x\r\n' + options;
+  let writes = 0;
+  const fileIo = { lstatSync: () => ({ size: Buffer.byteLength(text), isFile: () => true }),
+    AccessModeType: {WRITE:2}, accessSync: () => true,
+    readTextSync: () => { throw Error('read failed'); } };
+  const Page = loadActionComponent('entry/src/main/ets/pages/McGamePage.ets','McGamePage',{
+    methods:['applyGameGraphicsPreference'], globals:{ TAG:'options-test' }, dependencies:{
+      '@kit.CoreFileKit':{fileIo}, launch:{minecraftGraphicsBackendForProfile},
+      commons:{stringToUtf8: value => Buffer.from(value), AtomicFileWriter:{write(_file, value){ writes++; text = value; }}},
+    },
+  });
+  const page = Object.assign(new Page(),{launchLogger_: () => ({ info(){}, warn(){} })});
+  const apply = () => page.applyGameGraphicsPreference('/world','26.3','minecraft-vulkan');
+  apply();
+  fileIo.readTextSync = () => 'key'; apply();
+  assert.equal(writes, 0);
+  fileIo.readTextSync = () => text; apply(); apply();
+  assert.equal(writes, 1);
+  assert.equal(text, 'key_key.jump:key.keyboard.x\r\n' + options.replace('startedCleanly:false','startedCleanly:true'));
+}
 const evidence = {
   evidenceProfileId: 'minecraft-vulkan', requirementId: 'minecraft-26.3-sdl-vulkan-conservative-v1',
   windowProvider: 'SDL3', gameVersion: '26.3', loader: 'YES', instance: 'YES', windowSurface: 'YES',

@@ -90,6 +90,7 @@ function settingsUi(view) {
   const Shell=loadActionComponent('entry/src/main/ets/components/InputSettingsEditor.ets','InputSettingsEditor',{
     methods:['build','PageBody_','Header_'],render:true,globals,
     dependencies:{...shared,'./GameSettingsWindow':windowSize,'./TouchOptionsEditor':{TouchOptionsEditor:p=>{captures.body=p.section;}},
+      './MobileInputSettings':{MobileInputSettings:p=>{assert.equal(p.showDevices,true);captures.body='devices';}},
       './KeyPickerSheet':{},'./GameSettingsNavigation':{
         GameSettingsRail:p=>{captures.rail=p;},
         GameSettingsDirectory:p=>{captures.directory=p;captures.body='home';},
@@ -156,6 +157,10 @@ function settingsUi(view) {
   assert.deepEqual(ui.directory().map(e=>e.modifiers.id[0]),[
     'game-settings-nav-look','game-settings-nav-move','game-settings-nav-menu','game-settings-nav-gesture',
     'game-settings-nav-gyro','game-settings-nav-gamepad','game-settings-nav-policy','game-settings-nav-layout']);
+  view.allowMobileInput=true;
+  ui.draw();ui.button('game-settings-nav-devices')();assert.equal(ui.draw().body,'devices');
+  ui.ui.records.find(r=>r.modifiers.accessibilityText?.[0]==='返回设置目录').modifiers.onClick[0]();
+  assert.equal(view.dirty_(),false,'打开输入设备不会污染方案');
   view.allowLiveResolution=true;ui.draw();assert.ok(ui.button('open-game-resolution'));
   ui.button('game-settings-nav-move')();assert.equal(ui.draw().body,'move');
   view.adjustJoystickDeadZone_(0.24,sliderModes.Click);assert.ok(view.dirty_());
@@ -165,6 +170,7 @@ function settingsUi(view) {
   view.screenWidth=1180;view.screenHeight=720;
   const wide=ui.draw();assert.deepEqual([wide.rail.selected,wide.body,wide.title],['look','look','look']);
   assert.equal(wide.rail.profileName,store.profile.name);
+  ui.button('game-settings-nav-devices')();assert.equal(ui.draw().body,'devices');
   ui.button('game-settings-nav-menu')();assert.deepEqual([ui.draw().rail.selected,ui.draw().body],['menu','menu']);
   assert.equal(view.joystickDeadZone,.24);assert.equal(store.writes,0);
   // 手动选中分类在窗口缩小时继续显示；回目录再放大仍选择默认视角。
@@ -175,7 +181,7 @@ function settingsUi(view) {
   const launcher=fixture();launcher.view.screenWidth=1200;launcher.view.screenHeight=720;
   launcher.view.allowLiveResolution=true;await launcher.view.aboutToAppear();const standalone=settingsUi(launcher.view);
   assert.equal(standalone.draw().body,'policy');
-  assert.ok(standalone.directory().every(row=>!['open-game-resolution','game-settings-nav-layout'].includes(row.modifiers.id[0])));
+  assert.ok(standalone.directory().every(row=>!['open-game-resolution','game-settings-nav-layout','game-settings-nav-devices'].includes(row.modifiers.id[0])));
   launcher.view.cancel_();await launcher.view.pending;
 }
 
@@ -224,3 +230,79 @@ console.log('PASS real settings directory and callbacks, capability gate, window
   view.cancel_();await view.pending;
 }
 console.log('PASS real settings and resolution frames share compact tablet dimensions and phone margins');
+
+{
+  // 两个真实组件只替换偏好和设备监视器边界。直接执行渲染出的按钮和监听，验证跨入口回显、热插拔和离开清理。
+  const ui=actionUiReceiver(), listeners=new Set(), devicesListeners=new Set();
+  let mode='auto', devices=[], fail=false, watcherUnavailable=false;
+  const preference={
+    read() {if(!['auto','gamepad','kbm'].includes(mode))throw Error('invalid stored value');return mode;},
+    subscribe(_context,listener) {
+      if(watcherUnavailable)throw Error('watcher unavailable');
+      const stored=this.read();listeners.add(listener);listener(stored);return ()=>listeners.delete(listener);
+    },
+    save(_context,value) {if(fail)throw Error('save failed');mode=value;for(const listener of listeners)listener(value);}
+  };
+  const monitor={connectedDevices:()=>devices,addDeviceListListener:f=>devicesListeners.add(f),removeDeviceListListener:f=>devicesListeners.delete(f)};
+  const Panel=loadActionComponent('entry/src/main/ets/components/MobileInputSettings.ets','MobileInputSettings',{
+    render:true,globals:{...ui.globals,Flex:ui.globals.Row,FlexWrap:{Wrap:1},alignItems:ui.globals.width},
+    dependencies:{gamecontrol:{getInputDeviceMonitor:()=>monitor},'../runtime/MobileInputPreference':{MobileInputPreference:preference},
+      './TouchEditorTheme':{EditorPalette:class {}}}
+  });
+  const panel=inGame=>{const view=new Panel();view.showDevices=inGame;view.getUIContext=()=>({getHostContext:()=>({})});view.aboutToAppear();return view;};
+  const draw=view=>{ui.clear();view.build();return ui.records;};
+  const button=(view,value)=>draw(view).find(row=>row.modifiers.id?.[0]==='mobile-input-'+value);
+  const labels=view=>draw(view).filter(row=>row.type==='Text').map(row=>row.args[0]);
+  const launcher=panel(false), game=panel(true);
+  assert.equal(devicesListeners.size,1);assert.ok(labels(game).includes('暂未检测到输入设备'));
+  assert.ok(!labels(launcher).includes('已连接的输入设备'));
+  button(launcher,'gamepad').modifiers.onClick[0]();
+  assert.equal(button(game,'gamepad').modifiers.accessibilityText[0],'手柄优先，已选择');
+  button(game,'kbm').modifiers.onClick[0]();
+  assert.equal(button(launcher,'kbm').modifiers.accessibilityText[0],'键鼠优先，已选择');
+  fail=true;button(game,'auto').modifiers.onClick[0]();
+  assert.equal(mode,'kbm');assert.ok(labels(game).includes('保存失败，请重试'));
+  devices=[{id:7,name:'手柄 A',sources:['gamepad','joystick']},{id:8,name:'键盘 B',sources:['keyboard','touchpad']}];
+  for(const listener of devicesListeners)listener();
+  assert.ok(labels(game).includes('手柄 A'));assert.ok(labels(game).includes('手柄'));assert.ok(labels(game).includes('键盘、触控板'));
+  devices=[{id:7,name:'手柄 C',sources:['gamepad']}];for(const listener of devicesListeners)listener();
+  assert.ok(labels(game).includes('手柄 C'));assert.ok(!labels(game).includes('手柄 A'));
+  devices=[];for(const listener of devicesListeners)listener();assert.ok(labels(game).includes('暂未检测到输入设备'));
+  const late=button(game,'auto').modifiers.onClick[0];
+  game.aboutToDisappear();launcher.aboutToDisappear();assert.equal(devicesListeners.size,0);assert.equal(listeners.size,0);
+  fail=false;late();assert.equal(mode,'kbm');
+
+  // 初值损坏时，两处面板都应允许玩家明确覆盖；失败不点亮选项，写成功重新订阅，继续跟随后续变化。
+  for(const inGame of [false,true]) {
+    mode='corrupt';fail=true;
+    const recovering=panel(inGame);
+    assert.ok(labels(recovering).some(message=>message.startsWith('无法读取当前输入方式')));
+    assert.equal(listeners.size,0);
+    for(const value of ['auto','gamepad','kbm']) {
+      const choice=button(recovering,value);
+      assert.notEqual(choice.modifiers.enabled?.[0],false);
+      assert.ok(!choice.modifiers.accessibilityText[0].includes('已选择'));
+    }
+    button(recovering,'kbm').modifiers.onClick[0]();
+    assert.equal(mode,'corrupt');assert.ok(labels(recovering).includes('保存失败，请重试'));
+    assert.equal(button(recovering,'kbm').modifiers.accessibilityText[0],'键鼠优先');
+    fail=false;button(recovering,'kbm').modifiers.onClick[0]();
+    assert.equal(mode,'kbm');assert.equal(listeners.size,1);
+    assert.equal(button(recovering,'kbm').modifiers.accessibilityText[0],'键鼠优先，已选择');
+    preference.save({},'gamepad');
+    assert.equal(button(recovering,'gamepad').modifiers.accessibilityText[0],'手柄优先，已选择');
+    recovering.aboutToDisappear();
+  }
+  // 监听失败与磁盘不可读是两个边界。持续失败时显示真实回读值，监听恢复后能够在原界面重试挂接。
+  watcherUnavailable=true;
+  const unwatched=panel(true);
+  assert.equal(button(unwatched,'gamepad').modifiers.accessibilityText[0],'手柄优先，已选择');
+  button(unwatched,'auto').modifiers.onClick[0]();
+  assert.equal(mode,'auto');assert.equal(button(unwatched,'auto').modifiers.accessibilityText[0],'自动，已选择');
+  assert.ok(labels(unwatched).some(message=>message.includes('无法自动刷新')));
+  watcherUnavailable=false;
+  draw(unwatched).find(row=>row.type==='Button' && row.args[0]==='重新读取').modifiers.onClick[0]();
+  assert.equal(listeners.size,1);
+  unwatched.aboutToDisappear();assert.equal(listeners.size,0);assert.equal(devicesListeners.size,0);
+}
+console.log('PASS live mobile preference in both panels, connected device inventory, damaged preference recovery, watcher retry and cleanup');

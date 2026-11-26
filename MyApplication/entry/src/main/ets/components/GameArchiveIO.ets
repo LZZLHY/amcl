@@ -159,7 +159,8 @@ class OwnedArchiveStage {
   private members:StageMember[]=[];
   private directories:Map<string,string>=new Map<string,string>();
   constructor(root:string,prefix:string) {
-    const created=fs.mkdtempSync(root+'/'+prefix);
+    // FileIO 替换模板末尾六个 X，裸前缀在真机返回 EINVAL。
+    const created=fs.mkdtempSync(root+'/'+prefix+'XXXXXX');
     this.dir=ArchiveDirectory.capture(created,{root:root,current:():boolean=>true});
   }
   remember(path:string,directory:boolean):void {
@@ -264,7 +265,7 @@ export class GameArchiveIO {
 
   /** 本地文件/存档操作统一由领域owner记账，内部单文件和递归步骤不重复开账。 */
   static async importResourceFiles(ctx: common.UIAbilityContext, targetDir: string, expectedExts: string[],
-    maxSelectNumber: number = 500, scope?:ArchiveSelectionScope): Promise<BatchImportResult> {
+    maxSelectNumber: number = 500, scope?:ArchiveSelectionScope, packArchive: boolean = false): Promise<BatchImportResult> {
     let guard:ArchiveDirectory|undefined;
     try {
       guard=ArchiveDirectory.capture(targetDir,scope);
@@ -272,7 +273,7 @@ export class GameArchiveIO {
       guard.check();
       const bound=guard;
       return await trackArchiveBatch(ctx,'导入本地资源文件',async(id:number):Promise<BatchImportResult>=>{
-        const outcome=await GameArchiveIO.importResourceFilesUntracked(ctx,bound,expectedExts,maxSelectNumber,id);
+        const outcome=await GameArchiveIO.importResourceFilesUntracked(ctx,bound,expectedExts,maxSelectNumber,id,packArchive);
         if(!outcome.cancelled) {
           try {bound.check();} catch (_) {outcome.targetChanged=true;if(!outcome.failures.length) outcome.failures.push({name:'',message:'原目录已经变化'});outcome.message+='；原目录已经变化。';}
         }
@@ -356,8 +357,8 @@ export class GameArchiveIO {
 
   /** JDK/整合包安装仍为单任务流程，不把多个安装包混入一次安装。 */
   static async importResourceFile(ctx: common.UIAbilityContext, targetDir: string,
-    expectedExts: string[]): Promise<ImportResult> {
-    const result = await GameArchiveIO.importResourceFiles(ctx, targetDir, expectedExts, 1);
+    expectedExts: string[], packArchive: boolean = false): Promise<ImportResult> {
+    const result = await GameArchiveIO.importResourceFiles(ctx, targetDir, expectedExts, 1, undefined, packArchive);
     if (result.cancelled) return cancelledResult();
     return result.names.length > 0 ? okResult(result.names[0]) : failResult(result.message);
   }
@@ -373,6 +374,7 @@ export class GameArchiveIO {
     expectedExts: string[],
     maxSelectNumber: number = 500,
     activityId: number = 0,
+    packArchive: boolean = false,
   ): Promise<BatchImportResult> {
     target.check();
     let uris: string[] = [];
@@ -404,7 +406,8 @@ export class GameArchiveIO {
           throw new Error('文件类型不符，需要 ' + expectedExts.join(' / '));
         }
         target.ensure();
-        const dest=target.path+'/'+filename;
+        // 本地整合包直接交付给任务的归档位置；名称校验、界面和结果仍使用玩家所选原名。
+        const dest=target.path+'/'+(packArchive ? 'archive.zip' : filename);
         if (!missingEntry(dest)) throw new Error('同名文件已存在，原文件已保留');
         scratch=new OwnedArchiveStage(target.path,'.amcl-import-');
         const temp=scratch.dir.path+'/part';

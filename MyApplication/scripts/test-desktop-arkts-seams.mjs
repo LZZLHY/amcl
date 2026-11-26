@@ -43,6 +43,8 @@ const commons = { AppLogger: logger, LogTags: { ENTRY_ABILITY: 'EntryAbility' },
 // 文件保护由独立安装租约/Coordinator回归验证；此处为Ability注入成功的平台根配置边界。
 const native = { getDiagnosticCapabilities: () => 0, desktopGameProcessState: () => 0, amclLogInit: noop,
   configureSideloadInstallRoot: () => true, setOhosFrameRateForeground: noop, cancelAllInput: noop,
+  // 记录实际 Ability 发给原生手柄的焦点通知，验证切到后台时只撤销焦点。
+  desktopGamepadFocus: focused => lifecycleEvents.push(['gamepad-focus', focused]),
   downloadDetachCallbacks: () => lifecycleEvents.push(['download-callbacks-detach']) };
 const taskOwner = {
   configure: (...args) => ownerConfigurations.push(args),
@@ -160,6 +162,7 @@ assert.deepEqual(unexpectedLogs, [], '初始化不能靠生产catch吞掉缺失�
   ability.onCreate({}, {}); ability.onForeground(); ability.onBackground(); ability.onDestroy();
   assert.deepEqual(audioEvents, [['attach', ability.context], ['foreground', true], ['foreground', false], ['detach']]);
   assert.deepEqual(ownerForeground, [true, false, false]);
+  assert.deepEqual(lifecycleEvents.filter(event => event[0] === 'gamepad-focus'), [['gamepad-focus', false]]);
   const detachAt = lifecycleEvents.findIndex(event => event[0] === 'audio-detach');
   const gameStopAt = lifecycleEvents.findIndex(event => event[0] === 'game-stop');
   const callbackDetachAt = lifecycleEvents.findIndex(event => event[0] === 'download-callbacks-detach');

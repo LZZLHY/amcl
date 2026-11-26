@@ -18,6 +18,7 @@ export struct GameResolutionPanel {
   @Prop exitOnly: boolean = false;
   /** 方案名只标识当前编辑环境；本局分辨率不会写入这个方案。 */
   @Prop profileName: string = '';
+  @Prop allowMobileInput: boolean = false;
   onNavigate: (section: string) => void = (_section: string): void => {};
   onReturnGame: () => void = (): void => {};
   onDone: () => void = (): void => {};
@@ -215,6 +216,7 @@ export struct GameResolutionPanel {
         Row() {
           if (gameSettingsWide(this.screenWidth, this.screenHeight)) {
             GameSettingsRail({ palette: this.palette, selected: 'resolution', profileName: this.profileName,
+              allowMobileInput: this.allowMobileInput,
               allowLiveResolution: true, onSelect: (section: string): void => { this.navigate_(section); } })
           }
           Column() { this.Content_(gameSettingsWide(this.screenWidth, this.screenHeight)) }

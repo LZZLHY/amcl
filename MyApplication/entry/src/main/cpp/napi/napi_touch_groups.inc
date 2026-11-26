@@ -35,7 +35,8 @@ static bool GroupOptionalInt(napi_env env,napi_value object,const char* name,int
 /** 所有长度与枚举先验再分配；原 v3 解析器不会碰到扩展，也不能误接受 v4 的半份表。 */
 static bool ReadGroupSchema(napi_env env,napi_value root,uint32_t controlCount,amcl::input::TouchGroupSchema& result) {
     napi_value object = nullptr, groups = nullptr, controls = nullptr; uint32_t count = 0;
-    if (!NamedValue(env,root,"groupSchema",&object) || !GroupFields(env,object,{"profile","groups","controls"}) ||
+    if (!NamedValue(env,root,"groupSchema",&object) || !GroupFields(env,object,{"profile","groups","controls","systemControlsOnly"}) ||
+        !GroupOptionalBool(env,object,"systemControlsOnly",&result.systemControlsOnly) ||
         !GroupText(env,object,"profile",192,result.profile) ||
         !GroupArray(env,object,"groups",amcl::input::kMaxTouchGroups,&groups,&count)) return false;
     for (uint32_t i = 0; i < count; ++i) {

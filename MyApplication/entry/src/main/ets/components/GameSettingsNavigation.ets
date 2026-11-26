@@ -23,13 +23,19 @@ const GAME_TOOLS: SettingsDestination[] = [
   { id:'layout', title:'编辑按键布局', detail:'编辑游戏画面上的虚拟按键', icon:AppIconName.LayoutList },
   { id:'resolution', title:'游戏分辨率', detail:'仅调整本局游戏的渲染比例', icon:AppIconName.Appearance }
 ]
+/** 移动设备偏好独立于操控方案，只在支持的局内宿主开放。 */
+const INPUT_DEVICES: SettingsDestination = {
+  id:'devices', title:'输入设备', detail:'查看已连接的设备，输入方式即时保存', icon:AppIconName.GameController
+}
 
 /** 详情标题和手机目录使用相同目录项，也保留外部旧入口所用的 gesture 标识。 */
 export function gameSettingsTitle(id: string): string {
+  if (id === INPUT_DEVICES.id) return INPUT_DEVICES.title
   return INPUT_DESTINATIONS.find((entry: SettingsDestination): boolean => entry.id===id)?.title ??
     GAME_TOOLS.find((entry: SettingsDestination): boolean => entry.id===id)?.title ?? '设置'
 }
 export function gameSettingsDetail(id: string): string {
+  if (id === INPUT_DEVICES.id) return INPUT_DEVICES.detail
   return INPUT_DESTINATIONS.find((entry: SettingsDestination): boolean => entry.id===id)?.detail ??
     GAME_TOOLS.find((entry: SettingsDestination): boolean => entry.id===id)?.detail ?? ''
 }
@@ -44,11 +50,13 @@ export struct GameSettingsDirectory {
   /** 平板的工具从分类滚动区拆出固定展示；手机仍将两组一次性呈现。 */
   @Prop toolsOnly: boolean = false
   @Prop includeGameTools: boolean = true
+  @Prop allowMobileInput: boolean = false
   @Prop allowLiveResolution: boolean = false
   onSelect: (id: string) => void = (_id: string): void => {}
 
   /** 目录快照按固定分类顺序来自父草稿，工具入口只显示其作用域。 */
   private summary_(id: string): string {
+    if (id === INPUT_DEVICES.id) return ''
     const index: number=INPUT_DESTINATIONS.findIndex((entry: SettingsDestination): boolean=>entry.id===id)
     return index>=0 ? this.summaries[index] ?? '' : id==='resolution'?'仅本局':'当前方案'
   }
@@ -82,6 +90,7 @@ export struct GameSettingsDirectory {
       if (!this.toolsOnly) {
         this.Caption_('手感与输入')
         Column({space:1}) {
+          if (this.allowMobileInput) { this.Destination_(INPUT_DEVICES) }
           ForEach(INPUT_DESTINATIONS.slice(0,6),(entry: SettingsDestination) => {
             this.Destination_(entry)
           },(entry: SettingsDestination): string=>entry.id)
@@ -111,6 +120,7 @@ export struct GameSettingsRail {
   @Prop selected: string = ''
   @Prop profileName: string = ''
   @Prop allowLiveResolution: boolean = false
+  @Prop allowMobileInput: boolean = false
   @Prop includeGameTools: boolean = true
   onSelect: (id: string) => void = (_id: string): void => {}
   build() {
@@ -120,7 +130,7 @@ export struct GameSettingsRail {
         Text(this.includeGameTools?'设置':'手感与输入').fontSize(25).fontWeight(FontWeight.Bold).fontColor(this.palette.text)
       }.width('100%').padding({left:8,top:2,bottom:2})
       Scroll() {
-        GameSettingsDirectory({palette:this.palette,selected:this.selected,compact:true,includeGameTools:false,
+        GameSettingsDirectory({palette:this.palette,selected:this.selected,compact:true,includeGameTools:false,allowMobileInput:this.allowMobileInput,
           allowLiveResolution:this.allowLiveResolution,onSelect:(id: string): void=>{ this.onSelect(id) }})
       }.width('100%').layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Auto)
       if (this.includeGameTools) {

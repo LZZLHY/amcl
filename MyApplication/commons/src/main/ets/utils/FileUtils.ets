@@ -3,10 +3,12 @@
  */
 
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MODPACK_PENDING_FILE } from './InstancePaths';
+import { MC_INSTALL_PENDING, MODPACK_PENDING_FILE } from './InstancePaths';
 
 const INSTALL_COMMIT_MARKER: string = '.amcl-install-complete';
+const INSTALL_COMMIT_TEXT: string = 'amcl-install-v1\n';
 
 /**
  * 统一的版本安装检测标准。
@@ -24,13 +26,19 @@ export function isVersionInstalled(mcDir: string, versionId: string): boolean {
     let jar = fs.statSync(jarPath);
     let json = fs.statSync(jsonPath);
     if (!jar.isFile() || !json.isFile() || jar.size <= 1024 * 1024 || json.size <= 0) return false;
-    try {
-      let marker = fs.statSync(versionDir + '/' + INSTALL_COMMIT_MARKER);
-      return marker.isFile() && marker.size > 0;
-    } catch (markerError) {
-      // 历史安装没有 marker：保留兼容，但不能把只有 jar 的残留算完整。
-      return true;
+    // 历史实例只需读取已知文件，无需列出目录。只有明确缺少标记才允许旧格式回退。
+    let pending = true;
+    try { fs.lstatSync(versionDir + '/' + MC_INSTALL_PENDING); }
+    catch (e) {
+      if ((e as BusinessError).code !== 13900002) return false;
+      pending = false;
     }
+    const path = versionDir + '/' + INSTALL_COMMIT_MARKER;
+    let marker: fs.Stat;
+    try { marker = fs.lstatSync(path); }
+    catch (e) { return !pending && (e as BusinessError).code === 13900002; }
+    return marker.isFile() && !marker.isSymbolicLink() && marker.size > 0 &&
+      (!pending || fs.readTextSync(path) === INSTALL_COMMIT_TEXT);
   } catch (e) {
     return false;
   }
@@ -43,7 +51,7 @@ export function writeVersionInstallCommit(mcDir: string, versionId: string): voi
   let file: fs.File | null = null;
   try {
     file = fs.openSync(tempPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-    fs.writeSync(file.fd, 'amcl-install-v1\n');
+    if (fs.writeSync(file.fd, INSTALL_COMMIT_TEXT) !== INSTALL_COMMIT_TEXT.length) throw new Error('安装完成标记未写满');
     fs.fsyncSync(file.fd);
     fs.closeSync(file);
     file = null;

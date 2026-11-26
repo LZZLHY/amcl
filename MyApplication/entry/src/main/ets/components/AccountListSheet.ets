@@ -144,7 +144,7 @@ export struct AccountListSheet {
     if (!manager.isReady() || !this.alive) return { 'state': 'unavailable' };
     const accounts = manager.list();
     if (method === 'listPlayerAccounts') {
-      const selected = manager.getSelectedId() || (accounts.length ? accounts[0].id : '');
+      const selected = manager.getAvailableSelection()?.id ?? '';
       return { 'state': 'ready', 'removalState': this.removalState_, 'removalRef': this.removalRef_,
         'accounts': accounts.map((a: Account): SkillFields => ({ 'accountRef': this.accountRef_(a), 'type': a.type, 'selected': a.id === selected })) };
     }
@@ -193,7 +193,7 @@ export struct AccountListSheet {
       this.armDelete(account.id);
       return { 'state': this.pendingDeleteId === account.id ? 'needsUser' : 'unavailable', 'accountRef': this.accountRef_(account) };
     }
-    if (this.currentId !== account.id || manager.getSelected() !== account) return { 'state': 'failed', 'reason': 'selectAccountFirst' };
+    if (this.currentId !== account.id || manager.getAvailableSelection() !== account) return { 'state': 'failed', 'reason': 'selectAccountFirst' };
     if (method === 'showPlayerProfile') { this.showAccountInformation_(); return { 'state': 'needsUser' }; }
     if (method === 'refreshPlayerCredentials') {
       if (account.type === AccountType.OFFLINE) return { 'state': 'unavailable' };
@@ -238,6 +238,7 @@ export struct AccountListSheet {
     this.accountMutationId = ''; this.accountMutationAction = '';
     this.refreshingId = ''; this.switchingProfileId = ''; this.refreshErrorMsg = '';
     this.refresh();
+    this.recoverAccounts_(this.accountMutationEpoch);
     ProductQaAccounts.bind(this, (): AccountSheetActions => ({
       ready: (): boolean => this.alive && !this.busy_() && !this.showAddSheet && !this.showSkinDetail
         && AppStorage.get<boolean>('appInForeground') === true,
@@ -249,6 +250,27 @@ export struct AccountListSheet {
       confirmRemove: (choice: AccountRemovalChoice): Promise<boolean> => this.confirmRemoval_(choice),
       cancelRemove: (choice: AccountRemovalChoice): boolean => this.cancelRemoval_(choice)
     }));
+  }
+
+  /** 初始化失败时还没有待解密列表。用此面板的宿主重新打开原偏好；已就绪时只重试缺失记录。 */
+  private async recoverAccounts_(epoch: number): Promise<void> {
+    const manager = getAccountManager();
+    try {
+      if (!manager.isReady()) {
+        const context = this.getUIContext().getHostContext();
+        if (context === undefined) throw new Error('当前面板暂时无法读取账号');
+        await manager.init(context);
+      } else if (manager.hasUnavailableAccounts) {
+        await manager.reload(true);
+      } else return;
+      // 恢复已经完成，即使这张面板刚关闭，原首页也应重读管理器；退休页面本身不再接收回调。
+      this.onAccountsChanged();
+      if (!this.alive || this.accountMutationEpoch !== epoch) return;
+      this.refresh();
+      if (manager.hasUnavailableAccounts) this.refreshErrorMsg = '部分账号暂不可读，可稍后重开账号管理重试';
+    } catch (_) {
+      if (this.alive && this.accountMutationEpoch === epoch) this.refreshErrorMsg = '账号数据暂不可读，请稍后重开账号管理重试';
+    }
   }
 
   /** 只退役本页状态回调，已经提交的账号操作仍需通知外层首页重读确认结果。 */
@@ -690,11 +712,8 @@ export struct AccountListSheet {
   private refresh(): void {
     let am = getAccountManager();
     this.accounts = am.list();
-    let sel = am.getSelectedId();
-    // 选中失效：fallback 到第一个账户（与 AccountManager.getSelected 保持一致语义）
-    if (sel.length === 0 && this.accounts.length > 0) {
-      sel = this.accounts[0].id;
-    }
+    // 不可读的隐式首账号没有当前卡，其余可用身份都保留在切换列表。
+    const sel = am.getAvailableSelection()?.id ?? '';
     this.selectedId = sel;
 
     // 计算 current / others 快照

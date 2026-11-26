@@ -28,8 +28,8 @@ export async function readModpackRecoveryKind(filesDir: string, id: string): Pro
 
 /** 在工作线程清理已放弃会话的私有下载文件。放弃记录与实例原件留在原处。 */
 @Concurrent
-function cleanupRecoveryTask(filesDir: string, id: string): boolean {
-  return cleanupDismissedModpackWork(filesDir, id);
+async function cleanupRecoveryTask(filesDir: string, id: string): Promise<boolean> {
+  return await cleanupDismissedModpackWork(filesDir, id);
 }
 
 export async function cleanupModpackRecoveryWork(filesDir: string, id: string): Promise<boolean> {

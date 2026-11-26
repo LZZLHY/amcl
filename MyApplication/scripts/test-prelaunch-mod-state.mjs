@@ -47,7 +47,7 @@ const io = {
     descriptors.set(fd, name);
     return { fd };
   },
-  writeSync(fd, text) { put(descriptors.get(fd), text); },
+  writeSync(fd, bytes) { put(descriptors.get(fd), bytes); return Buffer.byteLength(bytes); },
   fsyncSync() {},
   closeSync(file) { descriptors.delete(file.fd); },
   renameSync(from, to) {

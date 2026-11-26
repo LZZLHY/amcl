@@ -18,7 +18,7 @@
  */
 
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { AppLogger } from 'commons';
+import { AppLogger, AtomicFileWriter } from 'commons';
 import { LOG_DOMAIN_DOWNLOAD } from 'commons';
 import { ModSource } from './ModTypes';
 import { modInstallationActive } from './ModInstallTransaction';
@@ -133,9 +133,8 @@ export function writeInstalledModIndex(modsDir: string, idx: InstalledModIndex):
     try { fs.mkdirSync(modsDir, true); } catch (e) { /* 已存在 */ }
     let shape: IndexFileShape = { version: INDEX_VERSION, entries: idx.entries() };
     let json = JSON.stringify(shape);
-    let file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    fs.writeSync(file.fd, json);
-    fs.closeSync(file);
+    // 扫描器也写同一份索引。完整写好再替换，短写失败时保住原件。
+    AtomicFileWriter.write(path, json);
     AppLogger.info(TAG, `wrote index: ${path} (${idx.size()} entries)`, LOG_DOMAIN_DOWNLOAD);
   } catch (e) {
     AppLogger.warn(TAG, `writeInstalledModIndex failed: ${path}`, e as Object, LOG_DOMAIN_DOWNLOAD);

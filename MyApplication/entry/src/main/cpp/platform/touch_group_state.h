@@ -64,8 +64,10 @@ struct TouchGroupSchema {
     std::string profile;
     std::vector<TouchGroupDefinition> groups;
     std::vector<TouchGroupControl> controls;
+    // 外设精简投影仅包含系统工具和临时UI区；记录原组态供本局展开时恢复。
+    bool systemControlsOnly = false;
     bool operator==(const TouchGroupSchema& b) const {
-        return profile == b.profile && groups == b.groups && controls == b.controls;
+        return profile == b.profile && groups == b.groups && controls == b.controls && systemControlsOnly == b.systemControlsOnly;
     }
     bool Enabled() const { return !groups.empty(); }
 };
@@ -73,7 +75,7 @@ struct TouchGroupSchema {
 /** 最终 native 安装边界仍再次校验，不依赖 NAPI 曾经验证过引用或键列表。 */
 inline bool ValidTouchGroupSchema(const TouchGroupSchema& value, size_t controls) {
     // 无组方案使用原v3；空扩展不能伪造组身份。
-    if (!value.Enabled()) return value.controls.empty() && value.profile.empty();
+    if (!value.Enabled()) return value.controls.empty() && value.profile.empty() && !value.systemControlsOnly;
     if (value.profile.empty() || value.profile.size() > 192 || value.groups.size() > kMaxTouchGroups ||
         value.controls.size() != controls || controls > AMCL_CONTROL_SCHEMA_MAX_CONTROLS) return false;
     std::set<std::string> ids;
@@ -86,6 +88,8 @@ inline bool ValidTouchGroupSchema(const TouchGroupSchema& value, size_t controls
     size_t operations = 0;
     std::set<int> openers, returns;
     for (const auto& control : value.controls) {
+        // 精简表的几何均属系统区域，禁止借此开关将普通组动作附在恢复入口上。
+        if (value.systemControlsOnly && (control.group != -1 || control.phases || control.mouseTool || control.secondaryTarget >= 0)) return false;
         if (control.group < -1 || control.group >= static_cast<int>(value.groups.size()) ||
             control.rank < 0 || control.rank >= AMCL_CONTROL_SCHEMA_MAX_CONTROLS ||
             control.secondaryTarget < -1 || control.secondaryTarget >= static_cast<int>(value.groups.size())) return false;
@@ -198,8 +202,10 @@ public:
         activeSecondary_ = -1; secondaryEnabled_ = false; hiddenControls_ = false; changedControls_.clear();
         for (size_t i = 0; i < definition_.groups.size(); ++i) {
             const auto& group = definition_.groups[i]; secondaryEnabled_ |= group.secondary;
-            if (group.secondary && group.id == previousActive && std::any_of(definition_.controls.begin(), definition_.controls.end(),
-                [i](const TouchGroupControl& control) { return control.secondaryTarget == static_cast<int>(i) && !control.secondaryReturn; }))
+            // 精简档暂时没有展开键几何；真正回到完整投影时才按现有入口决定恢复或收起。
+            if (group.secondary && group.id == previousActive && (next.systemControlsOnly ||
+                std::any_of(definition_.controls.begin(), definition_.controls.end(),
+                    [i](const TouchGroupControl& control) { return control.secondaryTarget == static_cast<int>(i) && !control.secondaryReturn; })))
                 activeSecondary_ = static_cast<int>(i);
         }
         for (const auto& group : definition_.groups) {
@@ -370,6 +376,7 @@ public:
 private:
     /** 有界索引投影，不重建组表。当前展开键是隐藏一级时的收起入口，返回键只在所属层展开时可见。 */
     bool VisibleFor(size_t index, const std::vector<uint8_t>& mask, int active) const {
+        if (definition_.systemControlsOnly) return true;
         const auto& control = definition_.controls[index];
         if (control.secondaryTarget >= 0 && !control.secondaryReturn && control.secondaryTarget == active) return true;
         if (control.secondaryReturn) return control.secondaryTarget == active;

@@ -751,6 +751,14 @@ export default class LauncherSkill {
     await invokeSkill(info, "readJavaArchiveImport", argv);
   }
 
+  public async getMobileInputMode(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
+    await invokeSkill(info, "getMobileInputMode", argv);
+  }
+
+  public async setMobileInputMode(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
+    await invokeSkill(info, "setMobileInputMode", argv);
+  }
+
   public async readUpdatePackageSelection(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
     await invokeSkill(info, "readUpdatePackageSelection", argv);
   }

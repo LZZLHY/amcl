@@ -19,7 +19,9 @@ const storageSource='feature_system/src/main/ets/GameStorage.ets';
 const R='entry/src/main/ets/product/RuntimeProductProfile.ets';
 const G='entry/src/main/ets/components/DesktopGamepadSettings.ets';
 const T='entry/src/main/ProductTouchSettings.ets';
-const sources=[P,R,G,T,storageSource,'entry/src/main/ets/pages/Index.ets','gamecontrol/src/main/ets/ProductRuntimePolicy.ets',
+const mobilePreference='entry/src/main/ets/runtime/MobileInputPreference.ets';
+const mobileSkill='entry/src/main/ets/launcherskill/MobileInputSkill.ets';
+const sources=[P,R,G,T,mobilePreference,mobileSkill,storageSource,'entry/src/main/ets/pages/Index.ets','gamecontrol/src/main/ets/ProductRuntimePolicy.ets',
   'gamecontrol/src/main/ets/ProductInputPolicy.ets','scripts/test-frozen-settings-save.mjs',
   'scripts/lib/load-pure-ets.mjs','scripts/lib/ets-runtime-fixture.mjs','scripts/lib/ets-compiler.mjs'];
 const hashes=()=>Object.fromEntries(sources.map(name=>[name,createHash('sha256')
@@ -69,7 +71,7 @@ function fixture(overrides={}, deviceType='2in1', sdkApiVersion=26, family='univ
   const imports={commons,'feature_system':{PreferenceManager},gamecontrol:policy,
     '@ohos.deviceInfo':{default:{deviceType,sdkApiVersion}},
     'libentry.so':{default:{hardwareRawMouseAvailable:()=>true,desktopGameProcessState:()=>1}},
-    'entry/ProductBuildProfile':{ProductBuildProfile:{family,runtimeRawMouse:true,touchControls:true}}};
+    'entry/ProductBuildProfile':{ProductBuildProfile:{family,runtimeRawMouse:true,touchControls:family!=='desktop'}}};
   const runtimeLoad=makePureEtsLoader(imports,overrides),profile=runtimeLoad(R).RuntimeProductProfile;
   const notices=[], visibility=new Map([['amclSettingsTabVisible',true],['appInForeground',true]]);
   const ui=environment({globals:{AppStorage:{get:key=>visibility.get(key)}},imports:{...imports,'entry/ProductInputProfile':{ProductInputProfile:profile},
@@ -142,6 +144,125 @@ function event(view,relative,method,eventName,values={}){
   assert.equal(page.showPrivacy,true);assert.equal(f.manager().privacyAgreed,false);assert.equal(resumed,0);
   await page.onPrivacyAgree();assert.equal(page.showPrivacy,false);assert.equal(s.disk.get('privacyAgreed'),true);assert.equal(resumed,1);
   passed('store consent stays gated during flush and on failure, only confirmed human choice opens the launcher');
+}
+
+// 两个独立模块域模拟平板前后台进程，只替换平台文件与通知边缘；实际读写、订阅和具名业务共用生产函数。
+{
+  const context={filesDir:'/sandbox/mobile-input'}, file=context.filesDir+'/mobile-input-mode';
+  const files=new Map(), watchers=new Set();
+  let failWrite=false, failRead=false, reads=0;
+  const fileIo={
+    readTextSync(name) {
+      reads++;
+      if(failRead)throw Object.assign(Error('read denied'),{code:13900012});
+      if(!files.has(name))throw Object.assign(Error('missing'),{code:13900002});
+      return files.get(name);
+    },
+    createWatcher(path,mask,listener) {
+      assert.equal(path,context.filesDir);assert.equal(mask,0x80);
+      return {start:()=>watchers.add(listener),stop:()=>watchers.delete(listener)};
+    }
+  };
+  function processView(form,api,family='universal') {
+    const product=fixture({},form,api,family).profile;
+    const imports={
+      '@kit.CoreFileKit':{fileIo}, 'entry/ProductInputProfile':{ProductInputProfile:product},
+      commons:{AtomicFileWriter:{write(name,mode){if(failWrite)throw Error('write denied');files.set(name,mode);}},
+        AppLogger:{warn(){}},LOG_DOMAIN_LAUNCH:1}
+    };
+    const pref=makePureEtsLoader(imports)(mobilePreference).MobileInputPreference;
+    const method=makePureEtsLoader({'../runtime/MobileInputPreference':{MobileInputPreference:pref}})(mobileSkill).mobileInputSkill;
+    return {pref,call:(name,args)=>method(context,name,args)};
+  }
+  const launcher=processView('tablet',20),game=processView('tablet',20);
+  const get='getMobileInputMode',set='setMobileInputMode';
+  for(const [form,api,family,enabled] of [['phone',20,'universal',true],['tablet',21,'universal',true],
+    ['2in1',26,'universal',false],['2in1',26,'desktop',false],['phone',26,'desktop',false],['watch',26,'universal',false]]) {
+    const owner=processView(form,api,family);
+    assert.equal(owner.pref.available(),enabled);
+    if(!enabled)assert.equal(owner.call(set,{mode:'kbm'}).state,'unavailable');
+  }
+  const initial=launcher.call(get,{});
+  assert.deepEqual(initial,{state:'ready',mode:'auto'});
+  verifySkillCases(get,initial,launcher.call(get,{extra:true}),'L106');
+  const main=[],child=[],other=[];
+  const stopMain=launcher.pref.subscribe(context,v=>main.push(v));
+  const stopChild=game.pref.subscribe(context,v=>child.push(v));
+  const stopOther=game.pref.subscribe(context,v=>other.push(v));
+  assert.equal(watchers.size,2,'一个进程内复用一个目录监听');
+  assert.deepEqual(main,['auto']);assert.deepEqual(other,['auto']);
+  const saved=launcher.call(set,{mode:'gamepad'});
+  assert.deepEqual(saved,{state:'ready',mode:'gamepad'});
+  verifySkillCases(set,saved,launcher.call(set,{mode:'desktop'}),'L106');
+  assert.deepEqual(main,['auto','gamepad']);assert.deepEqual(child,['auto']);
+  const notify=(name=file)=>{for(const callback of watchers)callback({fileName:name,event:0x80});};
+  notify(file+'.other');assert.deepEqual(child,['auto']);
+  notify();notify();
+  assert.deepEqual(child,['auto','gamepad']);assert.deepEqual(other,child);
+  stopOther();
+  game.pref.save(context,'kbm');
+  assert.equal(launcher.pref.read(context),'kbm','启动器回读游戏进程的设置');
+  notify();assert.deepEqual(main,['auto','gamepad','kbm']);assert.deepEqual(child,main);
+  assert.deepEqual(other,['auto','gamepad']);
+  failWrite=true;assert.equal(game.call(set,{mode:'auto'}).state,'unknown');failWrite=false;
+  assert.equal(game.pref.read(context),'kbm');notify();assert.equal(child.length,3);
+  failRead=true;assert.equal(launcher.call(get,{}).state,'unknown');failRead=false;
+  files.set(file,'broken');assert.equal(game.call(get,{}).state,'unknown');
+  assert.equal(launcher.call(set,{mode:'auto'}).state,'ready');
+  const oldCallbacks=[...watchers];stopChild();stopMain();assert.equal(watchers.size,0);
+  const next=game.pref.subscribe(context,v=>other.push(v));
+  files.set(file,'kbm');oldCallbacks.forEach(cb=>cb({fileName:file,event:0x80}));
+  assert.equal(other.at(-1),'auto');notify();assert.equal(other.at(-1),'kbm');
+  next();assert.equal(watchers.size,0);
+  passed('mobile input mode uses one live preference in two process domains with atomic save, hot notifications, product admission and QA readback');
+
+  // 控制的仅是系统时钟。测试瞬时读错、第二次仍失败、显式回前台、停止后已排队的旧定时回调。
+  const realSet=globalThis.setTimeout,realClear=globalThis.clearTimeout;
+  const timers=new Map();
+  let sequence=0;
+  globalThis.setTimeout=(fn,delay)=>{
+    assert.ok(delay>0 && delay<=1000,'补读须有界延时');timers.set(++sequence,fn);return sequence;
+  };
+  globalThis.clearTimeout=id=>timers.delete(id);
+  function fireRetry(){
+    assert.equal(timers.size,1);
+    const [id,fn]=timers.entries().next().value;timers.delete(id);fn();
+  }
+  try {
+    const received=[], replacement=[];
+    const leaveMain=launcher.pref.subscribe(context,()=>{});
+    const leaveGame=game.pref.subscribe(context,v=>received.push(v));
+    const [,gameEvent]=watchers;
+    const signal=()=>gameEvent({fileName:file,event:0x80});
+    launcher.pref.save(context,'gamepad');
+    failRead=true;signal();signal();assert.deepEqual(received,['kbm']);
+    failRead=false;fireRetry();
+    assert.deepEqual(received,['kbm','gamepad'],'无后续文件事件也采纳另一进程的保存');
+    assert.equal(timers.size,0);
+
+    launcher.pref.save(context,'auto');
+    failRead=true;signal();fireRetry();
+    assert.equal(timers.size,0,'持续失败不会重新排程');
+    failRead=false;game.pref.reconcile(context);
+    assert.equal(received.at(-1),'auto','可见边界刷新已有观察者');
+    launcher.pref.save(context,'gamepad');
+    failRead=true;signal();
+    const obsolete=timers.values().next().value;
+    leaveGame();assert.equal(timers.size,0);
+    failRead=false;
+    const leaveReplacement=game.pref.subscribe(context,v=>replacement.push(v));
+    launcher.pref.save(context,'kbm');const beforeLate=reads;
+    obsolete();signal();
+    assert.equal(reads,beforeLate);
+    assert.deepEqual(received,['kbm','gamepad','auto']);
+    assert.deepEqual(replacement,['gamepad'],'旧观察者不得发布到新一轮界面');
+    leaveReplacement();leaveMain();
+    const afterUnmount=reads;game.pref.reconcile(context);assert.equal(reads,afterUnmount);
+    assert.equal(watchers.size,0);
+  } finally {
+    globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;
+  }
+  passed('mobile preference retries a transient cross-process read once, reconciles on visibility and fences retired observers');
 }
 
 // 真实产品策略限定设置入口，命令仍执行同一组件的偏好保存与严格回读。

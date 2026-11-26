@@ -22,12 +22,31 @@ let shortRead = 0;
 let peakBuffer = 0;
 let openCount = 0;
 const descriptors = new Set();
+let partialWrite = false;
+let stalledAfter = Infinity;
+let writeCalls = 0;
+const directoryHandles = new Set();
 const kitIo = {
   ...fileIo,
   // HarmonyOS 的 mtime 是数值，Node Stats.mtime 是每次新建的 Date，需按真实接口形状适配。
   statSync(p) { const stat = fs.statSync(p); return { size: stat.size, mtime: stat.mtimeMs, isFile: () => stat.isFile() }; },
-  openSync(p, mode) { const f = fileIo.openSync(p, mode); descriptors.add(f.fd); openCount++; return f; },
-  closeSync(f) { const fd = typeof f === 'number' ? f : f.fd; fileIo.closeSync(f); descriptors.delete(fd); },
+  openSync(p, mode) {
+    // Windows 宿主不能用 Node 打开目录 fd；仅模拟目录同步，正式数据文件全部落真实磁盘。
+    if (mode === fileIo.OpenMode.READ_ONLY && fs.statSync(p).isDirectory()) {
+      const fd = -1 - directoryHandles.size; directoryHandles.add(fd); return {fd};
+    }
+    const f = fileIo.openSync(p, mode); descriptors.add(f.fd); openCount++; return f;
+  },
+  fsyncSync(fd) { if (!directoryHandles.has(fd)) fs.fsyncSync(fd); },
+  mkdirSync(p, recursive = false) { fs.mkdirSync(p, {recursive}); },
+  rmdirSync(p) { fs.rmdirSync(p); },
+  writeSync(fd, bytes) {
+    if (!partialWrite) return fileIo.writeSync(fd, bytes);
+    const data = Buffer.from(bytes);
+    const count = ++writeCalls > stalledAfter ? 0 : Math.min(3, data.length);
+    return fs.writeSync(fd, data, 0, count);
+  },
+  closeSync(f) { const fd = typeof f === 'number' ? f : f.fd; if (directoryHandles.delete(fd)) return; fileIo.closeSync(f); descriptors.delete(fd); },
   readSync(fd, buffer, options) {
     peakBuffer = Math.max(peakBuffer, buffer.byteLength);
     if (readHook) readHook();
@@ -57,7 +76,7 @@ const taskpool = {
 };
 const extras = {
   '@kit.CoreFileKit': { fileIo: kitIo },
-  '@kit.ArkTS': { taskpool },
+  '@kit.ArkTS': { taskpool, util: { generateRandomUUID: crypto.randomUUID } },
   '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd(algorithm) {
     assert.equal(algorithm, 'SHA1'); const hash = crypto.createHash('sha1');
     return { updateSync(blob) { hash.update(blob.data); }, digestSync() { return { data: new Uint8Array(hash.digest()) }; } };
@@ -75,7 +94,7 @@ function load(relative) {
   assert.equal(errors.length, 0, filename + ': ' + errors.map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('\n'));
   const mod = { exports: {} }; cache.set(filename, mod.exports);
   const requireLocal = name => {
-    if (name === 'commons') return { ...mocks.commons, ...load('commons/src/main/ets/utils/InstancePaths.ets') };
+    if (name === 'commons') return { ...mocks.commons, ...load('commons/src/main/ets/utils/InstancePaths.ets'), ...load('commons/src/main/ets/utils/AtomicFileWriter.ets') };
     if (name in extras) return extras[name];
     if (name in mocks) return mocks[name];
     if (name.startsWith('.')) return load(path.resolve(path.dirname(filename), name + '.ets'));
@@ -163,6 +182,20 @@ const cancellingRepo = { async lookupVersionBySha1() { cancelRequests++; cancelS
 await assert.rejects(new Scan.LocalModScanner(cancellingRepo).scan({ ...req, localMods: initial.slice(1), control: cancelScan }));
 assert.ok(cancelRequests <= 2, '取消后不能继续派发下一批来源请求');
 assert.equal(fs.readFileSync(path.join(dir, '.amcl-mods-index.json'), 'utf8'), indexBefore, '取消扫描不能写入半轮索引');
+// 正式索引也必须能够续写跨 UTF-8 字符的短写；零进展保留上一次完整字节。
+const index = Index.readInstalledModIndex(dir);
+const indexPath = path.join(dir, '.amcl-mods-index.json');
+index.upsert({baseName: '多字节🌱.jar', at: 1});
+partialWrite = true;
+Index.writeInstalledModIndex(dir, index);
+const saved = fs.readFileSync(indexPath, 'utf8');
+assert.ok(JSON.parse(saved).entries.some(entry => entry.baseName === '多字节🌱.jar'));
+index.remove('多字节🌱.jar');
+stalledAfter = writeCalls + 1;
+Index.writeInstalledModIndex(dir, index);
+assert.equal(fs.readFileSync(indexPath, 'utf8'), saved);
+assert.equal(descriptors.size + directoryHandles.size, 0);
+partialWrite = false;
 const preCancelled = new Work.LocalModScanControl(); preCancelled.cancel();
 await assert.rejects(Tasks.enumerateLocalResourceFiles(dir, ['.jar'], preCancelled));
 assert.equal(descriptors.size, 0);

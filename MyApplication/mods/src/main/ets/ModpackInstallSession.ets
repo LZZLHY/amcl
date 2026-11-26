@@ -3,7 +3,7 @@
  * 文件位于 filesDir/modpack-work/<id>/session.json，实例只保存 pending 所有者和最终收据。
  * 原子保存失败必须向上传播，不能将缺少恢复记录的安装报告为完整成功。
  */
-import { fileIo as fs } from '@kit.CoreFileKit';
+import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { ensureDirSync, hasPendingModpackInstall, removeDirRecursive } from 'commons';
 import { safeBaseName, safeRelPath } from 'feature_core';
@@ -242,11 +242,51 @@ export function hasModpackOverrideJournalEvidence(filesDir: string, id: string):
   } catch (_) { return false; }
 }
 
-/** 仅处理已写入放弃记录的私有暂存。基座、覆盖日志原件和外部实例均不参与清理。 */
-export function cleanupDismissedModpackWork(filesDir: string, id: string): boolean {
+/** 旧版选择器把输入放在工作目录之外。只对正在收尾的旧来源核实字节及其他使用者，普通安装不扫描。 */
+export async function releaseLegacyModpackImport(filesDir: string, id: string, knownPath?: string): Promise<boolean> {
+  const root = filesDir + '/modpack-import';
+  try {
+    let archive = knownPath;
+    if (archive === undefined) {
+      if (!fs.accessSync(modpackWorkDir(filesDir, id) + '/source.json')) return true;
+      archive = loadModpackSource(filesDir, id).archivePath ?? '';
+    }
+    if (!archive.startsWith(root + '/')) return true;
+    const parts = archive.substring(root.length + 1).split('/');
+    if (parts.length !== 2 || !/^\d+-\d+-\d+$/.test(parts[0]) || !parts[1] ||
+      safeBaseName(parts[1]) !== parts[1] || !/\.(zip|mrpack)$/i.test(parts[1])) return false;
+    if (!fs.accessSync(archive)) return true;
+    const folder = root + '/' + parts[0];
+    const work = requireModpackDismissalWorkDir(filesDir, id);
+    const staged = work + '/archive.zip';
+    const original = fs.lstatSync(archive);
+    const parent = fs.lstatSync(folder);
+    const base = fs.lstatSync(root);
+    if (!base.isDirectory() || !parent.isDirectory() || !original.isFile() || !fs.lstatSync(staged).isFile()) return false;
+    const match = await hash.hash(staged, 'sha256');
+    if (!match || match !== await hash.hash(archive, 'sha256')) return false;
+    for (const other of fs.listFileSync(filesDir + '/modpack-work')) {
+      if (other === id) continue;
+      const sibling = modpackWorkDir(filesDir, other);
+      if (!fs.accessSync(sibling + '/source.json') || readModpackRecoveryDismissal(filesDir, other) !== undefined) continue;
+      if (loadModpackSource(filesDir, other).archivePath === archive) return true;
+    }
+    const current = fs.lstatSync(archive);
+    if (fs.lstatSync(root).ino !== base.ino || fs.lstatSync(folder).ino !== parent.ino ||
+      current.ino !== original.ino || current.size !== original.size ||
+      (current.ctimeNs ?? current.ctime) !== (original.ctimeNs ?? original.ctime)) return false;
+    fs.unlinkSync(archive);
+    if (fs.lstatSync(folder).ino === parent.ino && fs.listFileSync(folder).length === 0) fs.rmdirSync(folder);
+    return true;
+  } catch (_) { return false; }
+}
+
+/** 仅处理已写入放弃记录的私有暂存。旧来源不明也应清理能确认归属的任务缓存。 */
+export async function cleanupDismissedModpackWork(filesDir: string, id: string): Promise<boolean> {
   try {
     const work = requireModpackDismissalWorkDir(filesDir, id);
     if (readModpackRecoveryDismissal(filesDir, id) === undefined) return false;
+    const inputReleased = await releaseLegacyModpackImport(filesDir, id);
     const keep: string[] = [RECOVERY_DISMISSAL, 'session.json', 'source.json'];
     // 保留所有覆盖日志目录。冷恢复需要原字节，且无法把孤立代次当作可清理的网络缓存。
     const retain = (name: string): boolean => keep.indexOf(name) >= 0 || name.startsWith('.override-');
@@ -259,7 +299,7 @@ export function cleanupDismissedModpackWork(filesDir: string, id: string): boole
       else fs.unlinkSync(path);
     }
     // 既有目录清理工具容忍单文件删除失败，必须实际重读确认清理结果。
-    return fs.listFileSync(work).every(retain);
+    return fs.listFileSync(work).every(retain) && inputReleased;
   } catch (_) { return false; }
 }
 

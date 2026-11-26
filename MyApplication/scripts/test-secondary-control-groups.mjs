@@ -90,5 +90,13 @@ assert.deepEqual(schema.controls[slot].bindings[0].keys,[]);
 assert.equal(schema.controls[slot].bindings[0].actions[0].operation,3);
 assert.equal(schema.controls[backSlot].bindings[0].actions[0].operation,4);
 assert.equal(schema.groups[schema.controls[slot].secondaryTarget].secondary,true);
+// 精简时聊天仍可能属于初始隐藏组；投影只把本次系统热区提为保护入口，原成员及完整组定义保持。
+const compact=geometry.projectRuntimeTouchLayout(withSystem,context,new gui.GameGuiState(),true,geometry.TOUCH_SYSTEM_CONTROLS_ONLY,new Map());
+const compactSchema=compiler.compileTouchGroups(withSystem,compact,compact.entries.map(e=>({id:e.item.id})));
+assert.equal(compactSchema.systemControlsOnly,true);
+assert.deepEqual(compactSchema.groups,schema.groups);
+assert.equal(compactSchema.controls.length,3);
+assert.ok(compactSchema.controls.every(control=>control.group===-1&&!control.phases&&!control.mouseTool));
+assert.equal(chat.controlGroupId,created.groupId);
 assert.ok(model.validateAndNormalizeLayout(source));assert.equal(model.validateAndNormalizeLayout(source).version,3);
 console.log('PASS secondary groups: v6 persistence, no implicit return, arbitrary coordinates, bind/unbind, schema-only actions, copy, cascade/delete-keep, old formats and strict rejection');

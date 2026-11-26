@@ -6,10 +6,7 @@
  *   - 维护 accounts_list（id 数组）和 selected_account_id
  *   - encrypt / decrypt 委派给注入的 CryptoProvider
  *
- * 加密实现（M2 Phase B）：
- *   - 默认 PlaintextCryptoProvider（构造时）— 允许在 AccountManager 同步调用 storage。
- *   - AccountManager.init() 探测 HUKS 可用 → 调 setCryptoProvider(HuksAesGcm256Provider)。
- *   - HUKS 不可用时（CLI 测试 / 无 SE 模拟器）— 仍用明文 provider 免账户系统瓦解。
+ * 生产凭据始终使用 HUKS。旧版明文只由启动器在确认加密并保存后恢复；游戏进程只读。
  *
  * 详见 docs/guides/genuine-login-and-account-system-plan.md §9
  *
@@ -24,6 +21,7 @@ import {
   ACCOUNT_ERR_INVALID_RECORD,
 } from './Account';
 import { CryptoProvider, PlaintextCryptoProvider } from './CryptoProvider';
+import { HuksAesGcm256Provider } from './HuksCryptoProvider';
 
 import { AppLogger } from 'commons';
 import { LOG_DOMAIN_ACCOUNT } from 'commons';
@@ -50,11 +48,11 @@ export class AccountStorage {
 
   constructor(context: Context, crypto?: CryptoProvider) {
     this.pref = ProcessPreferences.open(context, PREF_NAME);
-    // 默认 PlaintextCryptoProvider；AccountManager.init() 探测后会换 HUKS
-    this.crypto = crypto !== undefined ? crypto : new PlaintextCryptoProvider();
+    // 服务暂时不可用时让敏感操作失败，离线账号不依赖密钥服务。
+    this.crypto = crypto !== undefined ? crypto : new HuksAesGcm256Provider();
   }
 
-  /** AccountManager 在 init() 探测到 HUKS 可用后调用。 */
+  /** 显式注入提供者供宿主测试使用，生产初始化保留同一个 HUKS 实例。 */
   setCryptoProvider(provider: CryptoProvider): void {
     this.crypto = provider;
     AppLogger.info(TAG, `cryptoProvider switched to ${provider.constructor.name}`, LOG_DOMAIN_ACCOUNT);
@@ -68,25 +66,33 @@ export class AccountStorage {
   // ===== 列表 / 选中 =====
 
   getAccountIds(): string[] {
+    // 旧索引中的空项或其他无效项不影响使用可辨认的账号。
+    const ids: string[] = [];
+    for (const item of this.getAccountIndexEntries()) {
+      if (typeof item === 'string' && item.length > 0) ids.push(item);
+    }
+    return ids;
+  }
+
+  /** 增删只改指定 ID，原样带回未识别项，无法读取整份索引时停止写入。 */
+  getAccountIndexEntries(): Object[] {
     let raw = '';
     try {
       raw = this.pref.getSync(KEY_LIST, '') as string;
     } catch (e) {
       AppLogger.warn(TAG, 'getAccountIds: pref.getSync failed', e as Object, LOG_DOMAIN_ACCOUNT);
-      return [];
+      throw new AccountError('STORAGE', '账号索引暂不可读，请重试');
     }
     if (!raw || raw.length === 0) {
       return [];
     }
     try {
-      let arr = JSON.parse(raw) as string[];
-      if (!Array.isArray(arr)) {
-        return [];
-      }
-      return arr.filter((s: string) => typeof s === 'string' && s.length > 0);
+      const arr = JSON.parse(raw) as Object[];
+      if (!Array.isArray(arr)) throw new Error('无效的账号索引');
+      return arr;
     } catch (e) {
-      AppLogger.warn(TAG, 'getAccountIds: parse failed, returning empty', e as Object, LOG_DOMAIN_ACCOUNT);
-      return [];
+      AppLogger.warn(TAG, '账号索引格式无效，保留原值', null, LOG_DOMAIN_ACCOUNT);
+      throw new AccountError('STORAGE', '账号索引暂不可读，请重试');
     }
   }
 
@@ -104,7 +110,7 @@ export class AccountStorage {
       return this.pref.getSync(KEY_SELECTED, '') as string;
     } catch (e) {
       AppLogger.warn(TAG, 'getSelectedId failed', e as Object, LOG_DOMAIN_ACCOUNT);
-      return '';
+      throw new AccountError('STORAGE', '当前账号选择暂不可读，请重试');
     }
   }
 
@@ -128,7 +134,7 @@ export class AccountStorage {
       raw = this.pref.getSync(KEY_RECORD_PREFIX + id, '') as string;
     } catch (e) {
       AppLogger.warn(TAG, `loadRecord ${id}: pref.getSync failed`, e as Object, LOG_DOMAIN_ACCOUNT);
-      return null;
+      throw new AccountError('STORAGE', '账号记录暂不可读，请重试');
     }
     if (!raw || raw.length === 0) {
       return null;
@@ -166,7 +172,7 @@ export class AccountStorage {
    * 旧缓存，并尽力持久恢复；恢复失败单独记警告，原始失败始终上抛供界面保留草稿。
    * 游戏进程的只读快照会拒绝 put，调用方不得在 child 路径调用此方法。
    */
-  async saveRecordConfirmed(rec: AccountRecord, accountIds?: string[]): Promise<void> {
+  async saveRecordConfirmed(rec: AccountRecord, accountIds?: Object[]): Promise<void> {
     if (!rec || !rec.id || rec.id.length === 0) {
       throw new AccountError(ACCOUNT_ERR_INVALID_RECORD, 'AccountRecord 缺少 id');
     }
@@ -176,7 +182,7 @@ export class AccountStorage {
   }
 
   /** 删除记录、列表及选中态一次确认，防止新增/删除交错使旧账号复活。 */
-  async removeRecordConfirmed(id: string, accountIds: string[], selectedId: string): Promise<void> {
+  async removeRecordConfirmed(id: string, accountIds: Object[], selectedId: string): Promise<void> {
     await this.commitConfirmed([{ key: KEY_RECORD_PREFIX + id },
       { key: KEY_LIST, value: JSON.stringify(accountIds) }, { key: KEY_SELECTED, value: selectedId }]);
   }
@@ -225,9 +231,36 @@ export class AccountStorage {
 
   // ===== 加解密接口（委派 CryptoProvider） =====
 
-  /** 明文 → EncryptedBlob（包括 iv / ciphertext / tag）。失败招错。 */
+  /** 有历史密文或不可读记录时，只允许使用原密钥。首次保存和仅含旧明文时允许创建。 */
   async encrypt(plaintext: string): Promise<EncryptedBlob> {
-    return this.crypto.encrypt(plaintext);
+    try {
+      // 已有密钥时直接使用。仅在可能生成新密钥时核对旧记录，避免每次刷新都遍历所有账号。
+      if (this.crypto instanceof HuksAesGcm256Provider && await this.crypto.hasExistingKey()) {
+        return await this.crypto.encrypt(plaintext, false);
+      }
+      const canCreate = this.getAccountIds().every((id: string): boolean => {
+        const record = this.loadRecord(id);
+        // 旧索引可留有已不存在的记录。缺键没有密文可丢，已有但读不清的字节仍保护旧密钥。
+        if (record === null) return this.pref.getSync(KEY_RECORD_PREFIX + id, ABSENT_VALUE) === ABSENT_VALUE;
+        return !record.encrypted || this.isLegacyPlaintext(record.encrypted);
+      });
+      return await this.crypto.encrypt(plaintext, canCreate);
+    }
+    catch (_) { throw new AccountError('KEY_UNAVAILABLE', '系统密钥暂不可用，账号凭据未保存，请重试'); }
+  }
+
+  /** 只识别原明文提供者明确写出的格式；坏密文不能降级为明文解析。 */
+  private isLegacyPlaintext(blob: EncryptedBlob): boolean {
+    return blob.iv === PlaintextCryptoProvider.MARKER_IV && blob.tag === '';
+  }
+
+  /** 旧记录只在启动器确认迁移成功后交付给账号对象。失败由索引持有者保留并重试。 */
+  async readCredentials(record: AccountRecord, blob: EncryptedBlob): Promise<string> {
+    if (!this.isLegacyPlaintext(blob)) return await this.decrypt(blob);
+    if (ProcessPreferences.isGameProcess()) throw new AccountError('READ_ONLY', '请先回启动器恢复旧账号');
+    record.encrypted = await this.encrypt(blob.ciphertext);
+    await this.saveRecordConfirmed(record);
+    return blob.ciphertext;
   }
 
   /** EncryptedBlob → 明文。失败（tag 校验不过 / 密钥丢失）招错。 */

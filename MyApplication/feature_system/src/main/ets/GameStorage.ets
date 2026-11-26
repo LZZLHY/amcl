@@ -25,7 +25,7 @@
 
 import { common, abilityAccessCtrl, bundleManager, Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { Environment, fileIo as fs, picker, fileUri } from '@kit.CoreFileKit';
+import { Environment, fileIo as fs, picker, fileUri, hash } from '@kit.CoreFileKit';
 import { AppLogger } from 'commons';
 import { PreferenceManager } from './PreferenceManager';
 import { systemNative } from './SystemNativeBridge';
@@ -287,44 +287,72 @@ export class GameStorage {
     }
   }
 
-  /**
-   * 是否存在已安装版本（versions 目录非空）。用于切换位置时判断"要不要问迁移"。
-   */
-  static hasVersions(mcDir: string): boolean {
+  /** 旧入口在有任意游戏数据时询问是否迁移，目录不可读时也保留这个选择。 */
+  static mayHaveData(mcDir: string): boolean {
     try {
-      let entries = fs.listFileSync(mcDir + '/versions');
-      return entries.length > 0;
+      return fs.listFileSync(mcDir, { listNum: 1 }).length > 0;
     } catch (e) {
-      return false;
+      return (e as BusinessError).code !== 13900002;
     }
   }
 
-  /**
-   * 把整个游戏数据从 fromMcDir 迁移(复制)到 toMcDir。
-   *
-   * 逐个拷贝 from 的子项到 to（而不是 copyDir(from, parent) 那种"按 from 的 basename 落位"）：
-   * 解析器返回的是完整路径，这样写对"目标根与源 basename 是否相同"都健壮（当前两根内层都叫
-   * .minecraft，但不依赖这一点）。
-   *   - 子目录：fs.copyDir(childDir, toMcDir, 1) 会在 toMcDir 下创建 basename(childDir)；
-   *   - 子文件：fs.copyFileSync。
-   * 异步（copyDir 走 libuv 线程池，不阻塞 JS 主线程）。源数据保留不删（更安全）。
-   */
-  static async migrate(fromMcDir: string, toMcDir: string): Promise<void> {
-    try { fs.mkdirSync(toMcDir, true); } catch (e) { /* exists */ }
-    let entries: string[] = [];
-    try { entries = fs.listFileSync(fromMcDir); } catch (e) { return; }
-    for (let name of entries) {
-      let src = fromMcDir + '/' + name;
-      try {
-        let st = fs.statSync(src);
-        if (st.isDirectory()) {
-          await fs.copyDir(src, toMcDir, 1);  // → toMcDir/<name>
-        } else {
-          fs.copyFileSync(src, toMcDir + '/' + name);
-        }
-      } catch (e) {
-        AppLogger.warn(TAG, `migrate skip ${name}`, e);
+  /** 仅将明确的 ENOENT 视为目标不存在；拒绝用读写错误推断可以覆盖。 */
+  private static async migrationTarget(path: string): Promise<fs.Stat | undefined> {
+    try { return await fs.lstat(path); }
+    catch (e) {
+      if ((e as BusinessError).code === 13900002) return undefined;
+      throw e as Error;
+    }
+  }
+
+  /** 源树与目标树按相对路径合并。重试复用相同文件，碰到已有不同数据时保留两侧原件。 */
+  private static async copyMigrationEntry(source: string, target: string, stage: string): Promise<void> {
+    const src = await fs.lstat(source);
+    const dest = await GameStorage.migrationTarget(target);
+    if (src.isDirectory() && !src.isSymbolicLink()) {
+      if (dest === undefined) await fs.mkdir(target);
+      else if (!dest.isDirectory() || dest.isSymbolicLink()) throw new Error('目标目录冲突：' + target);
+      for (const name of await fs.listFile(source)) {
+        await GameStorage.copyMigrationEntry(source + '/' + name, target + '/' + name, stage);
       }
+      // 枚举期间有源条目新增或移走时保留原位置，让本次迁移可以重试。
+      const current = await fs.lstat(source);
+      if (src.ino !== current.ino || (src.mtimeNs ?? src.mtime) !== (current.mtimeNs ?? current.mtime)) {
+        throw new Error('迁移期间目录发生变化：' + source);
+      }
+      return;
+    }
+    if (!src.isFile() || src.isSymbolicLink()) throw new Error('无法迁移非常规文件：' + source);
+    if (dest !== undefined) {
+      if (dest.isFile() && !dest.isSymbolicLink() && dest.size === src.size
+        && await hash.hash(target, 'sha256') === await hash.hash(source, 'sha256')) return;
+      throw new Error('目标已有不同文件，已保留：' + target);
+    }
+    // 同一目标文件系统内逐件暂存，复制或发布失败均不留下半个目标文件。模式 1 拒绝覆盖。
+    const temporary = stage + '/file';
+    await fs.copyFile(source, temporary);
+    const current = await fs.lstat(source);
+    if ((await fs.lstat(temporary)).size !== src.size || src.ino !== current.ino || current.size !== src.size ||
+      (src.mtimeNs ?? src.mtime) !== (current.mtimeNs ?? current.mtime)) throw new Error('文件复制不完整：' + source);
+    await fs.moveFile(temporary, target, 1);
+  }
+
+  /** 全部条目复制成功后才让调用方切换游戏根；不会删除源文件或覆盖不同的目标文件。 */
+  static async migrate(fromMcDir: string, toMcDir: string): Promise<void> {
+    if (fromMcDir === toMcDir || toMcDir.startsWith(fromMcDir + '/') || fromMcDir.startsWith(toMcDir + '/')) {
+      throw new Error('游戏数据源目录与目标目录重叠');
+    }
+    const sourceRoot = await fs.lstat(fromMcDir);
+    if (!sourceRoot.isDirectory() || sourceRoot.isSymbolicLink()) throw new Error('游戏数据源不是普通目录');
+    // 只在已选的目标游戏根内暂存，不要求源目录或目标的上级目录可写。
+    const destination = await GameStorage.migrationTarget(toMcDir);
+    if (destination === undefined) await fs.mkdir(toMcDir, true);
+    else if (!destination.isDirectory() || destination.isSymbolicLink()) throw new Error('游戏数据目标不是普通目录');
+    const stage = await fs.mkdtemp(toMcDir + '/.amcl-migrate-XXXXXX');
+    try {
+      await GameStorage.copyMigrationEntry(fromMcDir, toMcDir, stage);
+    } finally {
+      await fs.rmdir(stage);
     }
     AppLogger.info(TAG, `migrated game data: ${fromMcDir} -> ${toMcDir}`);
   }

@@ -15,7 +15,7 @@ import { EditorPalette } from './TouchEditorTheme'
 import testNapi from 'libentry.so';
 import { ControlSchemaEntry, ControlSchemaMsg } from 'libentry.so';
 import { EntryTouchSession, EntryTouchVisual } from './EntryTouchSession';
-import { RuntimeTouchLayout, RuntimeTouchEntry, runtimeTouchContext, projectRuntimeTouchLayout,
+import { RuntimeTouchLayout, RuntimeTouchEntry, runtimeTouchContext, projectRuntimeTouchLayout, TOUCH_SYSTEM_CONTROLS_ONLY,
   runtimeTouchControlVisible, layoutCapabilityIssue, RuntimeTouchOverlay, appendRuntimeTouchOverlay } from 'gamecontrol';
 import { componentUtils } from '@kit.ArkUI';
 import { TouchSurfaceController, TouchSurfaceCandidate } from './TouchSurfaceController';
@@ -53,6 +53,7 @@ import { createEntrySourceControlClient } from './EntrySourceControlClient';
 import { ChatInputBridge } from './ChatInputBridge';
 import { DesktopPhysicalTextInput } from './DesktopPhysicalTextInput';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
+import { MobileInputPreference } from '../runtime/MobileInputPreference';
 import { hapticTap } from 'feature_system';
 import { getInputDeviceMonitor, DeviceCapability } from 'gamecontrol';
 import { getPhysicalPointerEcho } from 'gamecontrol';
@@ -595,10 +596,16 @@ export struct GameControls {
   private editorDisposeTask: Promise<void> | undefined = undefined
 
 
-  // 全局按键可见性档位（2026-06 重构，取代旧的"接键鼠才出现 + forceShowAll"耦合逻辑）。
-  // 左下角按钮循环切换：0=全部显示 / 1=仅菜单按键 / 2=全部隐藏（全透明，按钮自身消失但热区可点恢复）。
-  // 与键盘/鼠标 capability 解耦——纯手动的全局隐藏手段。
+  // 生效档位同时送给画面和原生命中表。历史三档与外设三键档分开，不改写布局存档。
   @State globalVisMode: number = 0
+  @State private mobileInputMode: string = 'auto'
+  private autoVisMode: number = VIS_ALL
+  /** undefined表示仍跟随外设；手动选择在本局跨插拔保留，明确换偏好再重置。 */
+  private manualSystemControlsOnly: boolean | undefined = undefined
+  private stopMobileInput: (() => void) | undefined = undefined
+  private stopMobilePreference: (() => void) | undefined = undefined
+  /** 首次挂接失败后，只在设置退出/返回前台等离散边界重试，不进入输入心跳。 */
+  private mobileInputRetryPending: boolean = false
 
   // 阶段 2.8：IME 桥接显隐
   @State @Watch('onImeOpenChanged') imeOpen: boolean = false
@@ -692,29 +699,85 @@ export struct GameControls {
     this.dragLookLastY.clear()
   }
 
-  // 物理设备插拔状态。
-  //
-  // ⚠️ **这是一条只写不读的链路（2026-08-20 全仓核实）。** 本字段只有下面两处赋值
-  // （listener 与 aboutToAppear），**零读取点** —— `isControlVisible` 与 build() 都不看它。
-  //
-  // 三句已删除的假注释，记在这里防止有人"照原样写回去"：
-  //   ① 「变化时触发 build 重渲染让按钮显隐生效」 —— 重渲染确实会发生（@State），
-  //      但渲染结果**逐位相同**，因为可见性判定不读 capability。
-  //   ② 「capability 变化后还要重新注册 C 层命中矩形（否则隐藏的按钮仍吞 native 视角）」
-  //      —— 这句最危险，它给出一条**因果**。真实情况：`registerRegions` →
-  //      `sendControlSchema` → `isControlVisible` 全链不读 capability，所以 listener 里
-  //      那次调用的输出恒等，那个"否则"永远不会发生。
-  //   ③ `aboutToAppear` 处的「按钮显隐随插拔实时变化」 —— 同上，不成立。
-  //
-  // 为什么保留而不删：`hideOnInput` 那条数据链已经写进用户磁盘上的布局文件，
-  // 删字段要连迁移一起设计；而"要不要自动显隐"是产品决定。两条路的代价见
-  // `docs/refactor/多输入端架构愿景与改进提案.md` §9.1。
+  // 宽松的keyboard来源供物理文本接入；外设精简布局另读完整物理设备能力。
   @State capability: DeviceCapability = { mouse: false, keyboard: false, gamepad: false }
   private capabilityListener: (c: DeviceCapability) => void = (c: DeviceCapability) => {
     this.capability = c
-    // 保留这次调用只为"capability 变化时布局表仍被重新下发一次"这个无害的现状；
-    // 它不产生任何可观测差异（见上）。
-    this.registerRegions()
+  }
+
+  /** 输入偏好由启动器或游戏内设置提交。已有偏好等齐指定外设，手动显影优先于热插拔。 */
+  private updateMobileLayout_(mode: string, devices: DeviceCapability): void {
+    if (mode !== this.mobileInputMode) {
+      if (this.mobileInputMode === 'auto') this.autoVisMode = this.globalVisMode
+      this.mobileInputMode = mode
+      this.manualSystemControlsOnly = undefined
+    }
+    const connected: boolean = mode === 'gamepad' ? devices.gamepad : (devices.mouse && devices.keyboard)
+    // 系统撤销自动收起时还原先前手动档（含仅菜单/全隐）；主动显影总是展开完整布局。
+    let next: number = this.autoVisMode
+    if (mode !== 'auto') {
+      if (this.manualSystemControlsOnly === false) next = VIS_ALL
+      else if (this.manualSystemControlsOnly === true || connected) next = TOUCH_SYSTEM_CONTROLS_ONLY
+    }
+    if (next !== this.globalVisMode) {
+      this.globalVisMode = next
+      this.registerRegions()
+    }
+  }
+
+  /** 首次挂接、返回前台与设置退出共用入口。已订阅时对账落盘值，未成功订阅才重建监听。 */
+  private startMobileInput_(appearance: number): void {
+    if (!this.mounted || appearance !== this.appearanceGeneration || !MobileInputPreference.available()) return
+    // 同步初读可重入；此时设备监听已建立，偏好监听尚未返回，留给原挂接完成。
+    if (this.stopMobileInput !== undefined && this.stopMobilePreference === undefined && !this.mobileInputRetryPending) return
+    const monitor = getInputDeviceMonitor()
+    this.mobileInputRetryPending = false
+    if (this.stopMobileInput === undefined) {
+      const changed = (): void => {
+        if (this.mounted && this.appearanceGeneration === appearance && this.stopMobileInput === stop) {
+          this.updateMobileLayout_(this.mobileInputMode, monitor.mobileControlCapability())
+        }
+      }
+      const stop = (): void => {
+        monitor.removeDeviceListListener(changed)
+        if (this.stopMobileInput !== stop) return
+        this.stopMobileInput = undefined
+        const unsubscribe = this.stopMobilePreference
+        this.stopMobilePreference = undefined
+        unsubscribe?.()
+      }
+      this.stopMobileInput = stop
+      monitor.addDeviceListListener(changed)
+    }
+    const owner = this.stopMobileInput
+    const current = (): boolean => this.mounted && this.appearanceGeneration === appearance && this.stopMobileInput === owner
+    const update = (mode: string): void => {
+      if (current()) this.updateMobileLayout_(mode, monitor.mobileControlCapability())
+    }
+    try {
+      const context = this.getUIContext().getHostContext()
+      if (!current()) return
+      if (context === undefined) { this.mobileInputRetryPending = this.stopMobilePreference === undefined; return }
+      if (this.stopMobilePreference !== undefined) {
+        // 目录监听可以仍然存活，但上次事件读取失败；按当前文件修正显示和热区，不需要第二次文件写入。
+        MobileInputPreference.reconcile(context)
+        return
+      }
+      try {
+        const unsubscribe = MobileInputPreference.subscribe(context, update)
+        if (current()) this.stopMobilePreference = unsubscribe
+        else unsubscribe() // 初读同步分发期间销毁的实例只撤本次实际注册。
+      } catch (error) {
+        if (!current()) return
+        this.mobileInputRetryPending = true
+        // 即使文件监听持续不可用，也可采用设置刚确认保存的值；设备监听继续订阅。
+        update(MobileInputPreference.read(context))
+        AppLogger.warn(GAME_CONTROLS_TAG, '移动输入偏好已读取，将在返回游戏时重试监听', error, LOG_DOMAIN_UI)
+      }
+    } catch (error) {
+      if (current()) this.mobileInputRetryPending = this.stopMobilePreference === undefined
+      AppLogger.warn(GAME_CONTROLS_TAG, '移动输入偏好暂不可读，保留当前控制方式', error, LOG_DOMAIN_UI)
+    }
   }
 
   // 摇杆视觉状态
@@ -1114,7 +1177,14 @@ export struct GameControls {
     }
     if (!this.mounted) return
     this.profile = candidate.profile
-    this.runtimeLayout = candidate.layout
+    const installed: RuntimeTouchLayout = candidate.layout
+    if (installed.systemControlsOnly) {
+      // 零触点安装后，普通按钮仍可能有无障碍锁存。只退失去几何的触控输出，不碰外设或抽屉展开记录。
+      for (const old of this.runtimeLayout.entries) {
+        if (installed.find(old.item.id) === undefined) this.releaseControlInputs(old.item.id)
+      }
+    }
+    this.runtimeLayout = installed
     this.presentedCandidateId = candidate.id
     this.density = this.runtimeLayout.context.density
     this.uiPublicationToken = token
@@ -1325,6 +1395,7 @@ export struct GameControls {
   private onPageActiveChanged(): void {
     this.touchSurface.setActive(this.pageActive)
     this.touchSession.setActive(this.pageActive && !this.editing)
+    if (this.pageActive && this.stopMobileInput !== undefined) this.startMobileInput_(this.appearanceGeneration)
     if(this.pageActive && this.learningStore?.requested()) { this.touchGuide.stop(); this.tutorialOpen=false; this.learningSeen=false; this.learningRequested=true }
     if(!this.pageActive) this.touchGuide.baseline(this.touchVisual.guide)
     if(this.pageActive) this.maybeOpenLearning()
@@ -1377,6 +1448,7 @@ export struct GameControls {
       if (!this.mounted || appearance!==this.appearanceGeneration || session!==this.touchSession) return
       this.reconcileTouchSurface_()
     })
+    this.startMobileInput_(expectedAppearanceGeneration)
     this.registerRegions()
     this.profileVer++
     // 进度读取也冻结本次实际控制器；同组件重建不能让已捕获的旧 reader 借后来
@@ -1385,8 +1457,7 @@ export struct GameControls {
     store.addInputConfigurationListener(this.configurationListener, 'touch-controls',
       (scratch?: InputConfigurationProgress): InputConfigurationProgress => configurationSurface.status(scratch))
     this.subscribeConfigurationStatus_(store)
-    // 监听物理设备插拔。⚠️ 这里曾写「按钮显隐随插拔实时变化」——**不成立**，
-    // `this.capability` 是只写不读的（理由与三句假注释的原文见该字段处）。
+    // 物理文本仍用原来较宽的设备能力，完整外设条件单独由设备清单订阅。
     getInputDeviceMonitor().addCapabilityListener(this.capabilityListener)
     this.capability = getInputDeviceMonitor().capabilityNow()
     // C 接管按钮后，按下态由 C 推回 ArkTS 更新高亮（键与视觉同源）。
@@ -1554,6 +1625,9 @@ export struct GameControls {
     getInputSourceRegistry().unregister(this.touchControlsEnd)
     // Phase C（键鼠适配）：取消 capability 监听
     getInputDeviceMonitor().removeCapabilityListener(this.capabilityListener)
+    this.stopMobileInput?.()
+    this.stopMobileInput = undefined
+    this.mobileInputRetryPending = false
     // 注销 native→UI 反馈回调。
     if (this.schemaActive) {
       const lease: EntryControlFeedbackLease | undefined = this.feedbackLease
@@ -1867,9 +1941,16 @@ export struct GameControls {
     return applied
   }
 
-  /** 循环全局可见性档位（全部显示 → 仅菜单 → 全部隐藏 → …）。由"显示"系统按钮触发。 */
+  /** 外设偏好下单击即展开／收起，手动选择跨插拔保留。自动偏好继续原有三档循环。 */
   private cycleVisMode(): void {
+    if (this.mobileInputMode === 'gamepad' || this.mobileInputMode === 'kbm') {
+      this.manualSystemControlsOnly = this.globalVisMode === VIS_ALL
+      this.globalVisMode = this.manualSystemControlsOnly ? TOUCH_SYSTEM_CONTROLS_ONLY : VIS_ALL
+      this.registerRegions()
+      return
+    }
     this.globalVisMode = (this.globalVisMode + 1) % 3
+    this.autoVisMode = this.globalVisMode
     // 被新档位隐藏的展开抽屉等同于收起：子按钮视图随之移出组件树，抬手事件不保证送达。
     this.collapseHiddenDrawers()
     // 可见集合变了，重注册 C 层命中矩形（隐藏的按钮不再吞 native 视角）
@@ -2145,6 +2226,7 @@ export struct GameControls {
         this.profile = cloneLayout(result ?? getLayoutStore().getActiveProfile())
         this.desiredProfile = cloneLayout(this.profile)
         this.profileVer++
+        if (this.stopMobileInput !== undefined) this.startMobileInput_(this.appearanceGeneration)
         this.onLayoutChanged()
       }
     } catch (error) {
@@ -2168,6 +2250,9 @@ export struct GameControls {
   /** 系统按钮的显示文字：visibility 随档位变化（全部/仅菜单/显示）；其余用控件自身标签。 */
   private systemButtonLabel(item: ControlItem): string {
     if (item.systemAction === 'visibility') {
+      if (this.mobileInputMode === 'gamepad' || this.mobileInputMode === 'kbm') {
+        return this.globalVisMode === VIS_ALL ? '收起' : '显影'
+      }
       if (this.globalVisMode === VIS_MENU) return '仅菜单'
       if (this.globalVisMode === VIS_HIDE) return '显示'
       return '全部'
@@ -3431,6 +3516,7 @@ export struct GameControls {
     } else if (this.editorMode==='resolution') {
       if (this.allowLiveResolution) {
         GameResolutionPanel({ palette: this.palette, screenWidth: this.compWidth, screenHeight: this.compHeight,
+          allowMobileInput:MobileInputPreference.available(),
           profileName:this.editorSettingsProfile || this.profile.name,
           onNavigate:(section: string): void => { this.leaveResolutionFor_(section) },
           onReturnGame:(): void => { this.finishEditor_(null) },
@@ -3439,6 +3525,7 @@ export struct GameControls {
     } else if (this.editorMode==='settings') {
       InputSettingsEditor({palette:this.palette,targetProfileName:this.editorSettingsProfile || this.profile.name,screenWidth:this.compWidth,screenHeight:this.compHeight,
         initialSection:this.editorSettingsSection,inGameSettings:true,allowLiveResolution:this.allowLiveResolution,
+        allowMobileInput:MobileInputPreference.available(),
         onOpenGameTool:(tool: string): void => { this.openSettingsTool_(tool) },
         resolvedActionKeys:this.touchSession.actionKeys(),gyroscopeStatus:this.touchSession.gyroscopeStatus(),
         onDone:(result: LayoutProfile | null): void => { this.finishEditor_(result) },

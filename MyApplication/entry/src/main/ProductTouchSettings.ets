@@ -9,6 +9,9 @@ import { ThemeColors, AppIconName } from 'commons'
 import { SettingsValueRow } from './ets/components/SettingsPrimitives'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
 import { PreferenceManager } from 'feature_system'
+import { MobileInputSettings } from './ets/components/MobileInputSettings'
+import { editorPalette } from './ets/components/TouchEditorTheme'
+import { mobileInputSkill } from './ets/launcherskill/MobileInputSkill'
 
 @Component
 export struct ProductTouchSettings {
@@ -22,6 +25,10 @@ export struct ProductTouchSettings {
 
   /** 每次挂接读本进程确认的desired与冻结状态，不从旧保存的临时显示借值。 */
   aboutToAppear(): void {
+    LauncherSkillBus.bind('settingsMobileInput', this, async (method: string, args: SettingsSkillData): Promise<SettingsSkillData> =>
+      mobileInputSkill(this.getUIContext().getHostContext() as Context, method, args),
+      (): boolean => this.mounted && ProductInputProfile.canChooseMobileInput() &&
+        AppStorage.get<boolean>('amclSettingsTabVisible') === true && AppStorage.get<boolean>('appInForeground') === true)
     LauncherSkillBus.bind('settingsInteraction',this,(method: string,args: SettingsSkillData): Promise<SettingsSkillData> =>
       this.skillInteraction_(method,args), (): boolean => this.mounted && ProductInputProfile.canChooseInteraction() &&
         AppStorage.get<boolean>('amclSettingsTabVisible') === true && AppStorage.get<boolean>('appInForeground') === true)
@@ -34,7 +41,12 @@ export struct ProductTouchSettings {
   }
 
   /** 持久请求独立完成；旧await只能失去显示权，不能写新页面或切本局route。 */
-  aboutToDisappear(): void { LauncherSkillBus.unbind('settingsInteraction',this); this.mounted = false; this.appearance++ }
+  aboutToDisappear(): void {
+    LauncherSkillBus.unbind('settingsInteraction',this)
+    LauncherSkillBus.unbind('settingsMobileInput',this)
+    this.mounted = false
+    this.appearance++
+  }
 
   /** 保存、冻结和回读与电脑交互选择行使用同一所有者。 */
   private async skillInteraction_(method: string,args: SettingsSkillData): Promise<SettingsSkillData> {
@@ -92,6 +104,11 @@ export struct ProductTouchSettings {
 
   build() {
     Column() {
+      if (ProductInputProfile.canChooseMobileInput()) {
+        Column() { MobileInputSettings({ palette: editorPalette(this.theme) }) }
+          .padding(16).width('100%').id('settings-item-mobile-input')
+        Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
+      }
       if (ProductInputProfile.canChooseInteraction()) {
         Column() {
           Text('设备交互方式').fontSize(16).fontColor(this.theme.textPrimary)

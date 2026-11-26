@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
+import { createHash } from 'node:crypto';
+import { loadActionComponent } from './lib/unified-actions-fixture.mjs';
 import compiler from './lib/ets-compiler.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -50,6 +52,84 @@ try {
   const older = storage(migration, 20, { renameSync: forbiddenMutation, mkdirSync: forbiddenMutation });
   assert.equal(older.api.sandboxMcDir(older.ctx), migration + '/.minecraft');
   pass('all API versions preserve original root and never migrate during path resolution');
+
+  // 从真实首页确认方法走到真实目录复制、活动收尾和位置提交，仅替代系统 IO 与 UI。
+  const sourceRoot = path.join(temp, 'migration-source').replaceAll('\\', '/');
+  const targetRoot = path.join(temp, 'migration-target').replaceAll('\\', '/');
+  const worldFile = '/saves/world/level.dat';
+  fs.mkdirSync(sourceRoot + '/saves/world', { recursive: true });
+  fs.writeFileSync(sourceRoot + worldFile, 'save-A');
+  let failAt = '', shortAt = '', hashes = 0;
+  const migrationIo = {
+    listFileSync: fs.readdirSync,
+    async listFile(p) { if (p === failAt) throw Error('cannot enumerate'); return fs.promises.readdir(p); },
+    async lstat(p) {
+      try { return fs.lstatSync(p,{bigint:true}); }
+      catch(error) { if(error.code==='ENOENT')error.code=13900002;throw error; }
+    },
+    mkdir: (p, recursive = false) => fs.promises.mkdir(p, { recursive }),
+    mkdtemp: prefix => {
+      assert.equal(path.resolve(path.dirname(prefix)), path.resolve(targetRoot));
+      return fs.promises.mkdtemp(prefix.slice(0, -6));
+    },
+    async rmdir(p) {
+      assert.equal(path.resolve(path.dirname(p)),path.resolve(targetRoot)); assert.ok(path.basename(p).startsWith('.amcl-migrate-'));
+      await fs.promises.rm(p,{recursive:true});
+    },
+    async copyFile(src,dst) {
+      if (src === failAt) { await fs.promises.writeFile(dst, 'partial'); throw Error('short copy'); }
+      await fs.promises.copyFile(src,dst);
+      if (src === shortAt) await fs.promises.truncate(dst, 1);
+    },
+    async moveFile(src,dst,mode) {
+      assert.equal(mode,1); await fs.promises.link(src,dst); await fs.promises.unlink(src);
+    },
+  };
+  const migrated = storage(temp,26,migrationIo,{hash:{hash:async (p,alg)=>{
+    hashes++;
+    return createHash(alg).update(await fs.promises.readFile(p)).digest('hex');
+  }}}).api;
+  migrated.resolveMcDir = (_context,location) => location === 'sandbox' ? sourceRoot : targetRoot;
+  const activity = { async run(_meta,work,finish) { await work({event(){}}); finish(); } };
+  const MigrationPage = loadActionComponent('entry/src/main/ets/pages/Index.ets','Index',{
+    methods:['promptSwitchStorage','applyStorageSwitch'],globals:{TAG:'migration-test'},
+    dependencies:{feature_system:{GameStorage:migrated,StorageLocation:{SANDBOX:'sandbox',EXTERNAL:'external'}},
+      feature_core:{getTaskActivityOwner:()=>activity,ActivityCategory:{STORAGE:1}},
+      commons:{AppLogger:{error(){}},LOG_DOMAIN_LAUNCH:0,LedgerState:{SUCCESS:1}}},
+  });
+  async function switchWithMigration(save = true){
+    const toasts=[], prefs={mcStorageLocation:'sandbox'};
+    const page=Object.assign(new MigrationPage(),{storageLocation:'sandbox',mcRoot:()=>sourceRoot,context:{},
+      toast_:message=>toasts.push(message),getPrefManager_:()=>prefs,deployRuntimeIfIdle_(){},scanVersions(){},updateJdkReadyState(){},
+      async saveLauncherChange_(patch,publish){if (!save) return false; Object.assign(prefs,patch); publish(); return true;}});
+    const reported=await new Promise(done=>page.promptSwitchStorage('external',true,done));
+    return [reported,prefs.mcStorageLocation,toasts.includes('数据迁移完成')];
+  }
+  failAt=sourceRoot;
+  assert.deepEqual(await switchWithMigration(),['failed','sandbox',false]);
+  failAt=sourceRoot+worldFile;
+  assert.deepEqual(await switchWithMigration(),['failed','sandbox',false]);
+  assert.equal(fs.existsSync(targetRoot+worldFile),false);
+  failAt='';
+  assert.deepEqual(await switchWithMigration(),['saved','external',true]);
+  assert.equal(hashes,0,'新目标只做一次复制，不逐文件重复读取计算摘要');
+  assert.equal(fs.readFileSync(targetRoot+worldFile,'utf8'),'save-A');
+  assert.equal(fs.readFileSync(sourceRoot+worldFile,'utf8'),'save-A');
+  fs.mkdirSync(sourceRoot+'/versions/one',{recursive:true});
+  fs.writeFileSync(sourceRoot+'/versions/one/one.json','version');
+  shortAt=sourceRoot+'/versions/one/one.json';
+  assert.deepEqual(await switchWithMigration(),['failed','sandbox',false]);
+  assert.equal(fs.existsSync(targetRoot+'/versions/one/one.json'),false);
+  shortAt='';
+  assert.deepEqual(await switchWithMigration(false),['unconfirmed','sandbox',false]);
+  assert.deepEqual(await switchWithMigration(),['saved','external',true]);
+  assert.equal(fs.readFileSync(targetRoot+'/versions/one/one.json','utf8'),'version');
+  fs.writeFileSync(targetRoot+worldFile,'save-B');
+  assert.deepEqual(await switchWithMigration(),['failed','sandbox',false]);
+  assert.equal(fs.readFileSync(targetRoot+worldFile,'utf8'),'save-B');
+  assert.equal(fs.readFileSync(sourceRoot+worldFile,'utf8'),'save-A');
+  assert.equal(fs.readdirSync(targetRoot).some(n=>n.startsWith('.amcl-migrate-')),false);
+  pass('saves-only migration, enumeration/copy faults, retry after partial copy and same-size target conflict');
 
   // 根选择在真实目录上验证；系统包身份、权限及 Native 读写准入是这里的测试边界。
   const filesDir=path.join(temp,'first-run'), download=path.join(temp,'Download');
@@ -134,7 +214,12 @@ try {
     async open(p,flags){if(p.includes('unreadable'))throw Error('read denied');return this.openSync(p,flags);},
     closeSync(f){if(f.fd<0){assert.ok(dirs.delete(f.fd));}else{fs.closeSync(f.fd);opened.delete(f.fd);}},
     rmdirSync:p=>fs.rmdirSync(owned(p)),
-    mkdirSync:(p,recurse=false)=>fs.mkdirSync(owned(p),{recursive:recurse}),mkdtempSync:p=>fs.mkdtempSync(owned(p)),
+    mkdirSync:(p,recurse=false)=>fs.mkdirSync(owned(p),{recursive:recurse}),
+    mkdtempSync(p){
+      // 真机 FileIO 要求选择器暂存目录以 XXXXXX 结尾；Node 的 mkdtemp 自己追加随机后缀。
+      if(path.basename(p).startsWith('.amcl-import-')) assert.ok(p.endsWith('XXXXXX'),'invalid import temporary directory template');
+      return fs.mkdtempSync(owned(p.replace(/XXXXXX$/, '')));
+    },
     async copyFile(src,dst){ await copyHook(src,dst);if(typeof dst==='number')fs.ftruncateSync(dst,0);fs.writeFileSync(dst,fs.readFileSync(src)); },
     copyFileSync(src,dst){fs.writeFileSync(dst,fs.readFileSync(src));},
     moveFileSync(a,b,mode){assert.equal(mode,1);moveHook(b);assert.ok(!fs.existsSync(b),'文件模式必须拒绝同名目标');
@@ -180,6 +265,12 @@ try {
   assert.equal(options.maxSelectNumber, 1);
   assert.equal(result.ok, true);
   pass('single JDK/modpack install retains its single-task contract');
+  const packDir = path.join(temp, 'modpack-work', 'one');
+  result = await api.importResourceFile({}, packDir, ['.mrpack', '.zip'], true);
+  assert.equal(result.name, 'one.zip');
+  assert.deepEqual(fs.readdirSync(packDir), ['archive.zip']);
+  assert.deepEqual(fs.readFileSync(path.join(packDir, 'archive.zip')), fs.readFileSync(source));
+  pass('the modpack picker stages one task-owned archive and preserves the original display name');
   selection = ['file://docs/notes.txt', 'file://docs/config.json'];
   result = await api.importAnyFiles({}, dest);
   assert.equal(result.names.length, 2,JSON.stringify(result));
@@ -339,7 +430,7 @@ try {
 
   const pack=pageMethods('pages/ModBrowsePage',['ownLocalArchive_','dismissLocalDraft_','onLocalModpackVisibility_'],
     {ArchiveDirectory:dirHandles,ArchiveSource:fileHandles,fs:fake,AppLogger:logger,TAG:'pack',LOG_DOMAIN_DOWNLOAD:0});
-  const drafts=mutationRoot+'/modpack-import',draft=drafts+'/unique';
+  const drafts=mutationRoot+'/modpack-work',draft=drafts+'/unique';
   fs.mkdirSync(draft,{recursive:true});
   const file=draft+'/pack.zip';
   fs.writeFileSync(file,'copy');

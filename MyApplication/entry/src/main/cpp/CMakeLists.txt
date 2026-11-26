@@ -880,6 +880,7 @@ set(JVM_SOURCES
     jvm/game_gui_observation.cpp # 过程拥有的有界GUI观察队列；UI只读快照，退出不等待JNI worker
     jvm/game_process_exit.cpp # 独立进程退出及手机正常退出交接；processor 不接管。
     jvm/mc_launcher.cpp
+    jvm/game_options.cpp
     jvm/jni_registry.cpp
     jvm/elf_loader.cpp
     jvm/fork_run_java.cpp

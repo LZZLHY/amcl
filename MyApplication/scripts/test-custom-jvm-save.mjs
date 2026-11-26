@@ -199,34 +199,36 @@ for (const rollbackKind of ['flush', 'put']) {
 }
 {
   const calls = [], StorageLocation = { SANDBOX: 'sandbox', EXTERNAL: 'external' };
-  const GameStorage = { hasVersions: () => true };
+  const GameStorage = { mayHaveData: () => true };
   const Harness = indexMembers(['promptSwitchStorage'], { StorageLocation, GameStorage });
   const page = new Harness(); Object.assign(page, { theme: { primary: '#0067D9', error: '#BE3F30' },
-    mcRoot: () => '/mc', applyStorageSwitch: (...args) => calls.push(args),
+    mcRoot: () => '/mc', applyStorageSwitch: (target,migrate) => calls.push([target,migrate]),
     getUIContext: () => ({ getPromptAction: () => ({ showDialog: async () => { calls.push(['dialog']); return { index: 1 }; } }) }) });
   page.promptSwitchStorage('external', false); page.promptSwitchStorage('external', true);
   assert.deepEqual(calls, [['external', false], ['external', true]], '明确 false 不能重复询问');
   page.promptSwitchStorage('external'); await settle(); assert.deepEqual(calls.slice(-2), [['dialog'], ['external', true]]);
-  GameStorage.hasVersions = () => false; page.promptSwitchStorage('external', true);
-  assert.deepEqual(calls.at(-1), ['external', false], '无版本时保留原有直接切换语义');
+  GameStorage.mayHaveData = () => false; page.promptSwitchStorage('external', true);
+  assert.deepEqual(calls.at(-1), ['external', true], '明确传入的迁移意图不受目录预判影响');
+  page.promptSwitchStorage('external');assert.deepEqual(calls.at(-1), ['external', false], '无明确意图且源为空时直接切换');
   const forwarded = []; indexCallback('onStorageLocationChange').call({ handleStorageLocationChange: (...args) => forwarded.push(args) }, 'external', false);
-  assert.deepEqual(forwarded, [['external', false]]);
-  passed('实际存储确认与事件闭包保留可选迁移意图，旧调用仍询问，无版本仍直接切换');
+  assert.deepEqual(forwarded, [['external', false, undefined]]);
+  passed('保留明确迁移意图，旧入口只在源目录确认为空时直接切换');
 }
 {
   const calls = [], StorageLocation = { SANDBOX: 'sandbox', EXTERNAL: 'external' }, permission = deferred(), phone = deferred();
   let tablet = true;
-  const GameStorage = { isTabletSilent: () => tablet, isExternalAvailable: () => true,
-    requestDownloadPermission: () => permission.promise, migrateLegacyExternalFolder: () => calls.push(['prepare-tablet']),
-    writeExternalHint: () => calls.push(['hint']), ensurePhoneExternalDir: () => phone.promise };
+  // 首页等待统一准备入口；平板与手机具体的授权/目录发现另由真实 GameStorage 套件覆盖。
+  const GameStorage = { prepareExternal: (_ctx,_prefs,ask) => {
+    assert.equal(ask,true);return tablet ? permission.promise : phone.promise;
+  },writeExternalHint: () => calls.push(['hint']) };
   const Harness = indexMembers(['handleStorageLocationChange'], { StorageLocation, GameStorage, parseStorageLocation: value => value,
     AppLogger: { warn() {} }, LOG_DOMAIN_LAUNCH: 1 });
-  const page = new Harness(); Object.assign(page, { storageLocation: 'sandbox', context: {}, getPrefManager_: () => ({}),
-    toast_: message => calls.push(['toast', message]), promptSwitchStorage: (...args) => calls.push(['prompt', ...args]) });
+  const page = new Harness(); Object.assign(page, { startupAlive_:true,storageLocation: 'sandbox', context: {}, getPrefManager_: () => ({}),
+    toast_: message => calls.push(['toast', message]), promptSwitchStorage: (target,migrate) => calls.push(['prompt', target,migrate]) });
   page.handleStorageLocationChange('external', false); assert.deepEqual(calls, []);
-  permission.resolve(true); await settle(); assert.deepEqual(calls.at(-1), ['prompt', 'external', false]);
+  permission.resolve('ready'); await settle(); assert.deepEqual(calls.at(-1), ['prompt', 'external', false]);
   tablet = false; calls.length = 0; page.handleStorageLocationChange('external', true); assert.deepEqual(calls, []);
-  phone.resolve('/download'); await settle(); assert.deepEqual(calls.at(-1), ['prompt', 'external', true]);
+  phone.resolve('ready'); await settle(); assert.deepEqual(calls.at(-1), ['prompt', 'external', true]);
   passed('平板权限与手机目录准备完成以后才转交原迁移意图，不绕过原外部准备步骤');
 }
 

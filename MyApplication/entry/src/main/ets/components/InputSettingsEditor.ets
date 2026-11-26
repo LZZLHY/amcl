@@ -19,6 +19,7 @@ import { DraftLeaveDecision, LauncherSkillBus, SkillFields } from '../launchersk
 import { LayoutDraftAccess } from '../launcherskill/LayoutDraftAccess';
 import { touchFlagDraft, touchNumberDraft, touchChoiceDraft, touchBindingDraft } from '../runtime/TouchOptionDraft';
 import { EditorPalette } from './TouchEditorTheme'
+import { MobileInputSettings } from './MobileInputSettings'
 import { GameSettingsDirectory, GameSettingsRail, InputSettingsColumns, InputSettingsGroup,
   gameSettingsTitle, gameSettingsDetail } from './GameSettingsNavigation'
 import { gameSettingsWide, gameSettingsWidth, gameSettingsHeight } from './GameSettingsWindow'
@@ -151,6 +152,7 @@ export struct InputSettingsEditor {
   onInitializationFailed: (message: string) => void = (_message: string): void => {}
   /** 工具切换由游戏宿主重新领取编辑检查点；启动器不展示本局工具。 */
   @Prop inGameSettings: boolean = false
+  @Prop allowMobileInput: boolean = false
   @Prop allowLiveResolution: boolean = false
   onOpenGameTool: (tool: string) => void = (_tool: string): void => {}
   private pendingGameTool_: string = ''
@@ -346,9 +348,10 @@ export struct InputSettingsEditor {
   /** 导航状态不进入草稿，不制造Undo；六类任务只映射既有设置域。 */
   private selectCategory_(category: string): void {
     const known: string[]=['home','move','look','menu','gesture','gyro','gamepad','policy']
+    if (this.inGameSettings && this.allowMobileInput) known.push('devices')
     this.category=known.indexOf(category)>=0 ? category : 'home'
     this.tab=category==='look' ? 'look' : category==='gamepad' ? 'gamepad' : 'touch'
-    if (this.tab==='touch' && category!=='home') this.touchSection=category
+    if (this.tab==='touch' && this.category!=='home' && this.category!=='devices') this.touchSection=this.category
     this.sliderUndoKey=''; this.sliderGestureKey=''
   }
   /** 分类之间保留草稿；跨工具切换须走已有的放弃确认，失败时保留当前页面。 */
@@ -447,7 +450,10 @@ export struct InputSettingsEditor {
       if (this.statusMsg.length>0) { Text(this.statusMsg).fontSize(14).fontColor(this.palette.warning).width('100%') }
       if (this.effectiveCategory_()==='home') {
         GameSettingsDirectory({palette:this.palette,summaries:this.directorySummaries_(),includeGameTools:this.inGameSettings,allowLiveResolution:this.allowLiveResolution,
+          allowMobileInput:this.inGameSettings && this.allowMobileInput,
           onSelect:(id: string): void=>{ this.openDestination_(id) }})
+      } else if (this.effectiveCategory_()==='devices' && this.inGameSettings && this.allowMobileInput) {
+        MobileInputSettings({ palette:this.palette, showDevices:true })
       } else if (this.effectiveCategory_()==='look') { this.LookPage_() }
       else if (this.effectiveCategory_()==='gamepad') { this.GamepadTabContent() }
       else if (this.effectiveCategory_()==='policy') {
@@ -516,6 +522,7 @@ export struct InputSettingsEditor {
       Row() {
         if (this.wide_()) {
           GameSettingsRail({palette:this.palette,selected:this.effectiveCategory_(),profileName:this.profileName,
+            allowMobileInput:this.inGameSettings && this.allowMobileInput,
             includeGameTools:this.inGameSettings,allowLiveResolution:this.allowLiveResolution,onSelect:(id:string):void=>{this.openDestination_(id)}})
         }
         Column() {
@@ -526,7 +533,8 @@ export struct InputSettingsEditor {
             Scroll() { this.PageBody_() }.layoutWeight(1).width('100%').align(Alignment.TopStart).scrollBar(BarState.Auto)
               .padding({left:this.wide_()?20:14,right:this.wide_()?20:14,top:10,bottom:10})
           },(id: string): string=>id)
-          if (!this.inGameSettings || this.effectiveCategory_()!=='home' || (this.undoCount>0 && this.dirty_())) {
+          // 设备偏好即时保存，方案草稿仍由原目录和返回游戏时的确认流程持有。
+          if (this.effectiveCategory_()!=='devices' && (!this.inGameSettings || this.effectiveCategory_()!=='home' || (this.undoCount>0 && this.dirty_()))) {
             Divider().strokeWidth(0.5).color(this.palette.stroke)
             this.Actions_()
           }

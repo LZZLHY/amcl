@@ -665,7 +665,7 @@ export interface TouchGroupSchemaAction { target: number; operation: number; }
 export interface TouchGroupSchemaPhase { keys: number[]; autoKeep: boolean; actions: TouchGroupSchemaAction[]; }
 export interface TouchGroupSchemaControl { group: number; phases: boolean; fcl: boolean; mouseTool: boolean; rank: number; bindings: TouchGroupSchemaPhase[]; secondaryTarget?: number; secondaryReturn?: boolean; }
 export interface TouchGroupSchemaDefinition { id: string; initialVisible: boolean; secondary?: boolean; hidePrimary?: boolean; }
-export interface TouchGroupSchema { profile: string; groups: TouchGroupSchemaDefinition[]; controls: TouchGroupSchemaControl[]; }
+export interface TouchGroupSchema { profile: string; groups: TouchGroupSchemaDefinition[]; controls: TouchGroupSchemaControl[]; systemControlsOnly?: boolean; }
 /** 按控件投影来自同一Native事务，二级组不由UI另建mask或猜测资格。 */
 export interface TouchGroupReceipt { token: string; revision: string; enabled: boolean; pending: boolean; mask: boolean[]; epochs: string[]; controlMask?: boolean[]; controlEpochs?: string[]; controlRanks?: number[]; }
 export interface TouchGroupCommandReceipt { status: 'pending' | 'committed' | 'presented' | 'stale' | 'rejected' | 'expired'; revision: string; }

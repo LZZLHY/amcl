@@ -616,6 +616,7 @@ invokeTouchGroupControl
 restoreTouchGroups
 onTouchGroupsChanged
 groupSchema
+systemControlsOnly
 groupRevision
 profile
 revision

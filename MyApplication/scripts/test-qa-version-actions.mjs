@@ -16,6 +16,7 @@ const fs = {
     return { isFile: () => texts.has(path), isSymbolicLink: () => false, size: texts.get(path)?.length ?? 0 };
   },
   accessSync: path => texts.has(path) || directories.has(path),
+  async lstat(path) { return this.lstatSync(path); },
   readTextSync: path => texts.get(path),
 };
 const coreKit = { fileIo: fs };

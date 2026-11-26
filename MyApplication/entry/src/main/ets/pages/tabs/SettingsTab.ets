@@ -244,6 +244,7 @@ export struct SettingsTab {
       publisher: DistributionPolicy.allowPublisherServices(),
       touch: ProductInputProfile.supportsTouchLayouts(),
       chooseInteraction: ProductInputProfile.canChooseInteraction(),
+      mobileInput: ProductInputProfile.canChooseMobileInput(),
       tabletProcess: ProductInputProfile.canChooseTabletProcess(), nativeGamepad: ProductInputProfile.canChooseNativeGamepad(),
       developer: DiagnosticPolicy.hasTestHooks(), fixedRefreshRate: deviceInfo.sdkApiVersion >= 20 };
   }
@@ -546,7 +547,8 @@ export struct SettingsTab {
   /** 子组件的视觉开关、存储事务与系统权限由其当前所有者执行。 */
   private skillChildTargets_: Map<string,string> = new Map<string,string>([
     ['settingsGraphics','graphics'],['settingsResolution','resolution'],['settingsRetention','retention'],
-    ['settingsMic','mod-audio'],['settingsMidi','mod-audio'],['settingsInteraction','interaction'],['settingsGamepad','gamepad']
+    ['settingsMic','mod-audio'],['settingsMidi','mod-audio'],['settingsInteraction','interaction'],['settingsGamepad','gamepad'],
+    ['settingsMobileInput','mobile-input']
   ]);
   private skillChildMethods_: Map<string,string> = new Map<string,string>([
     ['listGraphicsBackends','settingsGraphics'],['selectGraphicsBackend','settingsGraphics'],
@@ -554,6 +556,7 @@ export struct SettingsTab {
     ['getGameLogRetention','settingsRetention'],['setGameLogRetention','settingsRetention'],
     ['bluetoothMidiAccess','settingsMidi'],['configureModMicrophone','settingsMic'],['getModMicrophone','settingsMic'],
     ['getDesktopInteraction','settingsInteraction'],['setDesktopInteraction','settingsInteraction'],
+    ['getMobileInputMode','settingsMobileInput'],['setMobileInputMode','settingsMobileInput'],
     ['getGamepadMode','settingsGamepad'],['setGamepadMode','settingsGamepad']
   ]);
 

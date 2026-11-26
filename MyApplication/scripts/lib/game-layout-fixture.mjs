@@ -74,7 +74,7 @@ export function fixture() {
       '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {}, warn() {} } },
       'feature_system': {},
       'account': { AccountType: { OFFLINE: 'offline' }, getAccountManager: () => ({ init: async () => {},
-        getSelected: () => account, findById: () => account, persistOne: async () => {} }) },
+        getSelectedForLaunch: () => account, findById: () => account, persistOne: async () => {} }) },
       './DesktopFileDrop': { DesktopFileDrop: { clearPrevious: async () => {} } },
       // default布局运输不启用store门控；真实Snapshot仍执行prepare/consume及票据身份检查。
       './GameRunAdmission': { GameRunAdmission: { capture: () => '', assertToken() {}, installTicket() {} } },

@@ -32,6 +32,16 @@ int main() {
     assert(state.Confirm(state.Revision()));
     const auto epoch=state.Epoch(2);state.RetireTransactions();assert(state.Visible(2)&&!state.Visible(6)&&state.Epoch(2)!=epoch);
     state.Install(schema);assert((state.Visible(2)&&state.Visible(3)&&!state.Visible(6))&&"valid secondary layer must survive structural publication");
+    // 外设到齐时只安装三键热区。隐藏一级的二级组、它的返回键与进入前的一级快照在展开后仍可使用。
+    const auto secondaryMask = state.Mask();
+    auto compact = schema;
+    compact.systemControlsOnly = true;
+    compact.controls.assign(3, TouchGroupControl{});
+    assert(ValidTouchGroupSchema(compact, 3));
+    state.Install(compact);
+    assert(state.Mask() == secondaryMask && state.Visible(0) && state.Visible(1) && state.Visible(2));
+    state.Install(schema);
+    assert(state.Mask() == secondaryMask && state.Visible(2) && state.Visible(3) && !state.Visible(4));
     invoke(3);assert(state.Mask()==initial&&!state.Visible(1)&&!state.Visible(3)&&!state.Visible(5)&&state.Visible(4));
     assert(state.Confirm(state.Revision()));
     // 无返回键也可再次点击展开键收起，保护入口不依赖额外自动生成的按钮。

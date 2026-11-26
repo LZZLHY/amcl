@@ -42,7 +42,7 @@ const dm={purgeTask:()=>true,cancel:()=>true,isCaBundleInitialized:()=>true,
 class DormantDownloader {cancel(){}purgeNativeOwners(){return true;} getActiveTaskId(){return 0;} }
 let starts=0;
 let beforePhases;
-class BoundaryRunner {async run(){starts++;beforePhases?.();}cancel(){}}
+class BoundaryRunner {async run(){starts++;await beforePhases?.();}cancel(){}}
 const extra={commons:common,'@kit.CoreFileKit':{fileIo:io},'@kit.CryptoArchitectureKit':{cryptoFramework:{}},
   '../download/McDownloader':{McDownloader:DormantDownloader},'../modloader/ModLoaderManager':{ModLoaderManager:class {}},
   './DownloadManager':{DownloadManager:{instance:()=>dm}},'../modloader/MavenUtils':policy,
@@ -86,6 +86,107 @@ gate.resolve();await blocked;await turn();
 await reg.retry(queued.view.id);await turn();
 assert.equal(starts,1);assert.equal(queued.view.state,U.UnifiedTaskState.DONE);assert.equal(reg.runningIds_.length,0);
 pass('排队取消后重试真正执行并完成，无准备中空任务');
+
+// 从生产合并阶段的真实冲突，经原任务重试到完整迁库；单独替换网络与安装器准备阶段。
+let probeFailure;
+const forgeIo={...io,lstatSync(file){
+  if(probeFailure?.file===file)throw Object.assign(new Error(probeFailure.message),{code:probeFailure.code});
+  try{return fs.lstatSync(file);}catch(err){if(err.code==='ENOENT')err.code=13900002;throw err;}
+}};
+const disk=loader({'@kit.CoreFileKit':{fileIo:{...forgeIo,listFileSync(p){
+  if(p===forgeDir) throw Object.assign(Error('版本子目录不可枚举'),{code:13900012});
+  return fs.readdirSync(p);
+}}}})('commons/src/main/ets/utils/FileUtils.ets');
+const merge=loader({...extra,'@kit.CoreFileKit':{fileIo:forgeIo},commons:{...common,writeTextFile:disk.writeTextFile},
+  '../DownloadManager':{downloadComputeFileSha1:p=>hash(fs.readFileSync(p))}})
+  ('feature_core/src/main/ets/download/phases/MergePhase.ets').MergePhase;
+const productionCommon={...common,isVersionInstalled:disk.isVersionInstalled,writeVersionInstallCommit:disk.writeVersionInstallCommit,
+  removeVersionInstallCommit:disk.removeVersionInstallCommit};
+const forgeLoad=loader({...extra,commons:productionCommon});
+const forgeSessions=forgeLoad('feature_core/src/main/ets/version/McInstallSession.ets');
+const ForgeTask=forgeLoad('feature_core/src/main/ets/version/McVersionTask.ets').McVersionTask;
+const forgeName='forge-owned', forgeDir=mcRoot+'/versions/'+forgeName;
+const forgeLib=mcRoot+'/libraries/owned-dependency.jar';
+const singleForge=()=>new ForgeTask('1.20.1','forge','47.1.0',forgeName,mcRoot,filesRoot);
+let forgeAttempt=singleForge();
+const pending=forgeDir+'/'+Sessions.MC_INSTALL_PENDING,commit=forgeDir+'/.amcl-install-complete';
+fs.writeFileSync(forgeLib,'conflict');
+let forgeMerges=0;
+beforePhases=async()=>{
+  const state=forgeAttempt.getTask().flowState_;
+  fs.mkdirSync(state.tempVersionDir,{recursive:true});
+  fs.writeFileSync(state.tempJsonPath,'{"id":"1.20.1","mainClass":"fixture.Main","libraries":[]}');
+  fs.writeFileSync(state.tempVersionDir+'/1.20.1.jar',Buffer.alloc(1048600));
+  state.installSandboxDir=state.tempDir+'/installer';
+  fs.mkdirSync(state.installSandboxDir+'/libraries',{recursive:true});
+  fs.writeFileSync(state.installSandboxDir+'/libraries/owned-dependency.jar','expected');
+  forgeMerges++;
+  await new merge(state).run({},()=>{});
+};
+await assert.rejects(forgeAttempt.start(),/迁移目标与源文件内容不一致/);
+assert.ok(fs.existsSync(forgeDir+'/'+forgeName+'.json') && fs.existsSync(forgeDir+'/'+forgeName+'.jar'));
+assert.ok(fs.existsSync(pending));assert.equal(fs.existsSync(commit),false);
+assert.equal(disk.isVersionInstalled(mcRoot,forgeName),false);
+// 版本根可以列出、实例内已知文件可以读取，但玩家未授予实例子目录的枚举权限。
+const inventoryIo={...io,listFile:async p=>{
+  if(p===forgeDir) throw Object.assign(Error('版本子目录不可枚举'),{code:13900012});
+  return fs.promises.readdir(p);
+},lstat:async p=>forgeIo.lstatSync(p),stat:fs.promises.stat,readText:p=>fs.promises.readFile(p,'utf8')};
+const {readLocalVersionInventory}=loader({...extra,commons:productionCommon,'@kit.CoreFileKit':{fileIo:inventoryIo}})
+  ('feature_core/src/main/ets/version/LocalVersionInventory.ets');
+const inventoryNow=()=>readLocalVersionInventory(mcRoot,()=>[]);
+const partial=await inventoryNow();
+assert.equal(partial.installed.includes(forgeName),false);assert.equal(partial.orphans.includes(forgeName),false);
+const previousOwner=fs.readFileSync(pending,'utf8');
+await assert.rejects(forgeAttempt.retry(),/迁移目标与源文件内容不一致/);
+assert.equal(fs.readFileSync(pending,'utf8'),previousOwner);
+assert.equal(forgeMerges,2);assert.equal(fs.existsSync(commit),false);
+fs.unlinkSync(forgeLib);
+const sandbox=forgeAttempt.getTask().tempDir+'/installer';
+for(const [file,code] of [[sandbox+'/libraries',13900005],[sandbox+'/libraries',13900013],
+  [mcRoot+'/libraries',13900013],[forgeLib,13900005]]){
+  probeFailure={file,code,message:'injected storage/permission error'};
+  await assert.rejects(forgeAttempt.retry(),/injected storage/);
+  assert.equal(fs.existsSync(commit),false);assert.equal(fs.existsSync(forgeLib),false);assert.ok(fs.existsSync(pending));
+}
+probeFailure=undefined;
+const boundary=mcRoot+'/forge-migration-types';
+fs.mkdirSync(boundary+'/src',{recursive:true});fs.mkdirSync(boundary+'/dst',{recursive:true});
+merge.migrateSandboxLibraries(boundary+'/src',boundary+'/dst');
+fs.writeFileSync(boundary+'/src/libraries','not a directory');
+assert.throws(()=>merge.migrateSandboxLibraries(boundary+'/src',boundary+'/dst'),/不是普通目录/);
+fs.unlinkSync(boundary+'/src/libraries');fs.mkdirSync(boundary+'/src/libraries');
+fs.writeFileSync(boundary+'/dst/libraries','keep');assert.throws(()=>merge.migrateSandboxLibraries(boundary+'/src',boundary+'/dst'),/不是普通目录/);
+assert.equal(fs.readFileSync(boundary+'/dst/libraries','utf8'),'keep');
+await forgeAttempt.retry();assert.equal(forgeMerges,7);
+assert.equal(fs.readFileSync(forgeLib,'utf8'),'expected');
+assert.ok(disk.isVersionInstalled(mcRoot,forgeName));assert.equal(fs.existsSync(pending),false);
+assert.ok(fs.existsSync(commit));assert.equal(forgeAttempt.view.state,U.UnifiedTaskState.DONE);
+pass('Forge 库冲突、来源或目标权限与存储故障均保留 pending；首页不允许启动或清理，原任务成功迁库后才提交');
+
+// 在成功收尾两次写盘间退出可按原身份收尾。真正的旧实例没有任何事务标记，仍可识别。
+fs.writeFileSync(pending,previousOwner);
+const cold=await inventoryNow();
+assert.ok(cold.installed.includes(forgeName));
+const probedVersions=[];
+const historyIo={...io,lstatSync(p){if(p.startsWith(mcRoot+'/versions/'))probedVersions.push(p);return io.lstatSync(p);}};
+const {listMcInstallRecovery:scanRecovery}=loader({...extra,commons:productionCommon,'@kit.CoreFileKit':{fileIo:historyIo}})
+  ('feature_core/src/main/ets/version/McInstallSession.ets');
+assert.equal(scanRecovery(filesRoot,mcRoot).some(record=>record.versionName===forgeName),false);
+assert.equal(scanRecovery(filesRoot,mcRoot,'unrelated-version').length,0);
+assert.deepEqual(probedVersions,[],'查询未完成计划或新建其他实例时，不应再探测历史已完成实例目录');
+assert.ok(scanRecovery(filesRoot,mcRoot,forgeName).some(record=>record.id===JSON.parse(previousOwner).id));
+assert.deepEqual(Array.from(cold.committedPending),[forgeName]);
+forgeSessions.finishCommittedMcInstall(filesRoot,mcRoot,forgeName);
+assert.equal(forgeMerges,7);
+assert.equal(fs.existsSync(pending),false);
+fs.writeFileSync(pending,JSON.stringify({id:'different-owner'}));
+assert.equal(forgeSessions.listMcInstallRecovery(filesRoot,mcRoot,forgeName).some(record=>record.versionName===forgeName),false);
+fs.unlinkSync(pending);fs.unlinkSync(commit);
+assert.equal(disk.isVersionInstalled(mcRoot,forgeName),true);assert.ok((await inventoryNow()).installed.includes(forgeName));
+await assert.rejects(singleForge().start(),/已存在/);assert.equal(forgeMerges,7);
+beforePhases=undefined;
+pass('提交后崩溃恢复只收尾本任务 pending；兼容旧实例并保留其他 owner');
 
 // 原生回调只代表当前阶段。复现 assets 的 0 秒 ETA 被 Fabric 任务沿用的真机场景。
 const fabricProgress=new McTask('26.3','fabric','0.20.1','fabric-progress',mcRoot,filesRoot);

@@ -83,7 +83,7 @@ import { readConfirmedActivityAlert, setActivityStorageAlert, readActivityStorag
 import { ProductQaManagement } from 'entry/ProductQaManagement';
 import { LauncherManagementAccess, VersionRenameConfirmation } from '../runtime/LauncherManagementAccess';
 import { applyOrphanCleanup, clearOrphanInstances, OrphanCleanupAccess, OrphanCleanupPlan, prepareOrphanCleanup } from '../runtime/OrphanCleanup';
-import { claimVersionInstall, newVersionInstallOwner, listMcInstallRecovery } from 'feature_core';
+import { claimVersionInstall, newVersionInstallOwner, listMcInstallRecovery, finishCommittedMcInstall } from 'feature_core';
 import { ProductQaVersions } from 'entry/ProductQaVersions';
 import { LauncherLibrary, LibraryUi } from '../launcherskill/LauncherLibrary';
 import { captureFileEntry, FileEntryCheck } from '../launcherskill/SkillFileScope';
@@ -1182,6 +1182,7 @@ struct Index {
       this.refreshCurrentAccount()
     }).catch((e: Error) => {
       AppLogger.warn(TAG, 'AccountManager.init failed', e, LOG_DOMAIN_ACCOUNT)
+      this.refreshCurrentAccount()
     })
 
     // 进程恢复owner已经拥有原件、终态提交和历史投影；页面仅消费持久待展示结果。
@@ -1394,7 +1395,14 @@ struct Index {
 
   /** 从 AccountManager 同步当前账户名 / 类型 / UUID 到 @State，驱动 HomeTab 头部卡片刷新。 */
   private refreshCurrentAccount(): void {
-    let acc = getAccountManager().getSelected()
+    const acc = getAccountManager().getAvailableSelection()
+    if (!acc) {
+      this.accountUsername = '账号暂不可用'
+      this.accountTypeLabel = '请选择账号或稍后重试'
+      this.accountUuid = ''
+      this.accountSkinUrl = ''
+      return
+    }
     this.accountUsername = acc.getDisplayName()
     if (acc.type === AccountType.MICROSOFT) {
       this.accountTypeLabel = '微软正版'
@@ -1708,15 +1716,14 @@ struct Index {
     });
   }
 
-  /** 源无版本数据仍直接切换；已有数据时优先消费面板意图，旧入口才继续询问。 */
+  /** 明确的迁移意图包括只有共享存档的根；旧入口仅在确认目录为空时直接切换。 */
   private promptSwitchStorage(target: StorageLocation, migrate?: boolean, report: (outcome: string) => void = (): void => {}): void {
-    let from = this.mcRoot()
-    if (!GameStorage.hasVersions(from)) {
-      this.applyStorageSwitch(target, false, report)
-      return
-    }
     if (migrate !== undefined) {
       this.applyStorageSwitch(target, migrate, report)
+      return
+    }
+    if (!GameStorage.mayHaveData(this.mcRoot())) {
+      this.applyStorageSwitch(target, false, report)
       return
     }
     try {
@@ -1733,7 +1740,7 @@ struct Index {
         this.applyStorageSwitch(target, res.index === 1, report)
       }).catch(() => { report('cancelled') })
     } catch (e) {
-      this.applyStorageSwitch(target, false, report)
+      report('cancelled')
     }
   }
 
@@ -1767,6 +1774,7 @@ struct Index {
     let commit = (): void => {
       this.saveLauncherChange_({'mcStorageLocation':target}, (): void => {
         this.storageLocation = this.getPrefManager_().mcStorageLocation as StorageLocation
+        if (migrate) this.toast_('数据迁移完成')
         // 私有游戏进程仍活跃时推迟部署；不能因切换首页路径改写正在使用的运行时。
         this.deployRuntimeIfIdle_()
         this.scanVersions()
@@ -1782,7 +1790,6 @@ struct Index {
       getTaskActivityOwner().run<void>({ category: ActivityCategory.STORAGE, title: '存储迁移' },
         async (activity: BusinessActivity): Promise<void> => { activity.event(migLabel); await GameStorage.migrate(from, to) },
         (): BusinessActivityResult => ({ state: LedgerState.SUCCESS, summary: migLabel })).then(() => {
-        this.toast_('数据迁移完成')
         commit()
       }).catch((e: Error) => {
         AppLogger.error(TAG, 'migrate failed', e, LOG_DOMAIN_LAUNCH)
@@ -2140,6 +2147,11 @@ struct Index {
       return;
     }
     const previousVersion: string = this.mcVersion;
+    // 首页扫描已识别的提交尾部才需收尾；正常旧实例无需额外遍历安装历史。
+    for (const name of inventory.committedPending ?? []) {
+      try { finishCommittedMcInstall(this.context.filesDir, this.mcRoot(), name); }
+      catch (e) { AppLogger.warn(TAG, '已提交安装记录稍后重试', e as Error, LOG_DOMAIN_DOWNLOAD); }
+    }
     // 排序：用户拖拽自定义顺序优先；新下载（未在自定义顺序里）按 mtime 倒序排在最上面。
     this.storeScanError_ = inventory.error
     this.availableVersions = inventory.installed

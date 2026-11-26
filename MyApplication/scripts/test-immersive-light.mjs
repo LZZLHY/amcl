@@ -194,7 +194,8 @@ const Tab = component('entry/src/main/ets/pages/tabs/SettingsTab.ets', 'Settings
   '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 20 } },
   '@kit.PerformanceAnalysisKit': {}, './SettingsCatalog': settingsCatalog,
   'entry/ProductInputProfile': { ProductInputProfile: { supportsTouchLayouts: () => false,
-    canChooseInteraction: () => false, canChooseTabletProcess: () => false } } },
+    canChooseInteraction: () => false, canChooseMobileInput: () => false, canChooseTabletProcess: () => false,
+    canChooseNativeGamepad: () => false } } },
   { Color: colors, Scroller: class { scrollTo() {} } });
 const tab = new Tab(); let backHandler;
 tab.onSectionBackReady = handler => { backHandler = handler; }; tab.visible = true;

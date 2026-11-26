@@ -5144,6 +5144,8 @@ static bool schemaEntriesValid(const AmclCtrlEntry* entries, int count,
         if (!ids.insert(std::string(e.id, idLen)).second) { *reason = "duplicate-id"; return false; }
         if (e.kind < 0 || e.kind > 4) { *reason = "kind"; return false; }
         if (e.handledBy != 0 && e.handledBy != 1) { *reason = "handled-by"; return false; }
+        // 三键及临时提示全部由界面处理；不可将原生摇杆/发键热区混入系统精简表。
+        if (groups && groups->systemControlsOnly && e.handledBy != 1) { *reason = "compact-native-control"; return false; }
         if (e.trigger < 0 || e.trigger > 3) { *reason = "trigger"; return false; }
         if ((e.dragLook != 0 && e.dragLook != 1) || (e.haptic != 0 && e.haptic != 1)) {
             *reason = "boolean-field"; return false;

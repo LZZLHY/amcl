@@ -5,6 +5,8 @@
  */
 import { fileIo as fs } from '@kit.CoreFileKit';
 
+/** 普通实例的安装意图在全部阶段提交前一直保留，用于区分旧实例与未完成的新安装。 */
+export const MC_INSTALL_PENDING: string = '.amcl-mc-pending.json';
 export const MODPACK_PENDING_FILE: string = '.amcl-modpack-pending.json';
 export const MODPACK_RECEIPT_FILE: string = '.amcl-modpack.json';
 

@@ -1,10 +1,10 @@
 /**
- * 离线账号生产代码回归。
+ * 离线账号和在线凭据持久化回归。
  *
  * 转译并执行真实 Account/OfflineAccount/AccountStorage/AccountManager，只替换宿主没有
  * 的 Preferences、HUKS、日志和共享库 IO 边界。测试覆盖跨账号共享、名称唯一、持久
  * 失败回滚、旧草稿冲突与提交中的引用保护；不会将手写的替代业务当作被测实现。
- * 输出只打印到 stdout，调用方把日志落到工作区 E 盘，不在工程内生成中间代码。
+ * 微软账号只使用虚构凭据；测试输出由调用方留存，不在工程内生成中间代码。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -42,17 +42,34 @@ class Preferences {
 /** 注入当前库清单及删除保护回调，测试账号引用而不重复实现 PNG/文件导入。 */
 const library = { init: async () => {}, list: kind => assets.filter(asset => asset.kind === kind),
   setUsageGuard: guard => { usageGuard = guard; } };
-const plainCrypto = class {
-  async encrypt(value) { return { iv: 'iv', tag: 'tag', ciphertext: value }; }
-  async decrypt(blob) { return blob.ciphertext; }
-};
+// 只模拟系统密钥服务的可用性和可逆封装，业务选择、微软记录和旧明文提供者均运行生产实现。
+let keyAvailable = true;
+let keyExists = true;
+class HostKey {
+  async hasExistingKey() {
+    if (!keyAvailable) throw new Error('系统密钥暂不可用');
+    return keyExists;
+  }
+  async isAvailable() { return keyAvailable; }
+  async encrypt(value, allowCreate = true) {
+    if (!keyAvailable || (!keyExists && !allowCreate)) throw new Error('系统密钥暂不可用');
+    keyExists = true;
+    return { iv: 'fixture-iv', tag: 'fixture-tag', ciphertext: Buffer.from(value).toString('base64') };
+  }
+  async decrypt(blob) {
+    if (!keyAvailable || !keyExists || blob.iv !== 'fixture-iv') throw new Error('系统密钥暂不可用');
+    return Buffer.from(blob.ciphertext, 'base64').toString('utf8');
+  }
+}
 const imports = {
   commons: { AppLogger: logger, LOG_DOMAIN_ACCOUNT: 0,
     ProcessPreferences: { open: () => currentStore, isGameProcess: () => gameProcess } },
-  './CryptoProvider': { PlaintextCryptoProvider: plainCrypto },
-  './HuksCryptoProvider': { HuksAesGcm256Provider: class { async isAvailable() { return false; } } },
+  './HuksCryptoProvider': { HuksAesGcm256Provider: HostKey },
   './AppearanceLibrary': { getAppearanceLibrary: () => library },
-  './MicrosoftAccount': { MicrosoftAccount: class { static fromRecord() { return null; } } },
+  './microsoft/HttpClient': { RealHttpClient: class {} },
+  './microsoft/MicrosoftOAuth': { MicrosoftOAuth: class {} },
+  './microsoft/XboxLiveAuth': { XboxLiveAuth: class {} },
+  './microsoft/MinecraftProfileApi': { MinecraftProfileApi: class {} },
   './AuthlibInjectorAccount': { AuthlibInjectorAccount: class { static fromRecord() { return null; } } },
 };
 
@@ -252,6 +269,91 @@ await check('删除失败精确恢复记录/索引/选中态，排队的新选�
   release(); await Promise.all([removing, selecting]);
   assert.equal(manager.getSelectedId(), next.id);
   assert.equal(currentStore.getSync('selected_account_id', ''), next.id);
+});
+
+const { MicrosoftAccount } = load('MicrosoftAccount');
+function microsoft(id) {
+  return MicrosoftAccount.fromInteractiveLogin({ id, username: id, uuid: id, createdAt: 1,
+    refreshToken: 'fixture-refresh-' + id, mcAccessToken: 'fixture-access-' + id, mcExpiresAt: 1 });
+}
+
+await check('密钥故障时拒存新凭据，增删离线账号仍保全未解密的原账号、索引顺序和选中项', async () => {
+  await start();
+  const store = currentStore;
+  const old = microsoft('old'), other = OfflineAccount.create('Other'), added = OfflineAccount.create('NewOffline');
+  await manager.add(old); await manager.add(other); await manager.select(old.id);
+  const original = store.getSync('account_' + old.id, '');
+  assert.ok(original && !original.includes('fixture-refresh-'));
+  keyAvailable = false;
+  await start(store);
+  const loginRejected = await manager.add(microsoft('new')).then(() => false, () => true);
+  await manager.add(added); await manager.remove(other.id);
+  const persistedIds = JSON.parse(store.getSync('accounts_list', '[]'));
+  assert.deepEqual({ loginRejected, oldIndexed: persistedIds.includes(old.id), savedNew: store.values.has('account_new'),
+    savedPlaintext: store.getSync('account_new', '').includes('fixture-refresh-new'),
+    selectionPreserved: store.getSync('selected_account_id', '') === old.id },
+  { loginRejected: true, oldIndexed: true, savedNew: false, savedPlaintext: false, selectionPreserved: true });
+  assert.deepEqual(persistedIds, [old.id, added.id]);
+  assert.equal(store.getSync('account_' + old.id, ''), original);
+  await assert.rejects(manager.add(microsoft(old.id)), /暂不可读/);
+  assert.throws(() => manager.getSelectedForLaunch(), /账号/);
+  keyAvailable = true;
+  await manager.init({});
+  assert.deepEqual(manager.list().map(account => account.id), [old.id, added.id]);
+  assert.equal(manager.getSelectedForLaunch().id, old.id);
+  const loaded = manager.findById(old.id);
+  keyAvailable = false;
+  await assert.rejects(manager.persistOne(loaded));
+  assert.equal(store.getSync('account_' + old.id, ''), original);
+  keyAvailable = true;
+  await manager.persistOne(loaded);
+});
+
+await check('旧版明文账号只在安全写入确认后恢复，迁移失败保留原字节；游戏只读进程不写', async () => {
+  const store = new Preferences(), old = microsoft('legacy'), record = old.serialize();
+  record.encrypted.iv = 'PLAINTEXT_V1';
+  const raw = JSON.stringify(record);
+  store.values.set('account_legacy', raw); store.values.set('accounts_list', '["legacy"]');
+  store.values.set('selected_account_id', old.id);
+  gameProcess = true;
+  try { await start(store); assert.equal(store.getSync('account_legacy', ''), raw); }
+  finally { gameProcess = false; }
+  keyAvailable = false; await start(store);
+  assert.equal(manager.findById(old.id), undefined); assert.equal(store.getSync('account_legacy', ''), raw);
+  keyAvailable = true; store.fail = true; await manager.init({});
+  assert.equal(manager.findById(old.id), undefined); assert.equal(store.getSync('account_legacy', ''), raw);
+  await manager.init({});
+  assert.equal(manager.getSelectedForLaunch().id, old.id);
+  const migrated = store.getSync('account_legacy', '');
+  assert.ok(!migrated.includes('fixture-refresh-') && !migrated.includes('PLAINTEXT_V1'));
+  await start(store); assert.equal(manager.getSelectedForLaunch().id, old.id);
+  keyExists = false; await start(store);
+  await assert.rejects(manager.add(microsoft('another')));
+  assert.equal(keyExists, false, '有历史密文时不能创建替代密钥');
+  assert.equal(store.getSync('account_legacy', ''), migrated);
+  keyExists = true;
+});
+
+await check('混有无效项的旧索引保留原顺序和可用账号，正常添加及删除只改自己的 ID', async () => {
+  await start();
+  const old = OfflineAccount.create('Legacy'), other = OfflineAccount.create('Other');
+  const store = currentStore;
+  await manager.add(old);
+  store.values.set('accounts_list', JSON.stringify(['', 'orphan-id', old.id, null]));
+  await start(store);
+  assert.equal(manager.getSelectedForLaunch().id, old.id);
+  await manager.add(other);
+  assert.deepEqual(JSON.parse(store.values.get('accounts_list')), ['', 'orphan-id', old.id, null, other.id]);
+  await manager.remove(other.id);
+  assert.deepEqual(JSON.parse(store.values.get('accounts_list')), ['', 'orphan-id', old.id, null]);
+  keyExists = false;
+  store.values.set('account_orphan-id','{');
+  await assert.rejects(manager.add(microsoft('first-online')));
+  assert.equal(keyExists,false);
+  store.values.delete('account_orphan-id');
+  await manager.add(microsoft('first-online'));
+  assert.equal(keyExists,true);
+  assert.deepEqual(JSON.parse(store.values.get('accounts_list')), ['', 'orphan-id', old.id, null, 'first-online']);
 });
 
 process.stdout.write(JSON.stringify({ status: 'PASS', checks, source: 'production ETS', boundary: 'host SDK/preferences only' }) + '\n');

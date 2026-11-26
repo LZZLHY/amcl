@@ -20,7 +20,7 @@ import { DiagnosticPolicy } from 'commons'
  * 流程：强制横屏 → XComponent 全屏 → OnSurfaceCreated → 启动 MC → 渲染
  * 触摸事件由 XComponent native DispatchTouchEvent 回调直接处理（render.cpp）
  */
-import { AppLogger, ActivityLogger } from 'commons';
+import { AppLogger, ActivityLogger, AtomicFileWriter } from 'commons';
 import { LogTags } from 'commons';
 import { LOG_DOMAIN_LAUNCH } from 'commons';
 // 活动账本（L3）：游戏会话也是一条活动，与下载/安装共用同一套账本
@@ -69,7 +69,7 @@ import {
 import inputDevice from '@ohos.multimodalInput.inputDevice';
 import { getPointerVisibility } from 'gamecontrol';
 import { common } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { GraphicsProfileInput, GraphicsGameApi, LaunchProfileBuilder, LaunchProfile } from 'launch';
 import { MinecraftGraphicsPreferenceInput, MinecraftGraphicsRequest, resolveMinecraftGraphicsRequest,
@@ -2751,12 +2751,9 @@ struct McGamePage {
     // - MicrosoftAccount (M2 Phase B): refresh() 走 refresh_token → XBL → XSTS → MC bearer，
     //   成功后 mcAccessToken / mcExpiresAt / refreshToken（可能轮换）需写回加密存储
     let accountManager = getAccountManager()
-    try {
-      await accountManager.init(this.context)
-    } catch (e) {
-      this.launchLogger_().warn(TAG, 'AccountManager init failed (continuing with fallback)', e, LOG_DOMAIN_LAUNCH)
-    }
-    let account = accountManager.getSelected()
+    // 已选账号暂时无法解密时，中止这次启动，避免使用其他身份进入存档。
+    await accountManager.init(this.context)
+    let account = accountManager.getSelectedForLaunch()
     if (ProcessPreferences.isGameProcess()) {
       const expected: string = ProcessPreferences.open(this.context, 'amcl_accounts').getSync('selected_account_id', '') as string
       if (expected.length > 0 && account.id !== expected) throw new Error('无法恢复本次启动账户，请在启动器重新登录')
@@ -3082,8 +3079,16 @@ struct McGamePage {
     if (backend.length === 0) return
     const optionsPath: string = gameDir + '/options.txt'
     try {
-      let original: string = ''
-      try { original = fs.readTextSync(optionsPath) } catch (e) { original = '' }
+      // 只有明确不存在才按首启创建。读失败或字节数不完整时保留玩家原设置。
+      let existing: fs.Stat | undefined
+      try { existing = fs.lstatSync(optionsPath) } catch (e) {
+        if ((e as BusinessError).code !== 13900002) throw e as Error
+      }
+      if (existing !== undefined && !existing.isFile()) throw new Error('游戏选项不是普通文件')
+      const original: string = existing === undefined ? '' : fs.readTextSync(optionsPath)
+      if (existing !== undefined && stringToUtf8(original).byteLength !== existing.size) {
+        throw new Error('游戏选项未读完整')
+      }
       const newline: string = original.indexOf('\r\n') >= 0 ? '\r\n' : '\n'
       const hadTrailingNewline: boolean = original.endsWith('\n') || original.endsWith('\r')
       const sourceLines: string[] = original.length === 0 ? [] : original.split(new RegExp('\\r?\\n'))
@@ -3113,13 +3118,11 @@ struct McGamePage {
       if (!startupMarkerFound) sourceLines.push(cleanStartupMarker)
       let updated: string = sourceLines.join(newline)
       if (hadTrailingNewline || sourceLines.length > 0) updated += newline
-      const file = fs.openSync(optionsPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC)
-      try {
-        fs.writeSync(file.fd, updated)
-        fs.fsyncSync(file.fd)
-      } finally {
-        fs.closeSync(file)
+      if (updated === original) return
+      if (existing !== undefined && !fs.accessSync(optionsPath, fs.AccessModeType.WRITE)) {
+        throw new Error('游戏选项只读')
       }
+      AtomicFileWriter.write(optionsPath, updated)
       this.launchLogger_().info(TAG, 'Synchronized Minecraft graphics preference: ' + replacement
         + ' and ' + cleanStartupMarker, LOG_DOMAIN_LAUNCH)
     } catch (e) {

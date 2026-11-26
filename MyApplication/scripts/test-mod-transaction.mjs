@@ -4,6 +4,7 @@ import {loader,productionPathPolicy} from './mod-install-test-runtime.mjs';
 
 const files=new Map(),dirs=new Set(['/virtual','/virtual/game','/virtual/game/mods']);
 const descriptors=new Map();let nextFd=1,renameFault=null,writeFault=null,unlinkFault=null,removeFault=null;
+let writeLimit = Infinity;
 const parent=p=>p.slice(0,p.lastIndexOf('/'));
 const hash=b=>crypto.createHash('sha1').update(b).digest('hex');
 const put=(p,body)=>files.set(p,Buffer.from(body));
@@ -13,7 +14,12 @@ const io={OpenMode:{CREATE:1,WRITE_ONLY:2,TRUNC:4},
   mkdirSync(p){if(dirs.has(p))throw new Error('EEXIST');for(let q=p;q.length;q=parent(q))dirs.add(q);},
   listFileSync:p=>[...files.keys(),...dirs].filter(n=>parent(n)===p).map(n=>n.slice(n.lastIndexOf('/')+1)),
   openSync(p){if(writeFault?.(p))throw new Error('ENOSPC');put(p,'');const fd=nextFd++;descriptors.set(fd,p);return {fd};},
-  writeSync(fd,data){put(descriptors.get(fd),data);return Buffer.byteLength(data);},
+  writeSync(fd, data) {
+    const path = descriptors.get(fd);
+    const chunk = Buffer.from(data).subarray(0, writeLimit);
+    files.set(path, Buffer.concat([files.get(path), chunk]));
+    return chunk.length;
+  },
   fsyncSync(){},closeSync(f){descriptors.delete(f.fd??f);},readTextSync:p=>files.get(p).toString(),
   renameSync(a,b){if(renameFault?.(a,b))throw new Error('injected rename failure');if(!files.has(a))throw new Error('ENOENT '+a);files.set(b,files.get(a));files.delete(a);},
   unlinkSync(p){if(unlinkFault?.(p))throw new Error('injected unlink failure');if(!files.delete(p))throw new Error('ENOENT '+p);},
@@ -36,6 +42,31 @@ put(dir+'/one.jar','one-old');put(dir+'/two.jar','two-old');s=setup('one.jar');i
 renameFault=(a,b)=>a.includes('/download/')&&b===dir+'/two.jar';await assert.rejects(tx.commitModFiles(dir,s.staging,s.changes));renameFault=null;assert.equal(files.get(dir+'/one.jar').toString(),'one-old');assert.equal(files.get(dir+'/two.jar').toString(),'two-old');
 // Keep recovery evidence when both activation and immediate rollback fail.
 s=setup('one.jar');renameFault=(a,b)=>a.includes('/download/')||a.includes('/backup/');await assert.rejects(tx.commitModFiles(dir,s.staging,s.changes),/恢复尚未完成/);assert.equal(tx.modTransactionPending(dir),true);renameFault=null;await tx.recoverModTransaction(dir);assert.equal(files.get(dir+'/one.jar').toString(),'one-old');assert.equal(tx.modTransactionPending(dir),false);
+// 模拟同一次 write 返回少于请求的字节，连跨多字节字符的索引及恢复日志也必须完整。
+const indexPath = dir + '/.amcl-mods-index.json';
+const indexText = JSON.stringify({ entries: [{ displayName: '整合包🌱' }] });
+writeLimit = 3;
+tx.writeModFile(indexPath, indexText);
+assert.equal(io.readTextSync(indexPath), indexText);
+put(dir + '/短写.jar', '旧内容');
+s = setup('短写.jar');
+unlinkFault = path => path.endsWith('.amcl-mod-transaction.json');
+await tx.commitModFiles(dir, s.staging, s.changes);
+assert.equal(JSON.parse(io.readTextSync(dir + '/.amcl-mod-transaction.json')).committed, true);
+unlinkFault = null;
+await tx.recoverModTransaction(dir);
+assert.equal(io.readTextSync(dir + '/短写.jar'), 'new');
+assert.equal(tx.hasModRecoveryJournal(dir), false);
+
+// 无进展不能作为成功提交，旧文件与已发布索引仍然可用。
+s = setup('短写.jar', ['短写.jar'], '不能提交');
+writeLimit = 0;
+assert.throws(() => tx.writeModFile(s.staging + '/download/index.json', 'new index'));
+await assert.rejects(tx.commitModFiles(dir, s.staging, s.changes));
+assert.equal(io.readTextSync(dir + '/短写.jar'), 'new');
+assert.equal(io.readTextSync(indexPath), indexText);
+assert.equal(tx.hasModRecoveryJournal(dir), false);
+writeLimit = Infinity;
 let release;const gate=new Promise(r=>release=r),order=[];
 const first=tx.withModDirectoryLock(dir,async()=>{order.push('first');await gate;});
 const second=tx.withModDirectoryLock(dir,async()=>{order.push('second');});
@@ -51,4 +82,4 @@ await assert.rejects(tx.commitModFiles(dir,s.staging,s.changes));renameFault=nul
 assert.equal(files.get(dir+'/restore.jar').toString(),'old');assert.equal(tx.hasModRecoveryJournal(dir),true);
 files.delete(s.staging+'/download/0/a.jar');removeFault=null;
 await tx.recoverModTransaction(dir);assert.equal(files.get(dir+'/restore.jar').toString(),'old');assert.equal(tx.hasModRecoveryJournal(dir),false);
-console.log('PASS: same/different filename and disabled updates, disk-full before mutation, activation failure, multi-file rollback, retained recovery journal, terminal cleanup failures, idempotent recovery and directory concurrency');
+console.log('PASS: partial UTF-8 and zero-byte writes, same/different filename and disabled updates, disk-full before mutation, activation failure, multi-file rollback, retained recovery journal, terminal cleanup failures, idempotent recovery and directory concurrency');

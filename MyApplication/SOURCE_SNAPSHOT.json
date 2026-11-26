@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "sourceCommit": "42a65c0e5c14dfe38cbd661291207b542c38526d",
+  "sourceCommit": "55c7a32abb20dc70e02670088745fc76af51b647",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
     "versionName": "1.0.8",
-    "versionCode": 1001106
+    "versionCode": 1001114
   },
   "exporter": {
     "schemaVersion": 2,
@@ -117,14 +117,14 @@
     },
     {
       "path": "account/src/main/ets/AccountManager.ets",
-      "sha256": "33be67923ced53a7c07edbd7fd87d7ad93f026cf6f0f3e72b33de9b2f3a383be",
+      "sha256": "4f733ee6d3c488eec834c3a3d1f6511aa9b647aff9bc859857ed01005be1cefd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "account/src/main/ets/AccountStorage.ets",
-      "sha256": "36049c18472be1ff44c279013446f430c51ed3548e1ae1be03de14d8749cb342",
+      "sha256": "b7ae27707c37f4dea3e6b7e056b4939a93dc3c8e3f816ed2b0572157358a76d0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -166,14 +166,14 @@
     },
     {
       "path": "account/src/main/ets/CryptoProvider.ets",
-      "sha256": "e078ceba5b128440f6d79d3ce089927a7464c48d6aa47514aafcabc11600c9fd",
+      "sha256": "d0bb5f8c5fdf07d31279dda3d1c51f99738ced37e66b90e2a69f3d58d1e688e2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "account/src/main/ets/HuksCryptoProvider.ets",
-      "sha256": "6f6ccb7c184f962466a730c01471e012b6cb54fe3a157d05bf012e48f3f77655",
+      "sha256": "14255235dab9b468e0b0fe22a1140296879370070dd70927cd026e6745aa5eb7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "61ab487d0207469e8fefd106b85ae965fe7dad229ade6d33816232f78ae81952",
+      "sha256": "1e797c29d26b51a683fdb9befbe1356a7f379f0bf149a9d5c703761d1254c44a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -516,7 +516,7 @@
     },
     {
       "path": "commons/src/main/ets/utils/AtomicFileWriter.ets",
-      "sha256": "3a5488679e93869d76e287dff310fc8b8f84668e90cf959d6c7ea6dd6d4f5e74",
+      "sha256": "c93de701994a5f9584600c402c1c730f71c010a9896416544e706977792004ce",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -579,7 +579,7 @@
     },
     {
       "path": "commons/src/main/ets/utils/FileUtils.ets",
-      "sha256": "e636d08b759779c38a5c160787a20b035a8bd68659b32e9ce633f05dd484a16a",
+      "sha256": "1795076f02d835e3f370a64b981f90f1e283eef25f818e1033e08734a530cae5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -600,7 +600,7 @@
     },
     {
       "path": "commons/src/main/ets/utils/InstancePaths.ets",
-      "sha256": "92a60bef103c78a587bad3029be32394f2a19da556a755d8a477eca1ef985997",
+      "sha256": "70e5819227e7d31e06e4912d0149b0fd059cf5fe3d9342b8823b1c2de736dd2c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -796,7 +796,7 @@
     },
     {
       "path": "config/launcher-skill/settings.json",
-      "sha256": "44e58a81dc246d594186e136da1984857c4737abef9e9d0f0ef62a707342b1e6",
+      "sha256": "14e4971629e55f105011d8166a52d5224783611730ee672e06bd4529f854450e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -852,7 +852,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "c4ed43976261176d496f2f98e4b8a01836f069029318068554e5733b58adce54",
+      "sha256": "635893f5b828181a79998f6cbba51ea14b965d2c4148e60cf6a3e418d5faf497",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -1916,7 +1916,7 @@
     },
     {
       "path": "entry/obfuscation-rules.txt",
-      "sha256": "fada612d70712a49766beef1c6a59110dc8902f10fa4c2516ac3a2a303933824",
+      "sha256": "0181ed16b271953c573d4593542f3331f279043a739b9118e09e7856fb77cc00",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -2042,7 +2042,14 @@
     },
     {
       "path": "entry/skills/amcl-launcher/references/settings-4.md",
-      "sha256": "49887e95996fb3c13155da541a18afb7be17f375b6374ed0321f1edd1d992367",
+      "sha256": "995c730cdf0a8be79e41224751d5fcf3eb15f7f7ad097feafebbf377eb8ccd84",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/skills/amcl-launcher/references/settings-5.md",
+      "sha256": "ffa915f5fa83328d54aa239a65b7e89f7714ea00b77465a796c9fbc670a6682e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -2077,14 +2084,14 @@
     },
     {
       "path": "entry/skills/amcl-launcher/scripts/LauncherSkill.ets",
-      "sha256": "9822b0d161be11e5bad1904ba6015893f3c45ada62795d87ea9ade7aec1b25c1",
+      "sha256": "e231d458a2a15c5f9f5b2e7c525f8da3770bd51bf30e180a7b0d4a547d00508d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/skills/amcl-launcher/SKILL.md",
-      "sha256": "76f926de8328fdb33e08141efbf3efc3ac1a4a4ec0ef6112dae62c0a4cc24f76",
+      "sha256": "55d1fc2be4579a1ee2d04f78ab86fa4052812d3565eb783864d780f4693e860f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -2357,7 +2364,7 @@
     },
     {
       "path": "entry/src/main/cpp/CMakeLists.txt",
-      "sha256": "5d90b75375b886286d788428afb02934f37e99cc4445c5640516422f18a41fa3",
+      "sha256": "32f25ee5eb20c41d4a2556399ed7da94f2469b4e01c137e3f23b5665b58bc8e9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -3693,6 +3700,20 @@
       "owner": "source"
     },
     {
+      "path": "entry/src/main/cpp/jvm/game_options.cpp",
+      "sha256": "2525b6c8352471ed5cd04bc456e3d860cd561d099a385c56e046e9e7cc9f30b2",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/src/main/cpp/jvm/game_options.h",
+      "sha256": "87314f7f733678f2c9ce47c7acaaf3e9307ddcf6060a339c9726066ab7e016a8",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "entry/src/main/cpp/jvm/game_process_exit_core.h",
       "sha256": "ac4b2c30c9a99a2d661aac7c5fe103414d28bd1bf6860998926216a45062a4da",
       "normalization": "lf",
@@ -3946,7 +3967,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/mc_launcher.cpp",
-      "sha256": "2ab7cbadaf1c2dfab11840332e1c4a7ddcb28ab8004bc5fe9fffc7654a695b8e",
+      "sha256": "b09df9415ce9e2b97d560482556b59984485f71305703d45515c08ab046082a1",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -4380,7 +4401,7 @@
     },
     {
       "path": "entry/src/main/cpp/napi/napi_touch_groups.inc",
-      "sha256": "d88a22c9ce747a064987ef0eb08cbc8ebcf8d186f02fe7f4047297380bef88c5",
+      "sha256": "c0cfdcde8fc8d5f1f9ae48b87c9c7091cf059a70a9ac5468dc2b35997f813252",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5521,14 +5542,14 @@
     },
     {
       "path": "entry/src/main/cpp/platform/touch_group_state.h",
-      "sha256": "f540109d15457880524a14b5f16cec513b0a4ddf85c21c2cbb0f643c551c041a",
+      "sha256": "0cebe2d660b5f19c4cb39b614b7d38acd92a3ade78aef1a8cc37d2c4f099426c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/cpp/platform/touch_input.cpp",
-      "sha256": "2ec2568e9505b8336b9b6eb9045f977c79b3e14fce1c9f741ae19cec135a0245",
+      "sha256": "09ad33b44de010e590128836900ec0df81dfef8f41ac371216d61614ef1435a8",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7432,7 +7453,7 @@
     },
     {
       "path": "entry/src/main/cpp/types/libentry/index.d.ts",
-      "sha256": "ae351f6913a2dafdcd3ef402c283a7fb0b8ab5ddbd6a4f65cd9973770d2a5fe6",
+      "sha256": "7387133e0127821ae9deb96e05839c5c104c70ada204a05349eed122d9b421ff",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7537,7 +7558,7 @@
     },
     {
       "path": "entry/src/main/ets/components/AccountListSheet.ets",
-      "sha256": "cf6a3432199ef132f6b93e0ca03d09078f34e4c7a6bcd37ebc6f7c2fcec14038",
+      "sha256": "7b4f4c797791031f95039a88fa3f9ece902f8eef055eadea924620cef8ee3cc2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7957,14 +7978,14 @@
     },
     {
       "path": "entry/src/main/ets/components/GameArchiveIO.ets",
-      "sha256": "b1fed2304b42574e255305c034ef1ce5a9ee102d17949890804c0f54f8ea5107",
+      "sha256": "252f699617ef73d0cc138edd47f1da728762dd3703e8b0275774f2ff8e665b67",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/components/GameControls.ets",
-      "sha256": "905b4b9a20ba4a33d0e2353bcedaefb66fa0b805db2f3e2374804ecb43b74833",
+      "sha256": "6bb56e43ed7a41cbae30eb4f0f58b193a895052435bc19fb7457b3a09ba00a66",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7985,7 +8006,7 @@
     },
     {
       "path": "entry/src/main/ets/components/GameResolutionPanel.ets",
-      "sha256": "a1db119f108ba0cd1688353bdc4cca8b63cf287593702a940c3a882194a1880e",
+      "sha256": "0a39fe41e9011f5bf684bc3975a7d79b5f92cd400c0680fcbe3cc9a41ed4bab1",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7999,7 +8020,7 @@
     },
     {
       "path": "entry/src/main/ets/components/GameSettingsNavigation.ets",
-      "sha256": "540f2ebe914453a201a4c1684ccf141b0277f0aae9ac0c9f19edbea30ef75726",
+      "sha256": "dd060897236d53cf1b40dc9c353c63a3917fd1ca7294c98b2beef91520d2b247",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8034,7 +8055,7 @@
     },
     {
       "path": "entry/src/main/ets/components/InputSettingsEditor.ets",
-      "sha256": "4b7114ccf787129c9bc42e9ac8c0a7962895ee7575645e056114c2f63e1e45fc",
+      "sha256": "2ae4d4ba1784c4fe7d53b150128be12d4b5982a826787c30143652d88a3e4ba3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8208,6 +8229,13 @@
       "owner": "source"
     },
     {
+      "path": "entry/src/main/ets/components/MobileInputSettings.ets",
+      "sha256": "b988e9477b7f18c47fcd8419ec7925d5c13b072518fc41930b3e12dbbadff29e",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "entry/src/main/ets/components/ModAudioSettings.ets",
       "sha256": "74b8be7ea78b888b524e2a963f3e2e033511b4cbb536008993a9e8623c168c80",
       "normalization": "lf",
@@ -8370,7 +8398,7 @@
     },
     {
       "path": "entry/src/main/ets/components/SkinCapeDetailSheet.ets",
-      "sha256": "195a095613fa1e7d3d4ea39d1f4b200321567f5c29f6a46bb3dcb7faa19f1d42",
+      "sha256": "353c6267fd859c9816b75bc82379ae9b9a2213f0aa19344c9741aee3bebd2009",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8454,7 +8482,7 @@
     },
     {
       "path": "entry/src/main/ets/components/TouchGroupSchemaCompiler.ets",
-      "sha256": "afb74a95d4702471dbcb3f7a93920eb56e0ffb66efa424fa68cc540d700578a8",
+      "sha256": "41468e1bf74be7cb177a0b964cdf808c4db76ac299416d64aafdff7f987a3fe0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8489,7 +8517,7 @@
     },
     {
       "path": "entry/src/main/ets/components/TouchSurfaceController.ets",
-      "sha256": "e345c2756310c0870e9dd377306466256a22373275e90502d58ecc041395064f",
+      "sha256": "d8cdf5fc8dc1b31e7bb0a72322d652a35f2d555ef1a122b5fae341c960fc9962",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8789,6 +8817,13 @@
       "owner": "source"
     },
     {
+      "path": "entry/src/main/ets/launcherskill/MobileInputSkill.ets",
+      "sha256": "4be913486d0153ca8d1cb757a9cadf65b95710dc5e35ab912a1b86b094b80c6c",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "entry/src/main/ets/launcherskill/NamedSkill.ets",
       "sha256": "c60fba8559a19690cd5540a1fe7ff32be0d1928d3177b92fb56a0414b61a3ecd",
       "normalization": "lf",
@@ -8839,7 +8874,7 @@
     },
     {
       "path": "entry/src/main/ets/launcherskill/SkillMethodCatalog.ets",
-      "sha256": "e97ed292eb1380fd8275d57d43144fb8bfb48cfbb7dbb0320e42ccefcd0dde8a",
+      "sha256": "feaaea408a36057b6302e4ef3a2f00bb677e5c07c5653392270db3ac244dea98",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8937,7 +8972,7 @@
     },
     {
       "path": "entry/src/main/ets/pages/Index.ets",
-      "sha256": "7a463f6fafb2e24871d794196e1335b7c315dcebc41e87e1384c6ac8ee10e397",
+      "sha256": "b8761bcb8a3cb2fdaea4a7c51b58c91ab0c201258e809c092e9b3eee715406d2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8979,7 +9014,7 @@
     },
     {
       "path": "entry/src/main/ets/pages/McGamePage.ets",
-      "sha256": "6cd0d1318d56d0f778289ad8b6d86653215b5ae2c707c6c1c1d466b5381529e5",
+      "sha256": "9af15dcbaec6f265f5f29d125f4d3cb8dc2c1f9e07bba8bbeda84c71d667a025",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8993,7 +9028,7 @@
     },
     {
       "path": "entry/src/main/ets/pages/ModBrowsePage.ets",
-      "sha256": "ca399964a4b2ae47d4d9ce3b1a07cafde262e8678720afed57b9f84fcba25938",
+      "sha256": "1135a34e8eba459886c6bf619eda858dc444af9133ff19971599c4e4e73a7038",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9042,14 +9077,14 @@
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsCatalog.ets",
-      "sha256": "073cebf213d836f9291ac570d1fbad71fa0935a84830b45537f9f82e32b25c55",
+      "sha256": "9cbe274816abda6b88f2df503f8199403e9b88d1ec9282faf7f44c2fdbce8abe",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsTab.ets",
-      "sha256": "ec18f63f5cecf6a7709a6642b42268f508d2e79d75d8307dbba774c2a864d11d",
+      "sha256": "33dd0d5a6cb3ea5ecb04f8a4d2dcda05d2da81498dfd96017bed3453db48bf06",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9077,7 +9112,7 @@
     },
     {
       "path": "entry/src/main/ets/product/RuntimeProductProfile.ets",
-      "sha256": "19d054c5d8a857927d0238ccf422064700972e534d985abc70b9e3183338ea1b",
+      "sha256": "cff399b1cfeaaf50faa96faa94c9798dc8687e17274335d55107cb7dd9030924",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9126,7 +9161,7 @@
     },
     {
       "path": "entry/src/main/ets/runtime/DesktopLaunchSnapshot.ets",
-      "sha256": "a18a638daac784666ded7268d4957b182a787e395a6fae4c204038ba8a87492d",
+      "sha256": "166f2da74bd2525cccedf6256e504bb4b9728bc968e8b7f4b7a74c6c7636831e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9281,6 +9316,13 @@
     {
       "path": "entry/src/main/ets/runtime/MessageDestination.ets",
       "sha256": "daad372f1ff82a229e85191ed8dadb72e7c59051777b0b1c692e3e582ba53eac",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/src/main/ets/runtime/MobileInputPreference.ets",
+      "sha256": "1de7651255520a80dbdd5975647c4d6480a198f527fc6300c87cb169d2650bb0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9756,7 +9798,7 @@
     },
     {
       "path": "entry/src/main/ProductTouchSettings.ets",
-      "sha256": "d2734f1e68da46d4c56830b36eed6b1c65289d82f3c29ff2181d9a8c1a2982ae",
+      "sha256": "348f3a6ab2fe133aa1940899a1002c9faaf28132f358b147210ef477bfafaacc",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10015,7 +10057,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "9b257b033af00163958b59177e584737ec85e94424fb887ee1119bc6da81034f",
+      "sha256": "e6ceccceb5cbeae84fd39ca85890116664160703504e975797e4b7751a07829d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10918,7 +10960,7 @@
     },
     {
       "path": "feature_core/src/main/ets/download/DownloadTask.ets",
-      "sha256": "55aa1c8ac6ae08346f1ae4e6f1ab2cede1537fe07545c9bab743cc050ea454a7",
+      "sha256": "46d2a633c922631ed4b9dfb81198aa1d5fe2517c5114a3ffcc8a64d176d27f92",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10981,7 +11023,7 @@
     },
     {
       "path": "feature_core/src/main/ets/download/phases/MergePhase.ets",
-      "sha256": "9259546e941bc2e3e6eb3ea0571e5cc690c53b42377f9f77da299eebd0d04c0b",
+      "sha256": "63ec9216e489136e2e8273bfd5e0e3c640cce3ae7325cee54f4bd30e927b8493",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11219,14 +11261,14 @@
     },
     {
       "path": "feature_core/src/main/ets/version/LocalVersionInventory.ets",
-      "sha256": "d83f18f8cca8dd476a2b007803e3b77e5fe765361e74878c814f577dda9757b2",
+      "sha256": "e654580c1ebf99cbecae671c2e15f443091cb9d9e085e1a9bbdcaf6254c09417",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "feature_core/src/main/ets/version/McInstallSession.ets",
-      "sha256": "1a09d7133903e060422af5c3e055f128375b2857c16d533b40b5dadf734e06d6",
+      "sha256": "bc193d62f04714d34fb673676deb46ffa828e8303849dc9321a39721e515339e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11401,7 +11443,7 @@
     },
     {
       "path": "feature_system/src/main/ets/GameStorage.ets",
-      "sha256": "52f5917ad5b02b7d7d66640690acb828464d9539f25780d7cc6c71fe2fa1fc49",
+      "sha256": "349604b80f8cd86ab8f9f50909b62e6e9d3520ed4655fb1dea5e39bd91dde539",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11646,7 +11688,7 @@
     },
     {
       "path": "gamecontrol/src/main/ets/InputDeviceMonitor.ets",
-      "sha256": "10ba9a36f48235c3fb3910fcadc7f2287fead42449532e602e18f0cd08160cd6",
+      "sha256": "f83f541172404362dcef94885769438f9f0c2103d6ee1851a1971c57a0d0b4a7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11821,7 +11863,7 @@
     },
     {
       "path": "gamecontrol/src/main/ets/RuntimeTouchLayout.ets",
-      "sha256": "7f496f4f6586b8f24af6b7e49ebe3f42cf7c6b84baff45b17106b7abf7021c51",
+      "sha256": "2a00c82571136f20ab9281ca3d81cbed85b44c8f49c3487c60b43ee718bfda61",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -13116,7 +13158,7 @@
     },
     {
       "path": "mods/src/main/ets/InstalledModIndex.ets",
-      "sha256": "47e0496ebc5d62e55e7530d9aba1586885a8b5cfd6d732e7dfe1eae3085d38db",
+      "sha256": "cf2eb9549097ab5f1d0e896fb03f9629fd78c49ce0cdd9f6bffb9aec64e322f1",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -13179,7 +13221,7 @@
     },
     {
       "path": "mods/src/main/ets/ModInstallTransaction.ets",
-      "sha256": "98fd209126301dc75a4cc3ed334cabafe5ff995e6523e3f3d199737655fe9e22",
+      "sha256": "180430d67900f8c327adf9f95fafc1190a1017c2526a52c31fbffecb72eece2f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -13200,14 +13242,14 @@
     },
     {
       "path": "mods/src/main/ets/ModpackInstaller.ets",
-      "sha256": "b5cf621e19f940547eefbf0b71c78debcf98cdf32df0f26c223ecadce1f5a1b7",
+      "sha256": "f96b8ea3bef9e28d6cc0d43d6e68cc0df687f28bad37ac30ead28affdf17e61c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "mods/src/main/ets/ModpackInstallSession.ets",
-      "sha256": "8f502775411bcac7888a60f5b24dc55e24f5907f18a93fe29dc6848a411a3af8",
+      "sha256": "bb5cdcb9de5c631b26ae6198d5c94339339b10e2479cc02a59e842e83ee4baaa",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -13256,7 +13298,7 @@
     },
     {
       "path": "mods/src/main/ets/ModpackRecoveryTasks.ets",
-      "sha256": "375c50412f73b59fe865d5ca337977bf60f76f82999e1f52e496e66f0d36b3fe",
+      "sha256": "6f575d2aa045a9f6a238a1d1c2c9ec6d394623cef058e11e9f48efaecf9a9fc4",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19164,7 +19206,7 @@
     },
     {
       "path": "scripts/fixtures/touch-groups/secondary.cpp",
-      "sha256": "1959760aa16b0e490776771c31ba964cbe459cac7deeed1b1c6005e135f1f960",
+      "sha256": "574597351b80152676cc31339cfa7eb99a42f7c48d39e864d532a99008626678",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19220,7 +19262,7 @@
     },
     {
       "path": "scripts/generate-launcher-skill.mjs",
-      "sha256": "60f0a34303d04bac59d6b7b5d01c6339e9ccccb6b73b4f7907453e69d6e6c233",
+      "sha256": "2aa5f72c2502496389806031354f2420ec61af12ebd1c8581c8830f8ecc55e5f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19402,7 +19444,7 @@
     },
     {
       "path": "scripts/lib/game-layout-fixture.mjs",
-      "sha256": "b5e87a91b9ac83bdfed6f4a3570c1f7ae4c9d6153dde38899c199f24ab73b5b8",
+      "sha256": "4c438f9e4954c9c9a474b757f5085f2e2ac84769396a7851c931cd52d50bfbf8",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19668,7 +19710,7 @@
     },
     {
       "path": "scripts/mod-install-test-runtime.mjs",
-      "sha256": "c3fc99843bc8c14f81f4cb2f42dea2b00014c664808fdae31dbe915870ad183a",
+      "sha256": "a17ca652e73a71edb684575d5d71d5bf269eac04ccb17216a865ad7edafbd48a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19913,7 +19955,7 @@
     },
     {
       "path": "scripts/test-account-list-ui.mjs",
-      "sha256": "bd01a189ee9659e7f3ae479dbf226d1268918eff608f2834bda39312c283216c",
+      "sha256": "100f2b11fa98eccb0957c57926c6c98e08f6da13ace281e9e04580a80896110e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20704,14 +20746,14 @@
     },
     {
       "path": "scripts/test-custom-jvm-save.mjs",
-      "sha256": "9af89bbd3e32ef5327b7b6e8994c81f85e8a84a022d7e6dc02b8297f10b98235",
+      "sha256": "5b7ad58c55d9804800a188c4d0b741d5c8192e8f1fa9c36d583e4d946e4a5fc1",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-desktop-arkts-seams.mjs",
-      "sha256": "82114b20db1fae7f15013035128e91448b7441ad9424a6fb689636c41403c18d",
+      "sha256": "994e5650b1b2d27485dd1a474b7550fc973aabb9d6c00d12c42133c88a8995f0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20739,7 +20781,7 @@
     },
     {
       "path": "scripts/test-device-connection-runtime.mjs",
-      "sha256": "b92bb4bd93d67d1f0f7db988962ef21777b4f434437c9dae4bfecf0bcceadda3",
+      "sha256": "a10e74bc47b948940ae1642b7ff028d20a7e0cde2af181526ced92eed375eaa4",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20816,7 +20858,7 @@
     },
     {
       "path": "scripts/test-download-system.mjs",
-      "sha256": "f073f155a5295717ad31ed6a81ad22d9c57a18094c95b77ee2002602f8e9f5d1",
+      "sha256": "ad01b2e1d34149308e045f015efc537f1fe928d3eae5fe01cae95df34e107a9b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20984,7 +21026,7 @@
     },
     {
       "path": "scripts/test-frozen-settings-save.mjs",
-      "sha256": "3cb114b6fea481f1d1ee2187c1f9089e835ceca80699f66c641f370590d4732a",
+      "sha256": "e3b9f3adade67e9545454f6cee8c62284439f2f8c1a7a6fceb0ada8287d12631",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21040,7 +21082,7 @@
     },
     {
       "path": "scripts/test-game-file-access.mjs",
-      "sha256": "f3fc2350c5c99612032e2d7c130ccd1849afc4a704aedf2a57a85973f4342e42",
+      "sha256": "ee317aa609af071e2c4cd6a08deebb654e0a66fa0e4e644f9f0adf63c62ca448",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21166,7 +21208,7 @@
     },
     {
       "path": "scripts/test-game-vulkan-preference.mjs",
-      "sha256": "1dcbbe2071f23d54063d4849acb488b3d3ddfe0707e98b8a2d6e2eb97341dadb",
+      "sha256": "2a946655eb8c681ae3f5b2b00f384a73ab372d8a26cb5ea77433f6cc7c79f8fa",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21439,7 +21481,7 @@
     },
     {
       "path": "scripts/test-home-version-state.mjs",
-      "sha256": "e3c109173f221e8274baf406bb3482261235fdfb69a4f798dfe9b95f271dceb1",
+      "sha256": "c6d32b0c877557ddcf96caea688bba66f0405d6da03d4d0628679253a0065b6b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21474,7 +21516,7 @@
     },
     {
       "path": "scripts/test-immersive-light.mjs",
-      "sha256": "fa9e121d2d96c933a4f3fa785d95a284accffd074bfc1b1049ef946c2325c31c",
+      "sha256": "aa175f7dbb0cdc764205f027f79adeb3ef92ef60613125399d8b110007927d74",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21551,7 +21593,7 @@
     },
     {
       "path": "scripts/test-input-settings-editor.mjs",
-      "sha256": "f1d4fb28859f6dda26010858db0ac159290f9bf50db8407ff496bd635b14ea81",
+      "sha256": "71342fec9927ca12126b1510dae161c14fca6e605bd8152ff8eb7eca86cf791f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21810,7 +21852,7 @@
     },
     {
       "path": "scripts/test-layout-editor-failures.mjs",
-      "sha256": "3e7744394adbb93eccf73ede464e1cfada1ba2307bfafda97bb01758c93c80d2",
+      "sha256": "5b26c95dca6c3bf51269a3e60bdfbcbc18e67748c0c151498871956623c5ab48",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21901,7 +21943,7 @@
     },
     {
       "path": "scripts/test-local-mod-scan.mjs",
-      "sha256": "fc066c3aded77a180c91f92903e9d8935bb299da93981fbbb5ea4f3a93083785",
+      "sha256": "4aa3f4d69026bf959fa79acc2aee28650e2def2c450066560907bbc3ec367aa6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22188,7 +22230,7 @@
     },
     {
       "path": "scripts/test-mod-transaction.mjs",
-      "sha256": "47d2dc35055b19c10529e0cb30eba514979d4348abd15a3c0c45cbf83ad73d01",
+      "sha256": "363084055c0185b34a964ce66faefe0b1d6b41793bfef495cbf758c2880c81a5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22202,7 +22244,7 @@
     },
     {
       "path": "scripts/test-modpack-install.mjs",
-      "sha256": "a7ad87a56c9cdd29a61ba56981b633d4afbc54aab6bc5f21e9678ddb264e9a08",
+      "sha256": "df74a86d60f1a7627a1572e00b39f2e2c4c55aa83840643e52ee5d47e6fcc002",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22216,7 +22258,7 @@
     },
     {
       "path": "scripts/test-modpack-legacy-wal.mjs",
-      "sha256": "73304bc825faf8beda48166a280bf10c3f0c0e889ba393ffda532f4a5d893547",
+      "sha256": "310381055ae8706d4734fc83ed3ad20b95487be8cea453122ba1c04285c5b8f9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22293,7 +22335,7 @@
     },
     {
       "path": "scripts/test-online-account-appearance.mjs",
-      "sha256": "54c56559ed4dc4102db2f28950ebf3df02c94aa6de1e0f6a18c49e54f98c4f84",
+      "sha256": "a670e6c7f3fc9be0a848adfbb67ee52eb802ff48511bb18643f2b28c321778a6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22349,7 +22391,7 @@
     },
     {
       "path": "scripts/test-player-skill-accounts-layout.mjs",
-      "sha256": "418b3805857466d5db283c4e8530990692bed9aaedd95251d11f9fdd202d823b",
+      "sha256": "e155ab1fde13c8ae9651c0fd9b7dfd3536c06bcb9eb657eea67d175a8264c15c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22370,7 +22412,7 @@
     },
     {
       "path": "scripts/test-prelaunch-mod-state.mjs",
-      "sha256": "bc5762de28fae0daedc38b7f68d100a896eb3b7bf1aa48f85188b026f65728d8",
+      "sha256": "43d64ccf9582f8b0606c6a2544a56bb4277b6dcbb22ca465ac5586ae3e4427ae",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22447,7 +22489,7 @@
     },
     {
       "path": "scripts/test-qa-version-actions.mjs",
-      "sha256": "e33958e2572bd0daa2fe35a8a0298dca25dd7df64703f14ca3864a098c896bce",
+      "sha256": "93610b4d4767dc190c7558387a56fc5750f7536b2a5f945298787767b8c6b71f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22783,7 +22825,7 @@
     },
     {
       "path": "scripts/test-secondary-control-groups.mjs",
-      "sha256": "81c333976c363029d1d01a41a9fb239c963846ddca5a5ac06ab9457e35b41533",
+      "sha256": "9c45082b82d8775eae6353ee8c7005a449c56c4cf4a2c7c0205e81300bb8b4e4",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22853,7 +22895,7 @@
     },
     {
       "path": "scripts/test-settings-ui.mjs",
-      "sha256": "df6a912c0f0185b16d7f94927668cfd8f19dc624fcccc80101b74a7df88819d7",
+      "sha256": "dd7df560894f58cba04777e1b0f7af10ac94f439deeada9249f0d41f940c6065",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -23343,7 +23385,7 @@
     },
     {
       "path": "scripts/test-virtual-mouse-entry-visibility.mjs",
-      "sha256": "cbbcf2470e0a92847e888656f7eea5502e3a8ba4cdd12b4683b1fa9a63376819",
+      "sha256": "cb0b57dcf0c709d47cec830436151a2ca1c395266a309bf22760ab054e58c137",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -23659,6 +23701,20 @@
     {
       "path": "tests/game-dialog/run-host.sh",
       "sha256": "6b1c0e0362ba43c35234284d2f645bcafe57ab0f5d1873a2c6c88f85478c939a",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "tests/game-options/host_test.cpp",
+      "sha256": "4bb6cd4dffd6f79ca735b8247a48d632a4ecd256e90ae15f3c4190e133dda515",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "tests/game-options/run-host.sh",
+      "sha256": "ad02201abe0291866b7f96a218d93fc643dccddac2780d5d615fb6c36c83efef",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -25170,7 +25226,7 @@
     },
     {
       "path": "tests/offline-account/run.mjs",
-      "sha256": "94053ca0bceb39ee605d366a61a85a45d7f1cf5f95fce45e6f4983ef392a73f1",
+      "sha256": "74ef8b7247bc8579de4f5fc899ed4657267a833962b10612e1db8476764bc1e8",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -27240,6 +27296,6 @@
     "generated": 1,
     "private": 822,
     "public-owned": 39,
-    "source": 3883
+    "source": 3891
   }
 }

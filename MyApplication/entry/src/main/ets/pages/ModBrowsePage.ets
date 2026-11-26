@@ -230,6 +230,7 @@ export struct ModBrowsePage {
   private localPickerGeneration_: number = 0;
   private localArchiveOwner_: ((discard: boolean) => void) | undefined = undefined;
   private localModpackArchive_: string = '';
+  private localModpackSessionId_: string = '';
   private localModpackRoot_: string = '';
   private localModpackFilesDir_: string = '';
   private detailOptionalIds_: string[] = [];
@@ -1235,7 +1236,7 @@ export struct ModBrowsePage {
   /** 私有副本在草稿和队列间只交接一次。撤回只删除本次落地的文件和仍为空的原目录。 */
   private ownLocalArchive_(filesDir: string, directory: string, name: string): (discard: boolean) => void {
     if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) throw new Error('选择器返回了无效文件名');
-    const folder = ArchiveDirectory.capture(directory, { root: filesDir + '/modpack-import', current: (): boolean => true });
+    const folder = ArchiveDirectory.capture(directory, { root: filesDir + '/modpack-work', current: (): boolean => true });
     const path = directory + '/' + name;
     let file: ArchiveSource;
     try { file = new ArchiveSource(path, false); }
@@ -1277,7 +1278,7 @@ export struct ModBrowsePage {
     if (this.localModpackNameError_.length > 0 || this.localModpackArchive_.length === 0) return;
     let task = new ModpackInstallTask({
       title: this.localModpackName_.trim(), subtitle: '整合包 · 本地导入',
-      versionName: this.localModpackName_.trim(), archivePath: this.localModpackArchive_,
+      versionName: this.localModpackName_.trim(), archivePath: this.localModpackArchive_, sessionId: this.localModpackSessionId_,
       mcDir: this.localModpackRoot_, filesDir: this.localModpackFilesDir_,
       existingVersions: this.availableVersions, requireConfirmation: true,
       officialFilesOnly: this.onlyOfficialModpackFiles_(),
@@ -2424,13 +2425,14 @@ export struct ModBrowsePage {
       // 文件选择是异步操作；在入口快照设置中的全局根，避免等待期间被页面临时目标覆盖。
       const installRoot = this.mcDir;
       const generation = this.localPickerGeneration_;
-      // 每次导入使用独占目录，排队期间再次选择同名 ZIP 不会替换前一任务输入。
-      let importDir = filesDir + '/modpack-import/' + newVersionInstallOwner();
-      let res = await GameArchiveIO.importResourceFile(ctx, importDir, ['.mrpack', '.zip']);
+      // 草稿和安装任务使用同一独占归档，放弃任务沿原暂存清理即可，不再遗留第二个副本。
+      const sessionId = newVersionInstallOwner();
+      const importDir = filesDir + '/modpack-work/' + sessionId;
+      let res = await GameArchiveIO.importResourceFile(ctx, importDir, ['.mrpack', '.zip'], true);
       if (res.cancelled) return 'cancelled';
       if (!res.ok) { this.toast(res.message); return 'failed'; }
-      let archivePath = importDir + '/' + res.name;
-      const owner = this.ownLocalArchive_(filesDir, importDir, res.name);
+      let archivePath = importDir + '/archive.zip';
+      const owner = this.ownLocalArchive_(filesDir, importDir, 'archive.zip');
       // 页面重挂后即使重新可见，也不能接手旧选择器返回的文件。
       if (this.detailDisposed_ || this.localPickerGeneration_ !== generation || (stillCurrent !== undefined && !stillCurrent())) {
         owner(true);
@@ -2444,6 +2446,7 @@ export struct ModBrowsePage {
       // 本地没有在线项目详情可预填，使用文件名生成安全默认名；选完文件后仍先展示
       // 下载详情，让用户像普通版本一样改名并点击开始。此时尚未入队，也未写实例目录。
       this.localModpackArchive_ = archivePath;
+      this.localModpackSessionId_ = sessionId;
       this.localModpackRoot_ = installRoot;
       this.localModpackFilesDir_ = filesDir;
       this.localModpackName_ = sanitizeVersionName(title);

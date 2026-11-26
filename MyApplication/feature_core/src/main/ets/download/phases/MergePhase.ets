@@ -15,6 +15,7 @@
  * 创建日期：2026-05-06
  */
 
+import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
   IDownloadPhase, PhaseContext, PhaseProgress,
@@ -87,28 +88,22 @@ export class MergePhase implements IDownloadPhase {
    * 目标类型或尺寸不一致、复制/发布/删源任一步失败都抛错。
    */
   static migrateSandboxLibraries(sandboxMcDir: string, realMcDir: string): void {
+    const sandbox = fs.lstatSync(sandboxMcDir);
+    if (!sandbox.isDirectory() || sandbox.isSymbolicLink()) throw new Error('Forge 安装器沙箱不是普通目录');
     let sandboxLibs = sandboxMcDir + '/libraries';
-    let sandboxStat: fs.Stat;
-    try {
-      sandboxStat = fs.statSync(sandboxLibs);
-    } catch (e) {
-      AppLogger.info(TAG, 'No sandbox libraries to migrate (dir absent)');
-      return;
-    }
-    let isDir = false;
-    try { isDir = sandboxStat.isDirectory(); } catch (e) { /* */ }
-    if (!isDir) return;
-
-    let realLibs = realMcDir + '/libraries';
-    let realLibsExists = false;
-    try { realLibsExists = fs.statSync(realLibs).isDirectory(); } catch (e) { /* */ }
+    const sandboxStat = MergePhase.statIfPresent_(sandboxLibs);
+    if (sandboxStat === undefined) return;
+    if (!sandboxStat.isDirectory() || sandboxStat.isSymbolicLink()) throw new Error('library 迁移源不是普通目录');
+    const realLibs = realMcDir + '/libraries';
+    const realStat = MergePhase.statIfPresent_(realLibs);
+    if (realStat !== undefined && (!realStat.isDirectory() || realStat.isSymbolicLink())) throw new Error('library 迁移目标不是普通目录');
 
     // 整目录 rename 之前也必须扫描，避免把 installer 制造的链接/特殊文件带入真实库目录。
     MergePhase.validateMigrationTree_(sandboxLibs, 0);
 
     // 快速路径：realLibs 不存在 → 整目录 rename。只有 rename 系统调用本身失败
     // 才允许进入 per-file fallback；发布后的 fsync/校验失败不能伪装成“尚未迁移”。
-    if (!realLibsExists) {
+    if (realStat === undefined) {
       let renamed = false;
       try {
         fs.renameSync(sandboxLibs, realLibs);
@@ -133,6 +128,15 @@ export class MergePhase implements IDownloadPhase {
     MergePhase.migrateLibrariesRecursive(sandboxLibs, realLibs, stats);
     AppLogger.info(TAG, 'Library migration: migrated=' + stats.migrated
       + ' skipped=' + stats.skipped + ' failed=' + stats.failed);
+  }
+
+  /** 只有平台明确报告条目不存在才按可选库或空目标处理；权限、存储等错误交还原任务。 */
+  private static statIfPresent_(path: string): fs.Stat | undefined {
+    try { return fs.lstatSync(path); }
+    catch (error) {
+      if ((error as BusinessError).code === 13900002) return undefined;
+      throw error as Error;
+    }
   }
 
   private static validateMigrationTree_(dir: string, depth: number): void {
@@ -166,19 +170,8 @@ export class MergePhase implements IDownloadPhase {
         MergePhase.migrateLibrariesRecursive(srcPath, dstPath, stats);
         try { fs.rmdirSync(srcPath); } catch (e) { /* 不为空则忽略 */ }
       } else if (srcStat.isFile()) {
-        let dstExists = false;
-        try {
-          let dstStat = fs.lstatSync(dstPath);
-          if (dstStat.isSymbolicLink() || !dstStat.isFile()) {
-            throw new Error('library 迁移目标存在非普通文件: ' + dstPath);
-          }
-          dstExists = true;
-        } catch (e) {
-          let message = (e as Error).message;
-          if (message.indexOf('library 迁移目标存在非普通文件') >= 0) throw e as Error;
-        }
-        if (dstExists) {
-          let existing = fs.lstatSync(dstPath);
+        const existing = MergePhase.statIfPresent_(dstPath);
+        if (existing !== undefined) {
           if (existing.isSymbolicLink() || !existing.isFile() || existing.size !== srcStat.size ||
               downloadComputeFileSha1(dstPath) !== downloadComputeFileSha1(srcPath)) {
             stats.failed += 1;
