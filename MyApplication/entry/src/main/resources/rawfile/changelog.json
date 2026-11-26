@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-26T14:39:09Z",
+  "generatedAt": "2026-11-26T17:40:26Z",
   "categories": [
     "highlight",
     "added",
@@ -11,16 +11,16 @@
   ],
   "latest": {
     "versionName": "1.0.8",
-    "versionCode": 1001119,
+    "versionCode": 1001122,
     "tag": "v1.0.8",
-    "date": "2026-11-26"
+    "date": "2026-11-27"
   },
   "releases": [
     {
       "versionName": "1.0.8",
-      "versionCode": 1001119,
+      "versionCode": 1001122,
       "tag": "v1.0.8",
-      "date": "2026-11-26",
+      "date": "2026-11-27",
       "prerelease": false,
       "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8",
       "title": "MobileGL 帧率提升、原生手柄与游戏内设置",
@@ -34,12 +34,8 @@
           },
           {
             "type": "highlight",
-            "text": "实体手柄可交给游戏或手柄模组处理。 手机和平板从鸿蒙 API 21 起可在启动器设置中选择「由游戏处理手柄」，下局生效。",
-            "markdown": "**实体手柄可交给游戏或手柄模组处理。** 手机和平板从鸿蒙 API 21 起可在启动器设置中选择「由游戏处理手柄」，下局生效。",
-            "details": [
-              "默认使用启动器映射。Controlify 等模组可识别已连接的手柄、接收按键和摇杆输入，也能识别拔出与重新连接。API 20 设备继续使用启动器映射。",
-              "游戏接管手柄后，方向键操作游戏菜单时不会同时选中屏幕上的虚拟键。虚拟键仍可触摸，设置、摆键和聊天输入仍可用手柄导航。本局输入模式以短消息提示一次。"
-            ]
+            "text": "优化实体手柄适配，游戏及 Controlify、Controllable 等模组可在鸿蒙 API 21 及以上直接读取按键和摇杆。",
+            "markdown": "**优化实体手柄适配，游戏及 Controlify、Controllable 等模组可在鸿蒙 API 21 及以上直接读取按键和摇杆。**"
           },
           {
             "type": "added",
@@ -47,7 +43,7 @@
             "markdown": "**手机和平板新增「手柄优先」和「键鼠优先」。**",
             "details": [
               "在启动器或游戏内的「移动端输入方式」中选择。默认「自动」保留当前触控布局。选「手柄优先」并连接手柄，或选「键鼠优先」并接齐全键盘和鼠标或触控板后，屏幕上只保留「显影」「设置」「聊」。仍可触摸游戏，也可点「显影」展开自己的按键布局。",
-              "游戏内面板会列出已连接的输入设备。断开所需外设会恢复自动收起的按键，手动显隐的选择优先。「由游戏处理手柄」可单独设置。"
+              "游戏内面板会列出已连接的输入设备。断开所需外设会恢复自动收起的按键，手动显隐的选择优先。"
             ]
           },
           {
@@ -97,7 +93,7 @@
             "markdown": "**重新整理横屏游戏设置与摆键工具窗。**",
             "details": [
               "手机从分类目录进入，平板窗口空间充足时并列显示分类与参数。",
-              "视角、摇杆和手柄设置按用途分组。本局分辨率页显示当前游戏的实际状态。平板设置窗更紧凑，工具入口固定在侧栏底部。",
+              "视角和摇杆设置按用途分组。本局分辨率页显示当前游戏的实际状态。平板设置窗更紧凑，工具入口固定在侧栏底部。",
               "摆键工具窗可拖动、收起或移到屏幕另一侧。短菜单从顶部排列，长内容可滚动，保存入口保持固定。放弃修改、切回游戏时会按当前草稿恢复输入。"
             ]
           },
@@ -309,12 +305,8 @@
           },
           {
             "type": "highlight",
-            "text": "Let a game or controller mod handle your gamepad. In launcher Settings, phones and tablets on HarmonyOS API 21 or later can select “Let the game handle the controller” for mods such as Controlify. Launcher mapping remains the default. Changes take effect on the next launch.",
-            "markdown": "**Let a game or controller mod handle your gamepad.** In launcher Settings, phones and tablets on HarmonyOS API 21 or later can select “Let the game handle the controller” for mods such as Controlify. Launcher mapping remains the default. Changes take effect on the next launch.",
-            "details": [
-              "Games can discover a controller that is already connected, read buttons and axes, and detect disconnection and reconnection. Devices on API 20 continue to use launcher mapping.",
-              "With game input active, navigating a game menu no longer also selects the on-screen buttons. Touch controls still work, and controller navigation remains available in settings, the layout editor and text input. The mode notification appears once per game session."
-            ]
+            "text": "Improved gamepad support on HarmonyOS API 21 and later lets games and mods such as Controlify and Controllable read buttons and analog sticks directly.",
+            "markdown": "**Improved gamepad support on HarmonyOS API 21 and later lets games and mods such as Controlify and Controllable read buttons and analog sticks directly.**"
           },
           {
             "type": "added",
@@ -322,7 +314,7 @@
             "markdown": "**Phones and tablets can prioritize a gamepad or a keyboard and mouse.**",
             "details": [
               "Choose an input preference in the launcher or in-game settings. Automatic keeps your current touch layout. With Gamepad first, connect a controller. With Keyboard and mouse first, connect a full keyboard and either a mouse or a trackpad. The touch layout then keeps just the visibility, settings and chat buttons. You can still play by touch or use the visibility button to bring your layout back.",
-              "The in-game panel lists connected input devices. Disconnecting a required device restores controls that were hidden automatically. Manual visibility choices take precedence. You can choose separately whether the game handles the controller."
+              "The in-game panel lists connected input devices. Disconnecting a required device restores controls that were hidden automatically. Manual visibility choices take precedence."
             ]
           },
           {
@@ -371,7 +363,7 @@
             "text": "Redesigned in-game settings and control editor for landscape. Phones open a category list. Wider tablet windows show categories and their settings side by side.",
             "markdown": "**Redesigned in-game settings and control editor for landscape.** Phones open a category list. Wider tablet windows show categories and their settings side by side.",
             "details": [
-              "Camera, joystick and gamepad settings are grouped by purpose. The resolution panel shows the current session’s actual state. On tablets the panel is more compact, with tools at the bottom of the sidebar.",
+              "Camera and joystick settings are grouped by purpose. The resolution panel shows the current session’s actual state. On tablets the panel is more compact, with tools at the bottom of the sidebar.",
               "Drag the control-editing window, collapse it or move it to the other side. Short menus start at the top, longer ones scroll, and Save stays in place. Discarding changes restores the original controls before returning to the game."
             ]
           },

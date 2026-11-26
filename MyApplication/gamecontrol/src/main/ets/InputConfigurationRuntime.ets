@@ -1,7 +1,7 @@
 /**
  * 游戏会话拥有的配置应用运行体。仓库先提交定义，本对象再把已确认快照应用到平台端口。
  * start/stop/reconcile 由 GameSessionHost 组织，不拥有页面、JVM、窗口或高频输入样本。
- * 首次迁移只收回 Native look 权威；触控发布和映射手柄仍有各自的真实应用回执。
+ * 首次迁移只收回 Native look 权威；触控发布仍有独立的应用回执。
  */
 import { LayoutStore } from './LayoutStore'
 import { LayoutProfile } from './ControlLayout'
@@ -38,7 +38,7 @@ export class InputConfigurationRuntime {
   private progress: InputConfigurationProgress = new InputConfigurationProgress()
   private definitionListener: InputConfigurationDefinitionListener | undefined = undefined
   private sourceLook: SourceLookActivation[] = [new SourceLookActivation('physical'),
-    new SourceLookActivation('touch'), new SourceLookActivation('gamepad'), new SourceLookActivation('external')]
+    new SourceLookActivation('touch'), new SourceLookActivation('external')]
 
   /** 平台依赖显式注入；缺省借用现有进程注册，不在构造时产生Native副作用。 */
   constructor(port: InputConfigurationNativePort = new RegisteredInputConfigurationNativePort()) {
@@ -123,7 +123,7 @@ export class InputConfigurationRuntime {
     this.snapshotValue = retired; this.progress = new InputConfigurationProgress()
     this.appliedSignature = ''; this.nativeGeneration = -1
     this.sourceLook = [new SourceLookActivation('physical'), new SourceLookActivation('touch'),
-      new SourceLookActivation('gamepad'), new SourceLookActivation('external')]
+      new SourceLookActivation('external')]
     if (store !== undefined && listener !== undefined) store.removeInputConfigurationListener(listener)
     if (store !== undefined && definition !== undefined) store.removeInputConfigurationDefinitionListener(definition)
     // 先退应用资格再观察通知。同步观察中的start/stop不能让旧续体注销后来provider。

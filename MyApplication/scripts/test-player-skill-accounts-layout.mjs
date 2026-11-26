@@ -1,3 +1,4 @@
+import {verifySkillCases} from './lib/skill-business-check.mjs';
 /** 直接调用正式 Skill 路由，观察真实账户表单和布局编辑方法，替换平台、持久化与渲染边界。 */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -113,25 +114,30 @@ catalog.getUIContext=()=>({getPromptAction:()=>({showDialog:async()=>{catalog.im
 assert.equal((await catalog.catalogSkill_('importControlLayout',{})).state,'unknown');assert.equal(commits,1);
 console.log('PASS layout import from picker, cancellation, compatibility consent, late owner and durable named result');
 
-const Input=loadActionComponent('entry/src/main/ets/components/InputSettingsEditor.ets','InputSettingsEditor',{methods:['playerTouchOption_','playerLookOption_','playerGamepadOption_',
-  'playerInputAction_','setIndependentLook','editorLookParameters','selectLookSource','updateEditorLook','setLookNumber_','setGamepadNumber_',
-  'setGamepadAction_','ensureButtonMap','setStickRole_','setGamepadEnabled_','applyTouchChange','setHaptic_','setLookInversion_'],
+const Input=loadActionComponent('entry/src/main/ets/components/InputSettingsEditor.ets','InputSettingsEditor',{methods:['inputSnapshot_','playerTouchOption_','playerLookOption_',
+  'playerInputAction_','setIndependentLook','editorLookParameters','selectLookSource','updateEditorLook','setLookNumber_',
+  'applyTouchChange','setHaptic_','setLookInversion_'],
   globals:{SliderChangeMode:{Click:3}},
   dependencies:{gamecontrol:{...controlsModule,...touch,...pure('gamecontrol/src/main/ets/LookPreferences.ets')},
     '../launcherskill/LauncherSkillBus':{LauncherSkillBus:bus},
     '../runtime/TouchOptionDraft':touchHelpers}});
 const input=new Input();
-Object.assign(input,{launcherWorkbench:true,mounted:true,leaseHeld:true,busy:false,leaveConfirm:false,touchBindingEditIndex:-1,gamepadBtnPicker:'',
-  touch:new touch.TouchConfiguration(),gamepad:{enabled:true},selectedLookSource:'touch',lookSensitivity:1,invertY:false,lookSmoothing:.6,lookAccel:0,
+Object.assign(input,{launcherWorkbench:true,mounted:true,leaseHeld:true,busy:false,leaveConfirm:false,touchBindingEditIndex:-1,
+  touch:new touch.TouchConfiguration(),selectedLookSource:'touch',lookSensitivity:1,invertY:false,lookSmoothing:.6,lookAccel:0,
   playerInput_:new draftModule.LayoutDraftAccess(),pushUndo(){this.undoCount++;},undoCount:0,
-  prepareSliderChange(_k,_mode,changed){if(changed)this.pushUndo();return changed;},cloneGamepad:structuredClone,
-  buildProfile(){return {touch:this.touch,gamepad:this.gamepad,look:this.editorLookParameters()};},
-  inputSnapshot_(){return {state:'draft',...this.playerInput_.snapshot(JSON.stringify(this.buildProfile()))};}});
+  prepareSliderChange(_k,_mode,changed){if(changed)this.pushUndo();return changed;},
+  buildProfile(){return {touch:this.touch,look:this.editorLookParameters()};}});
 input.playerInput_.open();
 const inputCall=async(name,data)=>input.playerInputAction_(name,{...identity(input.inputSnapshot_()),...data});
-assert.equal((await inputCall('setTouchOption',{field:'sprintThreshold',value:'110'})).state,'draft');assert.equal(input.touch.joystickSprintThreshold,1.1);
-assert.equal((await inputCall('setTouchOption',{field:'sprintThreshold',value:'151'})).state,'failed');assert.equal(input.touch.joystickSprintThreshold,1.1);
-assert.equal((await inputCall('setLookOption',{field:'sensitivity',source:'physical',value:'150'})).state,'draft');assert.equal(input.lookSensitivity,1.5);
-assert.equal((await inputCall('setGamepadOption',{field:'right',value:'none'})).state,'draft');assert.equal(input.gamepad.rightStick,'none');
-assert.equal((await inputCall('setGamepadOption',{field:'enabled',value:'false'})).state,'draft');assert.equal(input.gamepad.enabled,false);
-console.log('PASS launcher-only input draft uses the touch/aim/gamepad product mutations and rejects outside ranges');
+const read=await inputCall('readInputWorkbench',{});assert.equal(Object.hasOwn(read,'gamepad'),false);
+input.busy=true;const busy=await inputCall('readInputWorkbench',{});input.busy=false;
+verifySkillCases('readInputWorkbench',read,busy);
+const touchEdit=await inputCall('setTouchOption',{field:'sprintThreshold',value:'110'});assert.equal(input.touch.joystickSprintThreshold,1.1);
+verifySkillCases('setTouchOption',touchEdit,await inputCall('setTouchOption',{field:'sprintThreshold',value:'151'}));
+assert.equal(input.touch.joystickSprintThreshold,1.1);
+const lookEdit=await inputCall('setLookOption',{field:'sensitivity',source:'physical',value:'150'});assert.equal(input.lookSensitivity,1.5);
+verifySkillCases('setLookOption',lookEdit,await inputCall('setLookOption',{field:'sensitivity',source:'gamepad',value:'200'}));
+assert.equal((await inputCall('setGamepadOption',{field:'enabled',value:'false'})).state,'failed');
+input.undo_=()=>{input.undoCount--;};
+verifySkillCases('finishInputWorkbench',await inputCall('finishInputWorkbench',{decision:'undo'}),await inputCall('finishInputWorkbench',{decision:'invalid'}));
+console.log('PASS input workbench retains touch and look edits and rejects retired controller options');

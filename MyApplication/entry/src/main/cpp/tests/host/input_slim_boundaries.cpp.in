@@ -198,6 +198,8 @@ int read(int slot, AmclDesktopGamepad* out) {
 }
 AmclGamepadReadFn amclResolveGamepadReader() { ++opens; return published ? read : nullptr; }
 @GAMEPAD_READER@
+constexpr int GLFW_FALSE=0, GLFW_TRUE=1;
+@GLFW_PAD_QUERIES@
 using GLFWjoystickfun = void (*)(int,int);
 constexpr int GLFW_CONNECTED = 1, GLFW_DISCONNECTED = 2;
 GLFWjoystickfun g_gamepadCallback = nullptr;
@@ -218,6 +220,31 @@ void check() {
     ++pid;
     published = false;
     CHECK(!gamepadReader() && opens == 3);
+}
+// 模组实际使用的 raw joystick 与标准 gamepad 两条查询，覆盖真实轴、按钮、断开和重连。
+void checkPublicGamepadQueries() {
+    using namespace gamepad_fixture;
+    SetGamepadFocus(true, true);
+    UpdateGamepadConnection("pad", nullptr, true, false, false, 0);
+    CHECK(UpdateGamepadConnection("physical-test", "Wireless Controller", true, true, false, 0));
+    CHECK(glfwJoystickPresent(0) && glfwJoystickIsGamepad(0));
+    CHECK(std::strcmp(glfwGetGamepadName(0), "Wireless Controller") == 0);
+    CHECK(std::strlen(glfwGetJoystickGUID(0)) == 32);
+    ApplyGamepadButton("physical-test", 0, true);
+    ApplyGamepadAxis("physical-test", 0, 0.5, -0.25);
+    ApplyGamepadButton("physical-test", 11, true);
+    GLFWgamepadstate state{};
+    CHECK(glfwGetGamepadState(0, &state) && state.buttons[0] && state.buttons[11]);
+    CHECK(state.axes[0] == 0.5f && state.axes[1] == -0.25f);
+    int count = 0;
+    CHECK(glfwGetJoystickAxes(0, &count)[0] == state.axes[0] && count == 6);
+    CHECK(glfwGetJoystickButtons(0, &count)[0] == state.buttons[0] && count == 18);
+    CHECK(glfwGetJoystickHats(0, &count)[0] == 1 && count == 1);
+    SetGamepadFocus(false, true);
+    CHECK(glfwGetGamepadState(0, &state) && !state.buttons[0] && state.axes[0] == 0);
+    CHECK(UpdateGamepadConnection("physical-test", nullptr, true, false, false, 0));
+    CHECK(!glfwJoystickPresent(0) && !glfwGetGamepadState(0, &state));
+    CHECK(!glfwGetJoystickAxes(0, &count) && count == 0);
 }
 void checkTopology() {
     using namespace gamepad_fixture;
@@ -290,6 +317,6 @@ int main(){
  CHECK(amcl_input_policy_button_end(AMCL_INPUT_CHANNEL_NATIVE_MOUSE,0,1,0));
  amcl_input_policy_note_wheel_channel(AMCL_INPUT_CHANNEL_AXIS_PAN);
  CHECK(amcl_input_policy_wheel_accepts(AMCL_INPUT_CHANNEL_AXIS_PAN));
- capture_fixture::check();gamepad_fixture::check();gamepad_fixture::checkSamples();reader_fixture::check();reader_fixture::checkTopology();
+ capture_fixture::check();gamepad_fixture::check();gamepad_fixture::checkSamples();reader_fixture::check();reader_fixture::checkTopology();reader_fixture::checkPublicGamepadQueries();
  std::puts("SLIM BOUNDARY PASS: input lifetime, gamepad effective edges, focus reset, unlocked wake, topology cache and legacy reader");
 }

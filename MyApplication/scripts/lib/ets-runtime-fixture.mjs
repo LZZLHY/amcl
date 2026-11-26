@@ -47,7 +47,7 @@ export function environment(options={}) {
       // 普通账号面板的生命周期测试装配发行空入口，专项用例可显式选择开发实现。
       if(name==='entry/ProductQaAccounts')return load('entry/src/main/ets/runtime/UnavailableQaAccounts.ets');
       // 包括生产原attach回调围栏；组件回归必须运行同一个实现，不能用假的当前lease检查。
-      if(name==='gamecontrol')return Object.assign({},...['GlfwKeys','OhosKeyCodes','KeyMap','PhysicalKeyEdge','PhysicalHeldKeyTracker','ControlLayout','LookPreferences','InputDeviceConnectionLease','GamepadManager','ImeActivationGate','TextInputSessionCoordinator','ImeCallbackLease','InputSourceRegistry','InputConfiguration','SourceControlClient','InputSessionCoordinator','RuntimeTouchLayout'].map(n=>load('gamecontrol/src/main/ets/'+n+'.ets')));
+      if(name==='gamecontrol')return Object.assign({},...['GlfwKeys','OhosKeyCodes','KeyMap','PhysicalKeyEdge','PhysicalHeldKeyTracker','InputDeviceAbi','InputDeviceLifecycleCoordinator','ControlLayout','LookPreferences','InputDeviceConnectionLease','ImeActivationGate','TextInputSessionCoordinator','ImeCallbackLease','InputSourceRegistry','InputConfiguration','SourceControlClient','InputSessionCoordinator','RuntimeTouchLayout'].map(n=>load('gamecontrol/src/main/ets/'+n+'.ets')));
       if(name.startsWith('.'))return load(path.relative(root,path.resolve(path.dirname(absolute),name+'.ets')).replaceAll('\\','/'));
       throw new Error('unmocked system boundary '+name);
     };

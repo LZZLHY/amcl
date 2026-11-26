@@ -1,7 +1,7 @@
 // 编辑器工具按钮明确使用小圆角矩形；后续显式圆角可覆盖此默认值，不跟随系统胶囊造型。
 /**
  * 虚拟按键布局编辑器：只维护控件、触控组、位置外观和编辑手势。
- * 输入策略/手柄在独立设置页编辑，目录管理由方案库承担；本组件不开草稿试用。
+ * 输入策略在独立设置页编辑，目录管理由方案库承担；本组件不开草稿试用。
  * 使用V1响应状态绘制，LayoutEditSession保存完整撤销快照，LayoutStore确认持久提交。
  * 编辑草稿带原实体ID/revision，取消或销毁等待在途结果后收口；系统控件与锁定项保持原保护。
  */
@@ -14,9 +14,7 @@ import {
   LAYOUT_PROFILE_VERSION, SOURCE_LOOK_PROFILE_VERSION,
   SourceLookPreferences, LookPolicySource, LookParameters, copySourceLookPreferences,
   copyLookParameters, splitLegacyLookPolicy, sourceLookParameters,
-  GamepadConfig, GamepadAction, StickRole,
-  defaultGamepadConfig, defaultGamepadButtonMap,
-  DEFAULT_GAMEPAD_DEAD_ZONE, DEFAULT_TRIGGER_THRESHOLD,
+  GamepadConfig, cloneLegacyGamepadConfig,
   DEFAULT_BUTTON_SIZE, DEFAULT_BUTTON_OPACITY, DEFAULT_CORNER_RADIUS,
   DEFAULT_GLOBAL_OPACITY,
   effectiveCornerRadius, effectiveOpacity, effectiveLabel, ControlStyle,
@@ -547,8 +545,6 @@ export struct LayoutEditor {
   @State globalOpacity: number = DEFAULT_GLOBAL_OPACITY
   // 物品栏 selector 的一次性自动注入标志；必须跟随编辑器加载/保存，删除后才不会被下次启动复活。
   @State hotbarAutoAdded: boolean = false
-  // R5：手柄配置（v3）。深拷贝自 profile.gamepad，缺省走 defaultGamepadConfig()。
-  @State gamepad: GamepadConfig = defaultGamepadConfig()
 
   // ---- 多选（2026-07-16）----
   // 多选模式：开启后点按钮=切换选中（累积），可对多个按钮批量对齐/等间距/改样式/删除。
@@ -589,7 +585,7 @@ export struct LayoutEditor {
   // 重构 2026-07-16：编辑器只保留**唯一一个面板**（原工具面板 + 所有设置浮层整合于此），
   // activeSheet 表示当前 Tab（面板常驻，靠 showPanel 收起/展开；不再有任何独立浮层）。
   //   'edit'（编辑：添加/选中/全局缩放+批量横幅）| 'style'（样式，含标签）| 'global'（视角+吸附设置）
-  //   | 'gamepad'（手柄）| 'profiles'（方案）| 'multi'（多选批量）
+  //   | 'profiles'（方案）| 'multi'（多选批量）
   @State activeSheet: string = 'edit'
   /** 仅存放面板导航，不参与持久JSON；返回恢复实际页面/选择/二级编辑范围。 */
   @State private editorRoutes: CompactEditorRoute[] = []
@@ -750,7 +746,7 @@ export struct LayoutEditor {
     getLayoutStore().endEditorSession()
   }
 
-  /** 错误保留在原状态条；失败不覆盖 controls/gamepad 等当前草稿，也不触发成功回调。 */
+  /** 错误保留在原状态条；失败不覆盖 控件 等当前草稿，也不触发成功回调。 */
   private reportPersistenceError_(action: string, error: Error): void {
     this.nextSettingsSection=''
     const message: string = action + '失败：' + error.message + '。未确认保存，请重试或取消。'
@@ -954,8 +950,7 @@ export struct LayoutEditor {
     this.snapEnabled = normalized.snapEnabled ?? true
     this.snapGap = normalized.snapGap ?? DEFAULT_SNAP_GAP
     this.snapStrength = normalized.snapStrength ?? DEFAULT_SNAP_STRENGTH
-    // R5：加载手柄配置（深拷贝，缺省用默认）
-    this.gamepad = this.cloneGamepad(normalized.gamepad)
+    this.legacyGamepad = normalized.gamepad
     this.globalScaleVal = Math.round(normalized.globalScale * 100)
     this.globalOpacityVal = Math.round(this.globalOpacity * 100)
     this.sensVal = Math.round(this.lookSensitivity * 100)
@@ -976,6 +971,9 @@ export struct LayoutEditor {
   // 编辑基线内容签名（进入编辑器 / 切换方案时记录）。用于"仅在真正改动过布局时才把 targetDevice
   // 归位为当前设备类型"——纯查看后保存不应把手机布局误标成平板。
   private baselineSig: string = ''
+
+  // 只透传旧方案的手柄字段，编辑触控布局时保留原值。
+  private legacyGamepad: GamepadConfig | undefined = undefined
 
   /** 方案内容签名：忽略 targetDevice / deviceModel（这俩不算"布局内容"改动）。buildProfile 失败返回空串。 */
 
@@ -1005,6 +1003,7 @@ export struct LayoutEditor {
       profileId: this.editingProfileId,
       profileRevision: this.editingProfileRevision,
       name: this.profileName,
+      gamepad: cloneLegacyGamepadConfig(this.legacyGamepad),
       globalScale: this.globalScale,
       lookSensitivity: this.lookSensitivity,
       invertY: this.invertY,
@@ -1023,7 +1022,6 @@ export struct LayoutEditor {
       snapEnabled: this.snapEnabled,
       snapGap: this.snapGap,
       snapStrength: this.snapStrength,
-      gamepad: this.cloneGamepad(this.gamepad),
       controls: this.controls.map((c: ControlItem) => cloneControlItem(c))
     }
     return validateAndNormalizeLayout(candidate)
@@ -1038,27 +1036,6 @@ export struct LayoutEditor {
       return (pm !== undefined && pm !== null) ? pm : ''
     } catch (e) {
       return ''
-    }
-  }
-
-  /** R5：深拷贝手柄配置；undefined → defaultGamepadConfig()。 */
-  private cloneGamepad(g: GamepadConfig | undefined): GamepadConfig {
-    if (!g) return defaultGamepadConfig()
-    let buttonMap: Record<string, GamepadAction> = {}
-    const src = g.buttonMap ?? defaultGamepadButtonMap()
-    const keys = Object.keys(src)
-    for (let i = 0; i < keys.length; i++) {
-      const a = src[keys[i]]
-      buttonMap[keys[i]] = { kind: a.kind, code: a.code }
-    }
-    return {
-      enabled: g.enabled ?? true,
-      buttonMap: buttonMap,
-      leftStick: g.leftStick ?? 'move',
-      rightStick: g.rightStick ?? 'look',
-      stickDeadZone: g.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE,
-      triggerThreshold: g.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD,
-      lookScale: g.lookScale ?? 1.0
     }
   }
 
@@ -3054,19 +3031,6 @@ export struct LayoutEditor {
     return item===null ? '' : effectiveLabel(item)
   }
 
-  // 手柄 Tab 内容（原 GamepadPanel，去掉标题栏/容器/关闭按钮）。
-
-
-  /**
-   * 把既有 16 个逻辑按钮分到三个显示组，顺序沿用原目录；该函数不新增或删除任何手柄映射。
-   * 数组只在手柄映射页构建时生成，正常游戏与其它设置分区不会执行。
-   */
-
-
-  /** 显式区分“无动作”与特殊循环回到的“键位待选择”，只修饰显示，不改原循环和撤销行为。 */
-
-
-  // 全局 Tab 内容（原 SettingsPanel，去掉标题栏/容器/跳手柄按钮/关闭按钮）。
   /** 返回当前编辑的完整组；独立参数不覆盖legacy备份，缺席扩展继续原四标量。 */
   private editorLookParameters(): LookParameters {
     if (this.lookPolicies !== undefined) return sourceLookParameters(this.lookPolicies, this.selectedLookSource)
@@ -3201,7 +3165,7 @@ export struct LayoutEditor {
     .width('100%')
   }
 
-  /** 一级按任务分组；属性、多选和手柄保留原有事务实现，但不再与方案管理挤在一行。 */
+  /** 一级按任务分组；属性和多选保留原有事务实现，但不再与方案管理挤在一行。 */
 
 
   @Builder

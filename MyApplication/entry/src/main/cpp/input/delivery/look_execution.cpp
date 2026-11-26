@@ -61,7 +61,7 @@ struct Family {
 // 再线性分配到贡献，因此两设备相反速度和退一设备都不需要除以总和。
 struct Stream {
     AmclLookStreamV1 description{};
-    Pair pending{},owed{},velocity{};
+    Pair pending{},owed{};
     uint64_t sample=0;
     uint64_t policyEpoch=0;
     bool active=true;
@@ -165,19 +165,6 @@ bool processFamily(Family& f,Streams& streams,
     f.last=output.lastTimeNs;f.stats.NoteAccepted(output.emitDx+output.pendingDx-pending.x,
         output.emitDy+output.pendingDy-pending.y,output.emitDx,output.emitDy,output.pendingDx,output.pendingDy);return true;
 }
-// 已知速率只在owner monotonic同域推进；休眠/后台后最多50ms，不跨域排序gyro样本。
-// 候选副本使一族拒绝时所有族、时钟和贡献均保持旧值。
-bool advanceCandidate(std::array<Family,AMCL_INPUT_SOURCE_COUNT+1>& families,std::map<uint64_t,Stream>& streams,uint64_t ns){
-    std::array<std::map<uint64_t,Pair>,AMCL_INPUT_SOURCE_COUNT+1> raw;
-    for(auto& e:streams){auto& s=e.second;if(!s.active||s.description.kind!=AMCL_LOOK_MAPPED_RATE)continue;
-        if(ns<s.sample||ns>INT64_MAX)return false;if(!s.sample){s.sample=ns;continue;}
-        if(ns==s.sample)continue;
-        const double seconds=static_cast<double>(std::min<uint64_t>(ns-s.sample,50000000))/1e9;
-        raw[familyOf(s)].emplace(e.first,Pair{s.velocity.x*seconds,s.velocity.y*seconds});s.sample=ns;
-    }
-    for(size_t i=0;i<raw.size();++i)if(!raw[i].empty()&&!processFamily(families[i],streams,i,raw[i],static_cast<int64_t>(ns)))return false;
-    return true;
-}
 int32_t bindSession(uint64_t session){if(foreign())return AMCL_LOOK_NOT_READY;if(!session)return AMCL_LOOK_REJECTED;
     auto& r=state();std::lock_guard<std::mutex> lock(r.mutex);if(r.session&&r.session!=session)return AMCL_LOOK_STALE;r.session=session;return 0;}
 int32_t publishMode(uint64_t session,uint64_t epoch,uint32_t grabbed){if(foreign())return AMCL_LOOK_NOT_READY;
@@ -207,9 +194,9 @@ int32_t openStream(const AmclLookStreamV1* description,uint64_t* output){if(outp
         !validSource(description->source)||(description->reserved&~AMCL_LOOK_STREAM_POLICY_LEASE)||description->kind<1||description->kind>5||
         ((description->reserved&AMCL_LOOK_STREAM_POLICY_LEASE)&&description->kind!=AMCL_LOOK_GYRO_DELTA)||
         description->unit<1||description->unit>5||description->clock<1||description->clock>4||
-        (description->kind==AMCL_LOOK_MAPPED_RATE&&(description->unit!=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND||description->clock!=AMCL_LOOK_OWNER_MONOTONIC))||
+        description->kind==AMCL_LOOK_MAPPED_RATE||
         (description->device!=0&&description->connection==0)||
-        (description->device==0&&description->connection!=0&&description->kind!=AMCL_LOOK_MAPPED_RATE))return AMCL_LOOK_REJECTED;
+        (description->device==0&&description->connection!=0))return AMCL_LOOK_REJECTED;
     if(!resourceCurrent(description->resource))return AMCL_LOOK_NOT_READY;
     auto& r=state();std::lock_guard<std::mutex> lock(r.mutex);if(!modeCurrent(r,description->resource))return AMCL_LOOK_STALE;
     if(r.streams.size()>=kStreams||r.nextStream==UINT64_MAX)return AMCL_LOOK_PRESSURE;
@@ -223,7 +210,7 @@ int32_t delta(uint64_t handle,double x,double y,uint64_t ns){if(foreign())return
     if(!resourceCurrent(resource))return AMCL_LOOK_STALE;
     std::lock_guard<std::mutex> lock(r.mutex);auto it=r.streams.find(handle);
     if(it==r.streams.end()||!it->second.active||!modeCurrent(r,resource))return AMCL_LOOK_STALE;
-    if(it->second.description.kind==AMCL_LOOK_MAPPED_RATE||ns<it->second.sample)return AMCL_LOOK_REJECTED;
+    if(ns<it->second.sample)return AMCL_LOOK_REJECTED;
     if((it->second.description.reserved&AMCL_LOOK_STREAM_POLICY_LEASE)&&it->second.policyEpoch!=r.families[familyOf(it->second)].policyEpoch)return AMCL_LOOK_STALE;
     try{auto families=r.families;auto streams=r.streams;const size_t family=familyOf(it->second);
         // sample clock只检本流；family math使用接受时钟，避免同为ns的不同域相互拒绝/排序。
@@ -232,21 +219,10 @@ int32_t delta(uint64_t handle,double x,double y,uint64_t ns){if(foreign())return
         if(!processFamily(families[family],streams,family,singleSample(handle,{x,y}),mathNs))return AMCL_LOOK_REJECTED;
         streams.at(handle).sample=ns;r.families=std::move(families);r.streams=std::move(streams);backlog(r);return 0;
     }catch(const std::bad_alloc&){return AMCL_LOOK_PRESSURE;}}
-int32_t velocity(uint64_t handle,double x,double y,uint64_t ns){if(foreign())return AMCL_LOOK_NOT_READY;
-    if(!finite({x,y})||!ns||ns>INT64_MAX)return AMCL_LOOK_REJECTED;auto& r=state();
-    AmclLookResourceV1 resource{};{std::lock_guard<std::mutex> lock(r.mutex);auto it=r.streams.find(handle);
-        if(it==r.streams.end()||!it->second.active)return AMCL_LOOK_STALE;resource=it->second.description.resource;}
-    if(!resourceCurrent(resource))return AMCL_LOOK_STALE;std::lock_guard<std::mutex> lock(r.mutex);auto it=r.streams.find(handle);
-    if(it==r.streams.end()||!it->second.active||!modeCurrent(r,resource))return AMCL_LOOK_STALE;
-    if(it->second.description.kind!=AMCL_LOOK_MAPPED_RATE||ns<it->second.sample)return AMCL_LOOK_REJECTED;
-    try{auto families=r.families;auto streams=r.streams;if(!advanceCandidate(families,streams,ns))return AMCL_LOOK_REJECTED;
-        streams.at(handle).velocity={x,y};streams.at(handle).sample=ns;r.families=std::move(families);r.streams=std::move(streams);backlog(r);return 0;
-    }catch(const std::bad_alloc&){return AMCL_LOOK_PRESSURE;}}
-int32_t advance(uint64_t session,uint64_t ns){if(foreign())return AMCL_LOOK_NOT_READY;if(!ns||ns>INT64_MAX)return AMCL_LOOK_REJECTED;
-    auto& r=state();std::lock_guard<std::mutex> lock(r.mutex);if(r.session!=session||!r.grabbed)return AMCL_LOOK_STALE;
-    try{auto families=r.families;auto streams=r.streams;if(!advanceCandidate(families,streams,ns))return AMCL_LOOK_REJECTED;
-        r.families=std::move(families);r.streams=std::move(streams);backlog(r);return 0;}catch(const std::bad_alloc&){return AMCL_LOOK_PRESSURE;}}
-/** 单流触摸/gyro的局部候选。只在同族唯一、无待积分速率和其它owed时使用；其它来源
+// V1 表保留原序号供预编译消费者校验；已退休的映射操作没有可创建的流。
+int32_t velocity(uint64_t,double,double,uint64_t){return AMCL_LOOK_REJECTED;}
+int32_t advance(uint64_t,uint64_t){return AMCL_LOOK_REJECTED;}
+/** 单流触摸/gyro的局部候选。只在同族唯一且无其它owed时使用；其它来源
  * pending保留原值。任何共同积分/多流求和仍走下方完整事务，不按当前流猜其它流已空。
  * 调用方持look锁；分配只发生在新增不可变prefix，成功前不改变数学、sample或token。 */
 bool trySealSingle(Registry& r,uint64_t handle,double dx,double dy,uint64_t sampleNs,
@@ -256,7 +232,6 @@ bool trySealSingle(Registry& r,uint64_t handle,double dx,double dy,uint64_t samp
     if(found==r.streams.end()||!found->second.active) {result=AMCL_LOOK_STALE;return true;}
     const size_t family=familyOf(found->second);
     for(const auto& entry:r.streams) if(entry.second.active) {
-        if(entry.second.description.kind==AMCL_LOOK_MAPPED_RATE) return false;
         if(entry.first!=handle&&(familyOf(entry.second)==family||entry.second.owed.x!=0||entry.second.owed.y!=0)) return false;
     }
     auto families=r.families;
@@ -302,14 +277,14 @@ int32_t sealCandidate(uint64_t handle,double dx,double dy,uint64_t sampleNs,uint
     if(r.prefixes.size()>=kPrefixes||r.nextPrefix==UINT64_MAX)return AMCL_LOOK_PRESSURE;
     try{int32_t singleResult=0;
         if(trySealSingle(r,handle,dx,dy,sampleNs,order,ns,flush,output,processed,singleResult))return singleResult;
-        auto families=r.families;auto streams=r.streams;if(!advanceCandidate(families,streams,ns))return AMCL_LOOK_REJECTED;
+        auto families=r.families;auto streams=r.streams;
         if(handle){auto it=streams.find(handle);if(it==streams.end()||!it->second.active||!modeCurrent(r,it->second.description.resource))return AMCL_LOOK_STALE;
             if((it->second.description.reserved&AMCL_LOOK_STREAM_POLICY_LEASE)&&it->second.policyEpoch!=families[familyOf(it->second)].policyEpoch)return AMCL_LOOK_STALE;
-            if(!finite({dx,dy})||it->second.description.kind==AMCL_LOOK_MAPPED_RATE)return AMCL_LOOK_REJECTED;
+            if(!finite({dx,dy}))return AMCL_LOOK_REJECTED;
             // flush2只封该流已经接受的owed/pending，不是新的零delta采样。idle/UP的owner
             // deadline不能覆盖原SDK sample或family.last；否则UI队列中更晚于上一SDK
             // sample、却早于deadline的合法事件会被拒，退休重开流仍会撞family数学时钟。
-            // 这里保留原handle/资源/policy及上方mapped ownerNs推进；非零delta不能借
+            // 这里保留原handle/资源/policy；非零delta不能借
             // seal-only绕过采样校验，必须显式拒绝。真正delta仍按原sample计算加速/平滑。
             if(flush==2){if(dx!=0||dy!=0)return AMCL_LOOK_REJECTED;}
             if(flush!=2){
@@ -712,9 +687,9 @@ extern "C" bool amclLookCompatFlush(int32_t source,bool emit,double* outX,double
     if(foreign()||!outX||!outY||!validSource(source))return false;auto& r=state();std::lock_guard<std::mutex> lock(r.mutex);
     for(auto& e:r.streams){auto& s=e.second;const size_t i=familyOf(s);if(i!=static_cast<size_t>(source)&&!(source==1&&!emit&&i==AMCL_INPUT_SOURCE_COUNT))continue;
         r.families[i].stats.NoteFlush(emit,s.pending.x,s.pending.y);if(emit){*outX+=s.pending.x;*outY+=s.pending.y;}s.pending={};
-        if(!emit){s.owed={};s.velocity={};s.sample=0;}r.families[i].last=0;}return true;}
+        if(!emit){s.owed={};s.sample=0;}r.families[i].last=0;}return true;}
 extern "C" void amclLookCompatReset(){if(foreign())return;auto& r=state();std::lock_guard<std::mutex> lock(r.mutex);
-    for(auto& e:r.streams){auto& s=e.second;r.families[familyOf(s)].stats.NoteFlush(false,s.pending.x,s.pending.y);s.pending={};s.owed={};s.velocity={};s.sample=0;}
+    for(auto& e:r.streams){auto& s=e.second;r.families[familyOf(s)].stats.NoteFlush(false,s.pending.x,s.pending.y);s.pending={};s.owed={};s.sample=0;}
     for(auto& f:r.families)f.last=0;
 #if AMCL_INPUT_TRACE
     // reset的既有prefix清理是实际终态，不能靠诊断年龄猜测退休；不读取window或票对象。

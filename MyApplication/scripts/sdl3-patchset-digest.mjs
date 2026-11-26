@@ -45,9 +45,11 @@ export function digestSdl3PatchTexts(seriesText, patchTexts) {
   return { sha256: hash.digest('hex'), names };
 }
 
-export function computeSdl3PatchsetDigest(root = ROOT) {
+export function computeSdl3PatchsetDigest(root = ROOT, controller = false) {
   const patchRoot = join(root, 'prebuilt', 'sdl3', 'patches');
-  const seriesText = readFileSync(join(patchRoot, 'series'), 'utf8');
+  // 独立手柄制品精确复用主补丁序列，仅在其后追加手柄变体。主产物摘要不随变体迭代。
+  const base = readFileSync(join(patchRoot, 'series'), 'utf8');
+  const seriesText = controller ? base + '\n' + readFileSync(join(patchRoot, 'series-controller'), 'utf8') : base;
   const names = parseSdl3PatchSeries(seriesText);
   const patchTexts = new Map(names.map(name => [
     name, readFileSync(join(patchRoot, name)),
@@ -68,7 +70,7 @@ export function artifactEmbedsSdl3Patchset(bytes, sha256) {
 
 if (process.argv[1] && resolve(process.argv[1]) ===
     resolve(fileURLToPath(import.meta.url))) {
-  const report = computeSdl3PatchsetDigest();
+  const report = computeSdl3PatchsetDigest(ROOT, process.argv.includes('--controller'));
   if (process.argv.includes('--json')) console.log(JSON.stringify(report));
   else console.log(report.sha256);
 }

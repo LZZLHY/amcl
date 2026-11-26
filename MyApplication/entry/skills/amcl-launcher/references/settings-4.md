@@ -1,59 +1,5 @@
 # 更新进度、设置交接与移动端输入
 
-### updateAccountAccess
-
-查看或检查华为开发者授权，由用户在产品真实登录界面完成授权。
-
-执行参数
-
-```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'updateAccountAccess' --args '{"arg1":"inspect"}')
-```
-
-```json
-{"type":"object","properties":{"arg1":{"type":"string","description":"按当前状态选择的操作","maxLength":16384,"enum":["inspect","check","login","retry","close"]}},"required":["arg1"],"additionalProperties":false}
-```
-
-执行返回值
-
-- `{"state":"ready","authorization":"missing","checking":false,"loginVisible":false,"needsLogin":true}`
-- `{"state":"needsUser","reason":"developerLogin"}`
-- `{"state":"cancelled"}`
-- `{"state":"failed","reason":"invalidArguments"}`
-- `{"state":"busy","reason":"anotherRequest"}`
-- `{"state":"unavailable","reason":"launcherNotReady"}`
-- `{"state":"unknown","reason":"operationUnconfirmed"}`
-
-```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","needsUser","cancelled","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"authorization":{"type":"string"},"checking":{"type":"boolean"},"loginVisible":{"type":"boolean"},"needsLogin":{"type":"boolean"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["authorization"]}}]}
-```
-
-### getActiveLauncherUpdate
-
-读取已打开更新事务的原活动、阶段、连接与进度。
-
-执行参数
-
-```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'getActiveLauncherUpdate' --args '{}')
-```
-
-```json
-{"type":"object","properties":{},"required":[],"additionalProperties":false}
-```
-
-执行返回值
-
-- `{"state":"ready","activityId":42,"phase":"running","version":"1.0.8-pre2","progress":0,"checkingConnection":false,"connectionReady":false,"loginVisible":false,"needsLogin":false,"recovery":"none","failedPhase":"","canContinue":false}`
-- `{"state":"failed","reason":"invalidArguments"}`
-- `{"state":"busy","reason":"anotherRequest"}`
-- `{"state":"unavailable","reason":"launcherNotReady"}`
-- `{"state":"unknown","reason":"operationUnconfirmed"}`
-
-```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"activityId":{"type":"integer"},"phase":{"type":"string"},"version":{"type":"string"},"progress":{"type":"number"},"checkingConnection":{"type":"boolean"},"connectionReady":{"type":"boolean"},"needsLogin":{"type":"boolean"},"loginVisible":{"type":"boolean"},"recovery":{"type":"string"},"failedPhase":{"type":"string"},"canContinue":{"type":"boolean"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["activityId","phase","version","progress","checkingConnection","connectionReady","loginVisible","needsLogin","recovery","failedPhase","canContinue"]}}]}
-```
-
 ### controlActiveLauncherUpdate
 
 只对读到的原活动和阶段展示详情、接力到无线设置、重查或确认继续/退出。
@@ -354,4 +300,32 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 
 ```json
 {"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","unavailable","unknown","busy"]},"reason":{"type":"string"},"mode":{"type":"string","enum":["auto","gamepad","kbm"]}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["mode"]}}]}
+```
+
+### readUpdatePackageSelection
+
+按原引用从任意启动器页面查询本地 HAP 是否已转交更新流程，重启后可查最近终态。读取不会再次打开选择器或发起安装。
+
+执行参数
+
+```text
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'readUpdatePackageSelection' --args '{"arg1":"picker-1"}')
+```
+
+```json
+{"type":"object","properties":{"arg1":{"type":"string","description":"openUpdateSource(localPackage) 返回的本次选择引用","maxLength":16384}},"required":["arg1"],"additionalProperties":false}
+```
+
+执行返回值
+
+- `{"state":"waiting"}`
+- `{"state":"accepted","target":"v1.0.8:1000912:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`
+- `{"state":"cancelled"}`
+- `{"state":"failed","reason":"selectionExpired"}`
+- `{"state":"busy","reason":"anotherRequest"}`
+- `{"state":"unavailable","reason":"launcherNotReady"}`
+- `{"state":"unknown","reason":"operationUnconfirmed"}`
+
+```json
+{"type":"object","required":["state"],"properties":{"state":{"enum":["waiting","accepted","cancelled","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"target":{"type":"string","minLength":1}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"accepted"}}},"then":{"required":["target"]}}]}
 ```

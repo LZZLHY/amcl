@@ -53,6 +53,16 @@ int main() {
     assert(render.retireSession(11,20,31)==AMCL_SDL_AUX_CHANGED);
     assert(render.retireSession(11,20,30)==AMCL_SDL_AUX_READY);
     assert(render.claim(11,21,20,30,200,true)==AMCL_SDL_AUX_RETIRED);
+    // 无窗口制品已核身份后，首个消费线程可接管自己的 SDL；同会话的其它线程/映像始终被拒绝。
+    SdlAuxRuntimePolicy controller;
+    assert(controller.configure(11,20,30,3,0,true)==AMCL_SDL_AUX_INVALID);
+    assert(controller.configure(11,20,30,3,5,true)==AMCL_SDL_AUX_FIRST);
+    assert(controller.configure(11,20,30,3,5,false)==AMCL_SDL_AUX_CHANGED);
+    assert(controller.claim(11,25,20,30,300,false)==AMCL_SDL_AUX_FIRST);
+    assert(controller.claim(11,20,20,30,300,false)==AMCL_SDL_AUX_WRONG_THREAD);
+    assert(controller.claim(11,25,20,30,301,false)==AMCL_SDL_AUX_FOREIGN_INSTANCE);
+    assert(controller.retireSession(11,20,30)==AMCL_SDL_AUX_READY);
+    assert(controller.claim(11,25,20,30,300,false)==AMCL_SDL_AUX_RETIRED);
     AmclSdlAuxResultV1 result{};render.describe(AMCL_SDL_AUX_RETIRED,result);
     assert(result.abiVersion==1 && result.structSize==sizeof(result) && result.ownerThreadId==21 &&
            result.launchThreadId==20 && result.sessionId==30 && result.instanceCookie==200 && result.proofGeneration>0);

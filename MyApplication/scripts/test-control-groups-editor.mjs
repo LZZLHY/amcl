@@ -10,7 +10,7 @@ const editing=load('gamecontrol/src/main/ets/ControlEditing.ets');
 const source=fs.readFileSync(new URL('../entry/src/main/ets/components/LayoutEditor.ets',import.meta.url),'utf8');
 const ast=compiler.createSourceFile('LayoutEditor.ets',source,compiler.ScriptTarget.Latest,true);
 const owner=ast.statements.find(n=>n.name?.getText(ast)==='LayoutEditor');
-const names=['buildProfile','loadProfile','cloneGamepad','currentDeviceModel','selectedItem','refreshControls','pushUndo','undo',
+const names=['buildProfile','loadProfile','currentDeviceModel','selectedItem','refreshControls','pushUndo','undo',
   'repairEditorGroups_','editorGroupVisible_','editorCanvasOrder_','applyGroupDraft_','chooseControlGroup_','toggleGroupPreview_',
   'createControlGroup_','renameControlGroup_','setGroupInitialVisible_','moveGroupOrder_','duplicateControlGroup_',
   'groupDeletionDescription_','beginGroupDeletion_','clearGroupDeletion_','deleteControlGroup_','moveSelectedToGroup_','currentGroup_','filteredControlGroups_',

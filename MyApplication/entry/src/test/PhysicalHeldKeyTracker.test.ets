@@ -21,7 +21,7 @@ import {
   GLFW_MOD_SHIFT, GLFW_MOD_CONTROL, GLFW_MOD_CAPS_LOCK, GLFW_MOD_NUM_LOCK,
 } from 'gamecontrol';
 import {
-  routeKeyToGamepad, isSharedDirectionalKey, isGamepadKey,
+  isGamepadDirectionCode, isGamepadButtonCode,
 } from 'gamecontrol';
 import {
   deviceCapabilityBitsFromSources,
@@ -364,36 +364,23 @@ export default function physicalHeldKeyTrackerTest() {
     });
   });
 
-  describe('GamepadManager.routeKeyToGamepad', () => {
+  describe('OhosKeyCodes.Gamepad', () => {
     it('DPAD 4 方向码是共用码，DPAD_CENTER 与普通手柄键不是', 0, () => {
-      expect(isSharedDirectionalKey(OHOS_DPAD_UP)).assertTrue();
-      expect(isSharedDirectionalKey(OHOS_DPAD_DOWN)).assertTrue();
-      expect(isSharedDirectionalKey(OHOS_DPAD_LEFT)).assertTrue();
-      expect(isSharedDirectionalKey(OHOS_DPAD_RIGHT)).assertTrue();
-      expect(isSharedDirectionalKey(OHOS_DPAD_CENTER)).assertFalse();
-      expect(isSharedDirectionalKey(OHOS_BUTTON_A)).assertFalse();
+      expect(isGamepadDirectionCode(OHOS_DPAD_UP)).assertTrue();
+      expect(isGamepadDirectionCode(OHOS_DPAD_DOWN)).assertTrue();
+      expect(isGamepadDirectionCode(OHOS_DPAD_LEFT)).assertTrue();
+      expect(isGamepadDirectionCode(OHOS_DPAD_RIGHT)).assertTrue();
+      expect(isGamepadDirectionCode(OHOS_DPAD_CENTER)).assertFalse();
+      expect(isGamepadDirectionCode(OHOS_BUTTON_A)).assertFalse();
     });
 
-    it('平台报告 Keyboard 时，方向键交回 physical route', 0, () => {
-      expect(routeKeyToGamepad(OHOS_DPAD_UP, true)).assertFalse();
-      expect(routeKeyToGamepad(OHOS_DPAD_RIGHT, true)).assertFalse();
-    });
-
-    it('来源非 Keyboard（含 Unknown）时保持旧手柄行为', 0, () => {
-      expect(routeKeyToGamepad(OHOS_DPAD_UP, false)).assertTrue();
-      expect(routeKeyToGamepad(OHOS_DPAD_RIGHT, false)).assertTrue();
-    });
-
-    it('非共用手柄键与来源无关，永远走手柄', 0, () => {
-      expect(routeKeyToGamepad(OHOS_BUTTON_A, true)).assertTrue();
-      expect(routeKeyToGamepad(OHOS_BUTTON_A, false)).assertTrue();
-      expect(routeKeyToGamepad(OHOS_BUTTON_START, true)).assertTrue();
-    });
-
-    it('非手柄键永不走手柄，且与 isGamepadKey 一致', 0, () => {
-      expect(isGamepadKey(OHOS_KEY_W)).assertFalse();
-      expect(routeKeyToGamepad(OHOS_KEY_W, true)).assertFalse();
-      expect(routeKeyToGamepad(OHOS_KEY_W, false)).assertFalse();
+    it('手柄专用按钮与键盘方向键分别判型，导航消费另由真实页面按设备来源验证', 0, () => {
+      expect(isGamepadButtonCode(OHOS_BUTTON_A)).assertTrue();
+      expect(isGamepadButtonCode(OHOS_BUTTON_START)).assertTrue();
+      expect(isGamepadButtonCode(OHOS_DPAD_UP)).assertFalse();
+      expect(isGamepadButtonCode(OHOS_DPAD_CENTER)).assertFalse();
+      expect(isGamepadButtonCode(OHOS_KEY_W)).assertFalse();
+      expect(isGamepadDirectionCode(OHOS_KEY_W)).assertFalse();
     });
   });
 

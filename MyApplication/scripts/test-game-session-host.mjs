@@ -202,7 +202,7 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
   // 前后台用真实来源运行体和注册表组合；只把Native/时钟/配置仓库边缘留在fixture。
   if (realSources) {
     Object.assign(gamecontrol, env.load('gamecontrol/src/main/ets/GameInputRuntime.ets'),
-      env.load('gamecontrol/src/main/ets/GamepadManager.ets'), env.load('gamecontrol/src/main/ets/InputSourceRegistry.ets'));
+      env.load('gamecontrol/src/main/ets/InputSourceRegistry.ets'));
     registry = gamecontrol.getInputSourceRegistry();
   }
   const module = env.load('entry/src/main/ets/runtime/GameSessionHost.ets');
@@ -254,82 +254,6 @@ function fixture({ isolated = false, realSources = false, hostSource = undefined
   }
 }
 console.log('PASS actual Host desktop SDL text-demand subscription, focus/grab fences, and compatible routes');
-
-// 新连接接口须走真实Manager/Runtime/Client，不允许通过补一个恒true reader使旧夹具“通过”。
-// 平台边缘只发布Registry已经产生的原add/remove事件；Native端只记录独立token回执，未承诺ABI消费。
-{
-  const f = fixture({ realSources: true }); const front = f.attach(); f.prepare(); f.host.markRunning();
-  f.state.grab = true; f.host.setFrontendState(front, true, 7); f.state.grabCallback(true);
-  const { AXIS_ABS_Y } = f.env.load('gamecontrol/src/main/ets/GamepadManager.ets');
-  const original = f.deviceMonitor.add(7).originalConnection;
-  assert.ok(original && f.deviceConnections.reader.accepts(original));
-  const firstFact = f.host.inputRuntime.captureAxisForConnection(original, axis => axis === AXIS_ABS_Y ? -1 : 0);
-  assert.ok(firstFact); f.host.inputRuntime.handleAxisFact(firstFact);
-  assert.equal(f.count('control-acquire'), 1, '原连接事实经真实Client取得一个独立Native token');
-  assert.equal(f.calls.find(row => row[0] === 'control-acquire')[2], original.rawPlatformId);
-  const removed = f.deviceMonitor.remove(7);
-  assert.equal(removed.originalConnection, original); assert.equal(f.deviceConnections.reader.accepts(original), false);
-  assert.equal(f.count('control-release'), 1, '真实remove listener只退休当时原对象持有');
-  const replacement = f.deviceMonitor.add(7).originalConnection;
-  assert.notEqual(replacement, original); assert.notEqual(replacement.applicationScope, original.applicationScope);
-  assert.equal(f.host.inputRuntime.captureAxisForConnection(original, () => 0), undefined);
-  const currentFact = f.host.inputRuntime.captureAxisForConnection(replacement, axis => axis === AXIS_ABS_Y ? -1 : 0);
-  assert.ok(currentFact); f.host.inputRuntime.handleAxisFact(currentFact);
-  assert.equal(f.count('control-acquire'), 2);
-  f.publishConnection(removed);
-  assert.equal(f.count('control-release'), 1, '晚到原remove事件不能按raw ID释放新sameid贡献');
-  assert.equal(f.host.gamepad.hasConnectionState(replacement), true);
-  // 原frontend捕获的fact即使connection仍live，也不能在detach/rebind后借新的active继续输出。
-  const oldFrontFact = f.host.inputRuntime.captureAxisForConnection(replacement, axis => axis === AXIS_ABS_Y ? -1 : 0);
-  assert.ok(oldFrontFact); f.host.detach(front); const rebound = f.attach(); f.host.setFrontendState(rebound, true, 7);
-  const beforeLate = f.count('control-acquire'); f.host.inputRuntime.handleAxisFact(oldFrontFact);
-  assert.equal(f.count('control-acquire'), beforeLate, '真实Runtime原activation/fact阻断旧frontend续体');
-  // known hardware0保留合法应用身份，但当前Native字段未准入；不能用兼容0或成功token替代。
-  const knownZero = f.deviceMonitor.add(0).originalConnection;
-  assert.ok(knownZero && f.deviceConnections.reader.accepts(knownZero));
-  assert.equal(f.deviceConnections.reader.allowsLegacyDeviceField(knownZero), false);
-  assert.equal(f.host.inputRuntime.captureAxisForConnection(knownZero, () => 0), undefined);
-  f.host.stop('connection-fixture-stop'); await flush();
-  assert.equal(f.connectionListeners.size, 0); assert.equal(f.env.timer.size, 0);
-  console.log('PASS actual Host connection chain: original remove/sameid, late original remove, old frontend fact and known0 NativePending');
-}
-
-// 停止后的清理事实必须来自真实Manager/Runtime/Client：明确RELEASE拒绝和已调用未知acquire
-// 都不能因Native cancel是void、Runtime.stop已停钟、或Manager无已知按下记录而宣称Clean。
-for (const failure of ['release-rejected', 'acquire-uncertain']) {
-  const f = fixture({ realSources: true }); const front = f.attach(); f.prepare(); f.host.markRunning();
-  f.state.grab = true; f.host.setFrontendState(front, true, 7); f.state.grabCallback(true);
-  const connection = f.deviceMonitor.add(7).originalConnection;
-  if (failure === 'acquire-uncertain') f.state.throwOn.add('control-acquire');
-  f.host.gamepad.handleButtonForConnection(connection, 2301, true);
-  if (failure === 'release-rejected') f.state.rejectControlRelease = true;
-  const steps = f.host.stop(failure); await flush();
-  const mapped = steps.find(step => step.name === 'mapped-stop');
-  assert.equal(mapped.completed, false, failure + ': original mapped cleanup remains unconfirmed');
-  assert.equal(mapped.reason, 'Pending');
-  assert.equal(f.host.controls.reconcileRetirements(), false, 'actual Client keeps the original retirement/unknown intent');
-  assert.equal(f.host.gamepad.hasConnectionState(connection), failure === 'release-rejected',
-    'unknown acquire cannot be inferred clean just because no accepted token is known to Manager');
-  assert.equal(f.env.timer.size, 0, 'Pending does not restart stopped maintenance clocks');
-  const last = f.calls.filter(row => row[0] === 'log' && row[1].includes('input_session_end')).at(-1)[1];
-  assert.ok(last.includes('outcome=Pending'), failure + ': final outcome must preserve the unconfirmed step');
-  const beforeRepeat = f.count('control-release');
-  f.host.stop('repeat-stop'); assert.equal(f.count('control-release'), beforeRepeat, 'repeated stop cannot loop old side effects');
-  console.log('PASS actual Host stopped cleanup Pending for ' + failure + '; no void-reset inference or background retry');
-}
-
-{
-  const f = fixture({ realSources: true }); const front = f.attach(); f.prepare(); f.host.markRunning();
-  f.state.grab = true; f.host.setFrontendState(front, true, 7); f.state.grabCallback(true);
-  const connection = f.deviceMonitor.add(7).originalConnection;
-  f.host.gamepad.handleButtonForConnection(connection, 2301, true);
-  const steps = f.host.stop('confirmed-release'); await flush();
-  assert.equal(steps.find(step => step.name === 'mapped-stop').completed, true);
-  assert.equal(f.host.controls.reconcileRetirements(), true);assert.equal(f.host.gamepad.hasConnectionState(connection), false);
-  const last = f.calls.filter(row => row[0] === 'log' && row[1].includes('input_session_end')).at(-1)[1];
-  assert.ok(last.includes('outcome=Clean'));assert.equal(f.env.timer.size, 0);
-  console.log('PASS actual Host confirmed mapped cleanup preserves normal Clean outcome');
-}
 
 {
   const f = fixture(); let starts = 0;
@@ -462,7 +386,7 @@ console.log('PASS game keep screen on: stop waits for in-flight enable and ignor
   f.prepare(); f.host.markRunning(); f.host.setFrontendState(lease, true, 7);
   f.run(250); assert.ok([...f.env.timer.values()].some(timer => timer.delay === 250));
   const lateGrab = f.state.grabCallback;
-  f.state.throwOn.add('source-release'); f.state.throwOn.add('native-cancel'); f.state.throwOn.add('runtime-stop');
+  f.state.throwOn.add('source-release'); f.state.throwOn.add('native-cancel');
   const result = f.host.stop('injected-stop'); await flush();
   assert.ok(result.some(step => step.name === 'native-cancel' && !step.completed));
   assert.ok(f.count('configuration-stop') && f.count('source-unregister') && f.count('pointer-restore') && f.count('grab-unsubscribe'));
@@ -516,15 +440,15 @@ for (const relative of ['entry/src/main/ets/entryability/EntryAbility.ets', 'ent
     if (relative.includes('/entryability/')) assert.equal(f.state.activityForeground, false);
     f.host.setFrontendState(lease, true, 7); f.state.grab = true; f.run(250);
     assert.equal(f.host.inputRuntime.isLifecycleActive(), false, '后台或晚注册的真实来源保留Ability墓碑');
-    assert.equal(f.host.inputRuntime.active, false, '旧页面/心跳不能伪造Ability前台');
+    assert.equal(f.host.active(), false, '旧页面/心跳不能伪造Ability前台');
     f.host.inputRuntime.resumeAfterLifecycle(); f.host.setFrontendState(lease, true, 7);
-    assert.equal(f.host.inputRuntime.active, false, '组件焦点只恢复自身边界，不能改写Ability事实');
+    assert.equal(f.host.active(), false, '组件焦点只恢复自身边界，不能改写Ability事实');
     ability.onForeground();
     if (relative.includes('/entryability/')) assert.equal(f.state.activityForeground, true);
     assert.equal(f.host.inputRuntime.isLifecycleActive(), true);
-    assert.equal(f.host.inputRuntime.active, true, '真实Ability前台恢复通过宿主合取原前端资格');
+    assert.equal(f.host.active(), true, '真实Ability前台恢复通过宿主合取原前端资格');
     f.host.setFrontendState(lease, false, 7); ability.onBackground(); ability.onForeground();
-    assert.equal(f.host.inputRuntime.active, false, 'Ability前台不能越过当前前端焦点/可见性失效');
+    assert.equal(f.host.active(), false, 'Ability前台不能越过当前前端焦点/可见性失效');
     f.host.stop('test-stop'); await flush(); assert.equal(f.env.timer.size, 0);
   }
 }
@@ -667,16 +591,16 @@ console.log('PASS host launch gate: retired preparation waits original finally, 
 console.log('PASS host repeated frontend rebuild: latest lease resumes one Native launch after original preparation');
 
 for (const failure of ['product-freeze', 'product-configure', 'source-register', 'touch-start',
-  'configuration-start', 'runtime-start', 'mapped-choice']) {
+  'configuration-start']) {
   const f = fixture(); const lease = f.attach(); f.state.throwOn.add(failure);
   assert.throws(() => f.prepare(), new RegExp('fault:' + failure));
   await flush();
   assert.equal(f.host.isEnded(), true, failure + ':准备失败必须进入结束墓碑');
   assert.equal(f.host.accepts(lease), false); assert.equal(f.env.timer.size, 0); assert.equal(f.ends.size, 0);
-  assert.ok(f.count('native-cancel') && f.count('configuration-stop') && f.count('runtime-stop'),
+  assert.ok(f.count('native-cancel') && f.count('configuration-stop') && f.count('source-unregister'),
     failure + ':收口取得或部分取得的资源，单域失败不能漏掉其它清理');
 }
-console.log('PASS host preparation rollback: seven product/source/configuration/mapped failures retire leases, clocks and partial registrations');
+console.log('PASS host preparation rollback: product/source/configuration failures retire leases, clocks and partial registrations');
 
 {
   const oldFlag = process.argv.find(argument => argument.startsWith('--prepared-before-source='));
@@ -784,127 +708,46 @@ console.log('PASS real Page.startMCOnce: asynchronous ledger baseline blocks Win
 }
 console.log('PASS preparation race/budget: resolved old lease rechecked, sixteen bounded waiters finish on timeout, late assembly stays retired');
 
-// 实际Host必须在bindPlan后才升级原生资格，且focus跟随真正的来源开关，而不是target。
-// 来源本身的拒绝/释放行为由真实Manager组合测试另证；此处控制该边缘以核宿主接线。
-for (const [actualWire, expectedRoute] of [[wire, 'mapped'],
-  ['v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2', 'native'],
-  ['v=v1;abi=SDL3;slot=LWJGL3;window=SDL3;binding=libSDL3.so;policy=sdl-present-1', 'native']]) {
-  const f = fixture({isolated:true}); f.state.nativeGamepadRequested=true; f.state.nativeGamepadCaptureReady=true;
-  const lease=f.attach(); f.host.configureProduct(); f.host.prepare(f.store);
-  assert.equal(f.host.nativeGamepadRoute().reason, 'input-plan-unbound');
-  assert.equal(f.host.nativeGamepadRoute().applied, 'mapped');
-  f.host.bindPlan(actualWire); f.host.setFrontendState(lease,true,1);
-  assert.equal(f.host.nativeGamepadRoute().applied, expectedRoute);
-  if (expectedRoute==='native') assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1), ['pad-focus',true,true]);
-  else assert.equal(f.count('pad-capture'),0,'LWJGL2 没有标准出口，保留映射且不启动采集');
-  f.state.nativeGamepadRequested=false; f.state.nativeGamepadCaptureReady=false;
-  f.run(250);
-  assert.equal(f.host.nativeGamepadRoute().requestedNative,true,'本局不能采用新设置替代冻结请求');
-  assert.equal(f.host.nativeGamepadRoute().platformCaptureReady,expectedRoute==='native','只有具备实际出口并完成初始化的本局确认采集');
-  if(expectedRoute==='native'){
-    // Native之后的正式Host没有另一个合法计划/请求写点；不是把任意可造DTO
-    // 当成该产品正在发生的回切。真正的resolver contract组合在独立政策测试执行。
-    assert.throws(()=>f.host.bindPlan(wire),/Input plan already frozen/);
-    assert.throws(()=>f.host.bindPlan('bad-plan'),/Invalid or retired input plan/);
-    assert.equal(f.host.nativeGamepadRoute().status,'applied');
-    assert.equal(f.host.nativeGamepadRoute().applied,'native');
+// 用三套真实启动计划覆盖前后两种装配顺序。系统登记成功并不代表模组已接受设备。
+for (const input of [wire,
+  'v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2',
+  'v=v1;abi=SDL3;slot=LWJGL3;window=SDL3;binding=libSDL3.so;policy=sdl-present-1']) {
+  for (const planFirst of [true, false]) {
+    const f = fixture({realSources: true});
+    f.state.nativeGamepadCaptureReady = true;
+    const front = f.attach();
+    f.host.configureProduct();
+    if (planFirst) f.host.bindPlan(input);
+    else f.host.prepare(f.store);
+    assert.equal(f.count('pad-capture'), 0);
+    if (planFirst) f.host.prepare(f.store);
+    else f.host.bindPlan(input);
+    assert.equal(f.host.hasGamepadCapture(), true);
+    f.host.markRunning(); f.host.setFrontendState(front, true, 7); f.run(250);
+    assert.equal(f.count('pad-capture'), 1);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'pad-focus').at(-1), ['pad-focus',true,true]);
+    // 已登记的原生设备在后台仍可枚举；即使此时有迟到的页面焦点，按键和轴也须保持归中。
+    f.registry.releaseAllEnds('game-background');
+    f.host.setFrontendState(front, true, 7);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'pad-focus').at(-1), ['pad-focus',false,true]);
+    f.registry.notifyAbilityForeground();
+    assert.deepEqual(f.calls.filter(c => c[0] === 'pad-focus').at(-1), ['pad-focus',true,true]);
+    f.host.setFrontendState(front, false, 7);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'pad-focus').at(-1), ['pad-focus',false,true]);
+    f.host.stop('end'); await flush();
+    assert.deepEqual(f.calls.filter(c => c[0] === 'pad-capture').at(-1), ['pad-capture',false]);
   }
-  f.host.stop('route-test'); await flush();
 }
-{
-  const f=fixture({isolated:true}); f.state.nativeGamepadRequested=true; f.state.nativeGamepadCaptureReady=true;
-  f.state.rejectMappedRetirement=true; const lease=f.attach(); f.host.configureProduct(); f.host.prepare(f.store);
-  f.host.bindPlan('v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2');
-  f.host.setFrontendState(lease,true,1);
-  assert.equal(f.host.nativeGamepadRoute().status,'pending');
-  assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1),['pad-focus',false,false],'映射旧持有未结束不能同时公开设备或原生焦点');
-  f.state.rejectMappedRetirement=false; f.run(250);
-  assert.equal(f.host.nativeGamepadRoute().applied,'native');
-  assert.equal(f.calls.filter(call=>call[0]==='pad-focus').at(-1)[1],true);
-  f.host.stop('route-test'); await flush();
+for (const api of [20,21]) {
+  const f=fixture({api}); f.attach(); f.prepare();
+  assert.equal(f.host.hasGamepadCapture(), false);
+  assert.equal(f.count('pad-capture'), api >= 21 ? 1 : 0);
+  assert.equal(f.count('pad-focus'), 0);
+  f.host.stop('end'); await flush();
+  assert.equal(f.count('pad-capture'), api >= 21 ? 2 : 0, '仅实际尝试过注册的会话需要收回采集');
+  assert.equal(f.count('pad-focus'), api >= 21 ? 1 : 0);
 }
-// 同一 Host 入口也覆盖手机共享进程、平板两种进程策略。初始化失败、旧平台和关闭时不公开连接。
-for (const [deviceType, isolated, api, requested, ready] of [
-  ['phone',false,21,true,true], ['tablet',true,21,true,true], ['tablet',false,26,true,true],
-  ['phone',false,20,true,true], ['phone',false,26,true,false], ['tablet',true,26,false,true],
-  ['2in1',true,20,true,true]
-]) {
-  const f=fixture({deviceType,isolated,api});
-  f.state.nativeGamepadRequested=requested;
-  f.state.nativeGamepadCaptureReady=ready;
-  const front=f.attach();
-  f.host.configureProduct();
-  f.host.prepare(f.store);
-  assert.equal(f.count('pad-capture'),0);
-  const glfw='v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2';
-  f.host.bindPlan(glfw);
-  const attempted=api>=21 && requested;
-  const applied=attempted && ready;
-  assert.equal(f.host.nativeGamepadRoute().applied,applied?'native':'mapped');
-  assert.equal(f.count('pad-capture'),attempted?1:0);
-  f.state.nativeGamepadRequested=!requested;
-  f.host.setFrontendState(front,true,1);
-  f.host.detach(front);
-  const next=f.attach();
-  f.host.prepare(f.store);
-  f.host.setFrontendState(next,false,1);
-  f.run(250);
-  assert.equal(f.count('pad-capture'),attempted?1:0,'换页和维护不重新注册或读取下一局偏好');
-  if(applied) assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1),['pad-focus',false,true]);
-  f.host.stop('finish'); await flush();
-  if(attempted) assert.deepEqual(f.calls.filter(call=>call[0]==='pad-capture').at(-1),['pad-capture',false]);
-  if(applied) assert.deepEqual(f.calls.filter(call=>call[0]==='pad-focus').at(-1),['pad-focus',false,false]);
-}
-console.log('PASS real Host native route: ABI qualification, frozen preference, actual apply and focus exclusivity');
-
-/** 真正Host的只读前端入口：原对象身份、同局重挂接与跨局不能借相同编号。 */
-function frontendRouteScope(hostSource = undefined, retireDuringRead = false) {
-  const f=fixture({isolated:true,hostSource});
-  f.state.nativeGamepadRequested=true; f.state.nativeGamepadCaptureReady=true;
-  const first=f.attach(), reads=[];
-  f.host.configureProduct(); f.host.prepare(f.store);
-  f.host.bindPlan('v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2');
-  const effects=f.calls.length;
-  const snapshot=f.host.nativeGamepadRouteForFrontend(first);
-  assert.equal(snapshot.applied,'native');snapshot.status='corrupted';
-  assert.equal(f.host.nativeGamepadRouteForFrontend(first).status,'applied','值副本不能写回运行权威');
-  assert.equal(f.calls.length,effects,'观察不重试来源、焦点或采集');
-  assert.equal(f.host.nativeGamepadRouteForFrontend({id:first.id,retired:false}),undefined,'复制编号不是原lease');
-  if(retireDuringRead){
-    const read=f.host.gamepad.isMappedOutputEnabled.bind(f.host.gamepad);
-    f.host.gamepad.isMappedOutputEnabled=()=>{const value=read();f.host.detach(first);return value;};
-    assert.equal(f.host.nativeGamepadRouteForFrontend(first),undefined,'ROUTE_READ_REENTRY 原lease读回前已失权');
-  }else{
-    f.host.detach(first);
-    const second=f.attach(100,{onState:noop,onMaintenance:()=>reads.push(f.host.nativeGamepadRouteForFrontend(second)),onLog:noop});
-    assert.equal(f.host.nativeGamepadRouteForFrontend(first),undefined,'旧页不能借同局后来frontend');
-    assert.equal(f.host.nativeGamepadRouteForFrontend(second).requestedNative,true);
-    f.state.nativeGamepadRequested=false;f.run(250);
-    assert.equal(reads.at(-1).requestedNative,true,'保存新设置不授本局路线变化');
-    const other=fixture({isolated:true});const otherLease=other.attach(200);
-    other.state.nativeGamepadRequested=true;other.state.nativeGamepadCaptureReady=true;
-    other.prepare();
-    assert.equal(otherLease.id,first.id);
-    assert.equal(other.host.nativeGamepadRouteForFrontend(first),undefined,'另一会话相同编号不可借');
-    const maintained=f.count('mapped-choice');f.host.detach(second);f.run(250);
-    assert.equal(f.count('mapped-choice'),maintained,'稳定路线不重复应用');
-    // 无前端时模拟来源实际开关失配，必要维护仍须独立恢复本局已确认路线。
-    f.host.gamepad.setMappedOutputEnabled(true);
-    f.run(250);assert.equal(f.host.nativeGamepadRoute().applied,'native');
-    other.host.stop('route-read-test');
-  }
-  f.host.stop('route-read-test');
-  assert.equal(f.host.nativeGamepadRouteForFrontend(first),undefined,'已结束会话不显示旧Applied');
-}
-frontendRouteScope();frontendRouteScope(undefined,true);
-{
-  const original=fs.readFileSync(new URL('../entry/src/main/ets/runtime/GameSessionHost.ets',import.meta.url),'utf8');
-  const anchor='return this.accepts(lease) ? decision : undefined';
-  assert.equal(original.split(anchor).length,2);
-  assert.throws(()=>frontendRouteScope(original.replace(anchor,'return decision'),true),
-    error=>error instanceof assert.AssertionError&&error.message.includes('ROUTE_READ_REENTRY'));
-}
-console.log('PASS real Host route reader: original lease/session, inert copies, setting isolation, closed observer and compiled reentry withdrawal');
+console.log('PASS native-only registration, eligibility, failure and retirement on all three input plans');
 
 // 只有当前私有契约声明存在时选择新执行模型；校准失败必须收口准备，不偷偷旧积分。
 {
@@ -912,12 +755,10 @@ console.log('PASS real Host route reader: original lease/session, inert copies, 
   const product=f.calls.findIndex(row=>row[0]==='product-configure');
   const report=f.calls.findIndex(row=>row[0]==='configuration-report-prepare');
   assert.ok(product>=0&&report>product,'产品事实先于纯报告准备');
-  assert.equal(f.host.gamepad.emitter.lookExecutionMode,'neutral-rate-v1');
   f.host.prepare(f.store);assert.equal(f.count('look-cold-contract'),1);f.host.stop('test');
 }
 {
   const f=fixture({sharedLook:false});f.attach();f.host.configureProduct(f.store);
-  assert.equal(f.host.gamepad.emitter.lookExecutionMode,'neutral-rate-v1');
   assert.throws(()=>f.host.prepare(f.store),/Shared look execution owner/);
   assert.equal(f.host.isEnded(),true);assert.equal(f.env.timer.size,0);
 }
@@ -1190,7 +1031,7 @@ for (const mode of ['late-close', 'close-reject', 'never-close', 'late-window', 
   } else if (mode === 'close-reject') assert.ok(snapshot.some(step => step.reason === 'controlled close rejected'));
   else assert.ok(snapshot.every(step => step.completed));
   f.host.setFrontendState(lease, true, 7); await f.host.requestExit();
-  assert.equal(f.count('force-exit'), 1); assert.equal(f.host.inputRuntime.active, false); assert.equal(f.host.isEnded(), true);
+  assert.equal(f.count('force-exit'), 1); assert.equal(f.host.active(), false); assert.equal(f.host.isEnded(), true);
 }
 
 /** stop同步耗时已消耗预算；handoff慢不能再为未完成纹理close续一个完整3秒。 */

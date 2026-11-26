@@ -5,7 +5,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "amcl-prebuilts",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "curl_sha256": "PENDING",
@@ -28,7 +28,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "authlib-injector",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "asset_url": "https://github.com/yushijinhun/authlib-injector/releases/download/v1.2.8/authlib-injector-1.2.8.jar",
@@ -48,7 +48,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "cacert",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "sha256": "b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171",
@@ -65,7 +65,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "dyncall-native",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "source": "https://dyncall.org/r1.0/dyncall-1.0.tar.gz",
@@ -81,7 +81,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "gl4es",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "144d0dc79855b392e5256dd15fb2dbdedb17141a",
@@ -99,7 +99,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "jemalloc-native",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "81034ce1f1373e37dc865038e1bc8eeecf559ce8",
@@ -121,7 +121,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "jna-runtime",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "manifest": "prebuilt/jna/manifest.json",
@@ -137,7 +137,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "libdrm",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "repo": "https://gitlab.freedesktop.org/mesa/drm.git",
@@ -154,7 +154,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-jars",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "lwjgl-egl_sha256": "364e3902337832f7629c6fb7c2b776164f704e295837bd694e27866a488f5732",
@@ -190,7 +190,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-jars-322",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "lwjgl-glfw_sha256": "ef279cdaeede4ca344e756a56f85a85cbd039f7931011975672dc1b900b59c8f",
@@ -214,7 +214,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-natives",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "32593afe25e2f1394c3425673f1b71a0122f5cd4",
@@ -248,7 +248,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "lwjgl-natives-322",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "e41032b23adb2d494e2c492777e99e5d9697a860",
@@ -269,7 +269,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "asset": "jdk17-ohos-full-v5.zip",
@@ -287,7 +287,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-21",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "asset": "jdk21-ohos-full-v7.zip",
@@ -305,7 +305,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-25",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "asset": "jdk25-ohos-full-v2.zip",
@@ -323,7 +323,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mc-ohos-resources-8",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "asset": "jdk8-ohos-full-v4.zip",
@@ -341,7 +341,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mesa-zink",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de",
@@ -361,7 +361,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mobilegl",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "base_commit": "0d2fceab0eb0776b8e9c10903b50572579de8cc3",
@@ -386,7 +386,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "mobileglues",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "android_plugin_branch": "dev",
@@ -423,7 +423,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openal-soft",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
@@ -441,7 +441,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "PENDING",
@@ -459,7 +459,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk-21",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "dfcd8d2eecfe62e91070244d8eb10906dc3c812d",
@@ -477,7 +477,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "openjdk-25",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "e8f9ebe5ea813b675410a89fbfafa22e42c04e6a",
@@ -494,8 +494,28 @@
       "authority": {
         "normalization": "lf",
         "path": "deps.lock",
+        "section": "sdl3-controller",
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
+      },
+      "declared": {
+        "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+        "hap_sha256": "144ddd655fb3afa3d8df45f3f601dde827fc6bf8cb4bbd1212ce0f7d1ef0ba35",
+        "hap_size": "1649120",
+        "patchset_sha256": "e1ea248bf0d8784981e35fe601708d0cc2b741f888113812327401bb3d308c72",
+        "sha256": "3bf40a49213862ba321f9756b21d2413550508297d112135f5b29a21b0f939d3",
+        "size": "2027664"
+      },
+      "id": "deps-lock:sdl3-controller",
+      "kind": "dependency-lock-section",
+      "rebuildValidation": "not-performed-by-this-tool",
+      "sourceIdentity": "commit-declared"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "deps.lock",
         "section": "sdl3-native",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "base_commit": "de51952c2ea538241909789926f4d01845ad1bb0",
@@ -519,7 +539,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "shaderc-native",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "301b4ede53d59b68bf55f95bb26412d9233c8187",
@@ -538,7 +558,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "spvc-native",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "commit": "11e6d02d379319a4b570f3eb65d4b19ea7b543bf",
@@ -557,7 +577,7 @@
         "normalization": "lf",
         "path": "deps.lock",
         "section": "zstd-jni",
-        "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b"
+        "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a"
       },
       "declared": {
         "artifacts_sha256": "1081e7b42823c44ea32152bdef659592c190bb6efbe1c99c0cf0d65375c1b7cf",
@@ -3096,11 +3116,25 @@
       "authority": {
         "normalization": "lf",
         "path": "prebuilt/mod-natives/manifest.json",
-        "sha256": "c1c68c64f60d00931b662a566c31ca8766005615c6843d1a4964cbd016f41ee0"
+        "sha256": "867189c1417a44d70a413a6655e6390c1af0231cadf44fa7e12d049bcafb6390"
       },
       "declarations": {},
       "files": [],
       "id": "metadata:prebuilt/mod-natives/manifest.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {},
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/mod-natives/sdl2/sources.json",
+        "sha256": "e33add55d2d6f9d65163bdf20892eddde6de743d2672a0efb5ef813c47d33fae"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/mod-natives/sdl2/sources.json",
       "kind": "declared-artifact-metadata",
       "slots": [],
       "source": {},
@@ -3178,6 +3212,23 @@
       "declarations": {},
       "files": [],
       "id": "metadata:prebuilt/sdl3/build-provenance.json",
+      "kind": "declared-artifact-metadata",
+      "slots": [],
+      "source": {
+        "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+        "repository": "https://github.com/icculus/SDL.git"
+      },
+      "validation": "declarations-only-no-artifact-rebuild"
+    },
+    {
+      "authority": {
+        "normalization": "lf",
+        "path": "prebuilt/sdl3/controller-build-provenance.json",
+        "sha256": "8ffbefb61ce43ba99d149c64a70614b419c278e0f22e626c3624999ad63dbc29"
+      },
+      "declarations": {},
+      "files": [],
+      "id": "metadata:prebuilt/sdl3/controller-build-provenance.json",
       "kind": "declared-artifact-metadata",
       "slots": [],
       "source": {
@@ -3699,5 +3750,5 @@
   },
   "schemaVersion": 1,
   "scope": "declared-public-dependency-inputs",
-  "sourceCommit": "e94e7b2bde2126bf5d39d8bf63d30915669ebe73"
+  "sourceCommit": "2d114e925ab191fde276a84274d131960b487e30"
 }

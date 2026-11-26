@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/icculus/SDL.git",
+    "commit": "e293db30d74cca888eafba4e27f0c894f128e67d",
+    "abiBase": "f87239e71e42da91ca317a12eefb82cfbf3393eb"
+  },
+  "recipe": {
+    "patchsetSha256": "e1ea248bf0d8784981e35fe601708d0cc2b741f888113812327401bb3d308c72",
+    "revision": "SDL-3.5.0-release-3.4.0-983-ge293db30d-amclpse1ea248bf0d8784981e35fe601708d0cc2b741f888113812327401bb3d308c72",
+    "primarySeries": "patches/series",
+    "controllerSeries": "patches/series-controller",
+    "script": "scripts/build-sdl3-ohos.ps1 -Controller"
+  },
+  "configuration": {
+    "target": "aarch64-linux-ohos",
+    "buildType": "Release",
+    "gpu": false,
+    "soname": "libamcl_sdl_controller.so"
+  },
+  "compiler": {
+    "CMAKE_C_COMPILER": {
+      "size": 106704824,
+      "sha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba"
+    },
+    "CMAKE_CXX_COMPILER": {
+      "size": 106704824,
+      "sha256": "3688d7912c1559c7fa7842e1a7ecb90aca32898eaed1f51ca449b9d49577d2ba"
+    },
+    "CMAKE_LINKER": {
+      "size": 65278904,
+      "sha256": "27628fed00f2bca9d1528391bdb6c08a933e254a62d4493a5072c12fe352f11a"
+    },
+    "CMAKE_AR": {
+      "size": 16797112,
+      "sha256": "e30f494ff4bb165e65f85241f6a1abe0ce9ad73e5ea3bd4956c1958d5add84db"
+    },
+    "CMAKE_RANLIB": {
+      "size": 16797112,
+      "sha256": "e30f494ff4bb165e65f85241f6a1abe0ce9ad73e5ea3bd4956c1958d5add84db"
+    }
+  },
+  "artifacts": {
+    "raw": {
+      "size": 2027664,
+      "sha256": "3bf40a49213862ba321f9756b21d2413550508297d112135f5b29a21b0f939d3"
+    },
+    "sdkStripAll": {
+      "size": 1649120,
+      "sha256": "144ddd655fb3afa3d8df45f3f601dde827fc6bf8cb4bbd1212ce0f7d1ef0ba35",
+      "stripToolSha256": "7092b2a07041635687d30d54f1e60b9cc440bc914d50cf0e2f3a21c348c97967"
+    }
+  },
+  "independentBuilds": [
+    {
+      "receipt": ".workspace/tasks/pad-native/build/pad-native/sdl3-a6ff2cac/run-20261126-230514-feeafef8/candidate-receipt.json",
+      "sha256": "9157f2f86f1f0f38ef55407fe52d695a9d6a96e9da84274c82325bb8f97a7b92",
+      "state": "VerifiedCandidate"
+    },
+    {
+      "receipt": ".workspace/tasks/pad-native/leases/native-sdl-aux/52ad65d34a3841a4b4cf7df0c4d70986/execution.json",
+      "sha256": "550f8b762f4728b7129c6552e2e04f4a13a3d65269ce338fcd33ac84e284cb3a",
+      "state": "独立锁定编译通过，原件和 SDK strip 均逐字节相同"
+    }
+  ],
+  "recordedAt": "2026-11-26T23:06:23.569217+08:00",
+  "verification": {
+    "sourceGates": true,
+    "standardAbi": true,
+    "layout": true,
+    "primaryPublicExports": true,
+    "independentRawByteEquality": true,
+    "independentStrippedByteEquality": true
+  }
+}

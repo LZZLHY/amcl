@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "target": "aarch64-linux-ohos",
+  "recipe": "scripts/build-sdl2-gamepads.py",
+  "sources": "prebuilt/mod-natives/sdl2/sources.json",
+  "sdl3Provider": "libamcl_sdl_controller.so",
+  "artifacts": {
+    "libSDL2.so": {
+      "sha256": "d05a79c349615020320d57e1a5fbf8db21655c41afe4308943b0958690aab01c",
+      "size": 412056,
+      "hapSha256": "308aa97c0ec737e4a4881076abe9c58948dddcbaeba7b40b2f3a0dfafeeba7c3",
+      "hapSize": 411880
+    },
+    "libsdl2gdx.so": {
+      "sha256": "87889d2ca3c6b26b80a393759500c801f6801f234c7e4e4c3506e7c93e944a77",
+      "size": 19032,
+      "hapSha256": "a826d9b91e112fe0659e427e8858e144a2e0373e7496229927177f8b6a74771f",
+      "hapSize": 18856
+    },
+    "libjamepad.so": {
+      "sha256": "1293eb2fab23ec16e00ed6804566a925af481afffab318b982081973570c9912",
+      "size": 9104,
+      "hapSha256": "af2e8d66d6d92418846d6c04ad92b60fc7dfe57b9a94bfa44d739fa228986408",
+      "hapSize": 8928
+    }
+  },
+  "recipeInputs": {
+    "scripts/build-sdl2-gamepads.py": "eea31c9fcde20082b05446dd801924209d5195fd79ce8b9f93c1e71cd3c2679c",
+    "prebuilt/mod-natives/sdl2/sources.json": "e33add55d2d6f9d65163bdf20892eddde6de743d2672a0efb5ef813c47d33fae",
+    "prebuilt/mod-natives/sdl2/GenerateBindings.java": "f77bccd72d3fc961bd14d1aee461944a20563d026e1dc3379df04154ef52b45c",
+    "prebuilt/mod-natives/sdl2/controller-thread.h": "0bf4df8a84ea83b480c295cdfb5e52456fdff3d04e80dedb3f198de7f9d1684e"
+  }
+}

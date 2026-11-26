@@ -576,6 +576,15 @@ libglapi_sha256   = (已废弃：shared-glapi=disabled 后 glapi 静态链入 li
 #    （报 "Application didn't initialize properly"，与 driver 名无关）—— 见 §C1.1。
 #    这同时实证了 §C1 模式 B 可行：宿主自己调 SDL_SetMainReady 就能把 SDL 当普通库用。
 # -----------------------------------------------------------------------------
+# 独立无窗口手柄 SDK，复用下节上游及工具链，追加手柄专属 patch。
+[sdl3-controller]
+commit         = e293db30d74cca888eafba4e27f0c894f128e67d
+patchset_sha256 = e1ea248bf0d8784981e35fe601708d0cc2b741f888113812327401bb3d308c72
+size           = 2027664
+sha256         = 3bf40a49213862ba321f9756b21d2413550508297d112135f5b29a21b0f939d3
+hap_size       = 1649120
+hap_sha256     = 144ddd655fb3afa3d8df45f3f601dde827fc6bf8cb4bbd1212ce0f7d1ef0ba35
+
 [sdl3-native]
 upstream       = https://github.com/libsdl-org/SDL.git
 repo           = https://github.com/icculus/SDL.git

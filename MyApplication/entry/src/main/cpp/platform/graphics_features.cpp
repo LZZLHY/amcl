@@ -221,7 +221,7 @@ bool RetireGraphicsContext(const GraphicsRuntimeBinding& runtime, void* context)
     std::lock_guard<std::recursive_mutex> lock(state.resourcesMutex);
     for (auto entry = state.contextPermits.begin(); entry != state.contextPermits.end(); ++entry) {
         if (entry->second == context) {
-            state.sdlAux.revoke(context,entry->first);
+            state.sdlAux.policy.revoke(context,entry->first);
             state.presentingSurfaces.erase(entry->first);
             state.contextPermits.erase(entry); return true;
         }
@@ -232,7 +232,7 @@ void ReleaseGraphicsContextPermit(const GraphicsRuntimeBinding& runtime, uint64_
     if (!runtime.features || !permit) return;
     std::lock_guard<std::recursive_mutex> lock(runtime.features->resourcesMutex);
     const auto found=runtime.features->contextPermits.find(permit);
-    if(found!=runtime.features->contextPermits.end())runtime.features->sdlAux.revoke(found->second,permit);
+    if(found!=runtime.features->contextPermits.end())runtime.features->sdlAux.policy.revoke(found->second,permit);
     runtime.features->presentingSurfaces.erase(permit);
     runtime.features->contextPermits.erase(permit);
 }
@@ -252,7 +252,7 @@ bool RecordPresentingEglSurface(const GraphicsRuntimeBinding& runtime, const Egl
     } catch (...) {
         // 分配失败不能留下此前同permit的可消费证明，实际句柄仍由原cleanup路径持有。
         state.presentingSurfaces.erase(surface.contextPermit);
-        state.sdlAux.revoke(surface.context, surface.contextPermit);
+        state.sdlAux.policy.revoke(surface.context, surface.contextPermit);
         return false;
     }
 }
@@ -261,7 +261,7 @@ void RevokePresentingEglSurface(const GraphicsRuntimeBinding& runtime, const Egl
     auto& state = *runtime.features;
     std::lock_guard<std::recursive_mutex> lock(state.resourcesMutex);
     state.presentingSurfaces.erase(surface.contextPermit);
-    state.sdlAux.revoke(surface.context, surface.contextPermit);
+    state.sdlAux.policy.revoke(surface.context, surface.contextPermit);
 }
 std::string GraphicsFeaturesJson(const GraphicsRuntimeBinding& runtime) {
     if (runtime.delegate) {

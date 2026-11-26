@@ -6,7 +6,6 @@
  * 同一套"归一化偏移 → WASD 八向"的判定在本项目里写了**三遍**：
  *   1. native 触控端  `schemaJoystick`（cpp/platform/touch_input.cpp，现已改调
  *      cpp/platform/joystick_sector.cpp）
- *   2. 手柄端         `GamepadManager.updateMoveKeys`
  *   3. 触控端 ArkTS 兼容路径（`GameControls`，菜单态 / schema 降级时生效）
  *
  * 三份的扇区表当前**逐字一致**，但没有任何机制保证它们不分叉：谁改了其中一份，

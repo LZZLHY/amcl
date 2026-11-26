@@ -66,7 +66,7 @@ typedef enum {
     // 触控虚拟按键端：屏幕控件表（AmclCtrlEntry）+ C 层解释器
     // （handleSchemaGrabbedTouch）。驱动者是真实手指。
     AMCL_INPUT_SOURCE_TOUCH_CONTROLS = 1,
-    // 手柄端。状态机目前整体在 ArkTS（GamepadManager），native 只见到它的输出。
+    // 保留手柄来源的 ABI 编号；游戏通过设备 API 读取状态。
     AMCL_INPUT_SOURCE_GAMEPAD = 2,
     // 物理键鼠端：物理键盘 + 物理鼠标（含滚轮）。
     AMCL_INPUT_SOURCE_PHYSICAL_KBM = 3,

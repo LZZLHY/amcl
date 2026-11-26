@@ -121,7 +121,7 @@ export function analyzeSdlLaunchSources(files) {
       'phase_initJvmWithClasspath(', 'std::thread(mcLaunchThreadWithProfile',
     ]));
     check('sdl-libname-frozen', hasBootstrapLibraryName(files.bootstrap, 'org.lwjgl.sdl.libname', 'libSDL3.so', 'hap-absolute'));
-    check('sdl-ffm-fallback-frozen', hasBootstrapLibraryName(files.bootstrap, 'dev.isxander.sdl.library', 'libSDL3.so', 'hap-absolute'));
+    check('sdl-ffm-fallback-frozen', hasBootstrapLibraryName(files.bootstrap, 'dev.isxander.sdl.library', 'libamcl_sdl_controller.so', 'hap-absolute'));
     check('bootstrap-freeze-before-jvm', ordered(launch, [
       'amcl::jvm::RuntimeBootstrapProperties(', 'amcl::jvm::FreezeBootstrapProperties(',
       'jvmSetExtraArgsList(finalJvmArgs)', 'phase_initJvmWithClasspath(',
@@ -153,7 +153,7 @@ export function analyzeSdlLaunchSources(files) {
     check('auxiliary-role-before-descriptor', publish.includes('const bool auxiliarySdl = plan->abi != "SDL3";')
       && publish.includes('"2:%llu:%llu:%llu:1"')
       && ordered(publish, ['VerifiedForCurrentProcess(!allowLegacySdl,auxiliarySdl)',
-        'if(auxiliarySdl && !configureAuxiliarySdlRuntime(session,false))return false;', slotStore]));
+        'if(!configureAuxiliarySdlRuntime(session,false))return false;', slotStore]));
     // 所有游戏都可有辅助SDL消费者：槽位须在JVM前登记，真正描述符在合法游戏线程填写。
     // 空槽只是未发布身份，不能授予premain里的任意SDL_Init线程资格；主窗口路由不参与此裁决。
     // 全文件不得再有任何对该名字的 setenv/unsetenv/putenv。登记表的封存点在 jvmInit 的创建认领处，

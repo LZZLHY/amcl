@@ -1,0 +1,9 @@
+{
+  "sdl2-compat.zip": ["https://codeload.github.com/libsdl-org/sdl2-compat/zip/refs/tags/release-2.32.74", "95818fd831acf643cd1174df3f7a37bea2876e65c1ab5d18083c3b46bfb1674d"],
+  "sdl2gdx.zip": ["https://codeload.github.com/electronstudio/sdl2gdx/zip/refs/tags/1.0.5", "f826f60e2ec8a5e52770d0f906c19454f8abfd68441424ba5927844fe7904f70"],
+  "jamepad-e1fadd1.zip": ["https://codeload.github.com/libgdx/jamepad/zip/e1fadd1bd2a3a4b0bf0b7fd2653a15024b0811cb", "3369b956d315ce247fc580279d9b77984151c8caf5df322b5ba878bd5b5e405f"],
+  "jnigen.jar": ["https://repo.maven.apache.org/maven2/com/badlogicgames/gdx/gdx-jnigen/1.9.10/gdx-jnigen-1.9.10.jar", "12a2c6f2df087f8312d83c92484f6a8acd6f219277466749e4a2ba6accacc67f"],
+  "javaparser.jar": ["https://repo.maven.apache.org/maven2/com/github/javaparser/javaparser-core/2.3.0/javaparser-core-2.3.0.jar", "13884eff710c662cdc5556d6af80a7d7d51d93d6d1c1d01cf39ed3a47737d7a8"],
+  "controllable-gdx.jar": ["https://edge.forgecdn.net/files/3222/475/controllable-0.11.2-1.12.2.jar", "33ef42f846dfc2ba666229be122b59f9708bf2b0cd87a7a35a6dfd513428da08"],
+  "controllable-jamepad.jar": ["https://edge.forgecdn.net/files/2690/553/controllable-1.12.2-0.2.0.jar", "654f6df856b9f585c6df7deecf39e3100b4d00f509748138d35af0e66e12af15"]
+}

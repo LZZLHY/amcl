@@ -171,21 +171,3 @@ export class InputDeviceConnectionRegistry {
     this.revision++; return true
   }
 }
-
-/** 八轴原值副本；所有getter先于任何维护/Native输出，外部event map后来变化不能改这份事实。 */
-export class GamepadAxisSnapshot {
-  private values: Array<number | undefined>
-  constructor(getAxis: (axis: number) => number | undefined) {
-    this.values = []
-    for (let axis: number = 0; axis < 8; axis++) this.values.push(getAxis(axis))
-  }
-  /** 只读单轴；不暴露可变数组，非法axis也不读取后来event对象。 */
-  get(axis: number): number | undefined { return Number.isInteger(axis) && axis >= 0 && axis < 8 ? this.values[axis] : undefined }
-}
-
-/** 原key值副本；来源准入由原connection/会话判，重复码和timestamp不能产生设备身份。 */
-export class GamepadButtonSnapshot {
-  readonly ohosKey: number
-  readonly down: boolean
-  constructor(ohosKey: number, down: boolean) { this.ohosKey = ohosKey; this.down = down }
-}

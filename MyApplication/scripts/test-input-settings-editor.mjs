@@ -21,6 +21,7 @@ function fixture() {
   gc.getLayoutStore=()=>store;
   store.profile=gc.enableLayoutControlGroups(gc.getDefaultLayout());
   Object.assign(store.profile,{name:'完整方案',profileId:'settings-profile',profileRevision:3,isPreset:false});
+  store.profile.gamepad={enabled:false,buttonMap:{MODE:{kind:'key',code:88}}};
   store.profile.touch={joystickAutoWalk:true,gestureMode:'combat',menuMode:'direct'};
   store.profile.controlGroups.push({id:'tools',name:'工具',initialVisible:false});
   const {InputSettingsEditor}=env.load('entry/src/main/ets/components/InputSettingsEditor.ets',true);
@@ -31,10 +32,8 @@ function fixture() {
 {
   const {view,store}=fixture();await view.aboutToAppear();
   assert.equal(view.profileName,store.profile.name);assert.equal(view.dirty_(),false);assert.equal(store.writes,0);
-  assert.ok(view.gamepadButtonOrder().includes('MODE'),'已保存的额外按钮必须可编辑');
-  const map=structuredClone(view.gamepad.buttonMap);view.gamepad.buttonMap=undefined;
-  assert.equal(view.gamepadButtonOrder().length,16,'缺省表只读列出常用目录，不创建空映射');
-  assert.equal(view.gamepad.buttonMap,undefined);view.gamepad.buttonMap=map;
+  assert.deepEqual(JSON.parse(JSON.stringify(view.buildProfile().gamepad)),store.profile.gamepad,'旧映射只往返，打开编辑器不会补写默认映射');
+  view.selectCategory_('gamepad');assert.equal(view.category,'home');
   const original=structuredClone(view.buildProfile());
   view.pushUndo();view.touch.menuSensitivity=1.8;
   const draft=view.buildProfile();assert.deepEqual(draft.controls,original.controls);assert.deepEqual(draft.controlGroups,original.controlGroups);
@@ -98,7 +97,7 @@ function settingsUi(view) {
   });
   Object.assign(view,{
     Header_:Shell.prototype.Header_,PageBody_:Shell.prototype.PageBody_,
-    Actions_:()=>{},LookPage_:()=>{captures.body='look';},GamepadTabContent:()=>{captures.body='gamepad';},
+    Actions_:()=>{},LookPage_:()=>{captures.body='look';},
     PolicyCard_:()=>{captures.body='policy';}
   });
   function draw() {
@@ -156,7 +155,7 @@ function settingsUi(view) {
   assert.equal(ui.draw().body,'home');
   assert.deepEqual(ui.directory().map(e=>e.modifiers.id[0]),[
     'game-settings-nav-look','game-settings-nav-move','game-settings-nav-menu','game-settings-nav-gesture',
-    'game-settings-nav-gyro','game-settings-nav-gamepad','game-settings-nav-policy','game-settings-nav-layout']);
+    'game-settings-nav-gyro','game-settings-nav-policy','game-settings-nav-layout']);
   view.allowMobileInput=true;
   ui.draw();ui.button('game-settings-nav-devices')();assert.equal(ui.draw().body,'devices');
   ui.ui.records.find(r=>r.modifiers.accessibilityText?.[0]==='返回设置目录').modifiers.onClick[0]();

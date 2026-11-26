@@ -1670,6 +1670,10 @@
         "mode": "auto",
         "restartRequired": false
       }
+    },
+    "verification": {
+      "owner": "entry/src/main/ProductTouchSettings.ets",
+      "test": "scripts/test-frozen-settings-save.mjs"
     }
   },
   {
@@ -1721,92 +1725,11 @@
       {
         "mode": "auto"
       }
-    ]
-  },
-  {
-    "name": "getGamepadMode",
-    "domain": "settings",
-    "description": "查询手柄由游戏处理还是由启动器处理。",
-    "args": [],
-    "results": [
-      "ready",
-      "failed",
-      "unknown"
     ],
-    "output": {
-      "native": {
-        "type": "boolean"
-      },
-      "effectiveAt": {
-        "type": "string"
-      }
-    },
-    "requiredOutput": {
-      "ready": [
-        "native",
-        "effectiveAt"
-      ]
-    },
     "verification": {
-      "owner": "entry/src/main/ets/components/DesktopGamepadSettings.ets",
+      "owner": "entry/src/main/ProductTouchSettings.ets",
       "test": "scripts/test-frozen-settings-save.mjs"
-    },
-    "examples": {
-      "ready": {
-        "native": false,
-        "effectiveAt": "nextLaunch"
-      }
     }
-  },
-  {
-    "name": "setGamepadMode",
-    "domain": "settings",
-    "description": "修改下一次游戏启动时生效的手柄处理方式。",
-    "args": [
-      {
-        "name": "native",
-        "type": "boolean",
-        "description": "true交给游戏，false由启动器处理",
-        "required": true
-      }
-    ],
-    "results": [
-      "ready",
-      "failed",
-      "unknown"
-    ],
-    "output": {
-      "native": {
-        "type": "boolean"
-      },
-      "effectiveAt": {
-        "type": "string"
-      }
-    },
-    "requiredOutput": {
-      "ready": [
-        "native",
-        "effectiveAt"
-      ]
-    },
-    "verification": {
-      "owner": "entry/src/main/ets/components/DesktopGamepadSettings.ets",
-      "test": "scripts/test-frozen-settings-save.mjs"
-    },
-    "examples": {
-      "ready": {
-        "native": false,
-        "effectiveAt": "nextLaunch"
-      }
-    },
-    "echoArgs": {
-      "native": "native"
-    },
-    "inputExamples": [
-      {
-        "native": false
-      }
-    ]
   },
   {
     "name": "openLauncherDiagnostic",

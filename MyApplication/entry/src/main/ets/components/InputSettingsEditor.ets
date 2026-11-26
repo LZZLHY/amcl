@@ -1,13 +1,12 @@
 // 编辑器工具按钮明确使用小圆角矩形；后续显式圆角可覆盖此默认值，不跟随系统胶囊造型。
-/** 独立输入设置界面。只编辑触控策略、来源视角与手柄；布局几何和组图原样保留。
+/** 独立输入设置界面。只编辑触控策略和来源视角；布局几何和组图原样保留。
  * 保存与取消共用原LayoutStore串行事务；销毁等待在途操作后收口，失败不丢草稿。
  */
 import { LayoutProfile, LayoutEditSession, LayoutEditCheckpoint, cloneLayout,
   DEFAULT_LOOK_SENSITIVITY, DEFAULT_INVERT_Y, DEFAULT_LOOK_SMOOTHING, DEFAULT_LOOK_ACCEL,
   DEFAULT_JOYSTICK_DEAD_ZONE, SOURCE_LOOK_PROFILE_VERSION, SourceLookPreferences, LookPolicySource,
   LookParameters, copySourceLookPreferences, copyLookParameters, splitLegacyLookPolicy, sourceLookParameters,
-  GamepadConfig, GamepadAction, StickRole, defaultGamepadConfig, defaultGamepadButtonMap,
-  DEFAULT_GAMEPAD_DEAD_ZONE, DEFAULT_TRIGGER_THRESHOLD, glfwKeyName, getLayoutStore,
+  getLayoutStore,
   TouchConfiguration, normalizeTouchPreferences, TOUCH_ACTION_NAMES, defaultTouchActionKeys } from 'gamecontrol'
 import { hilog } from '@kit.PerformanceAnalysisKit'
 import { KeyPickerSheet } from './KeyPickerSheet'
@@ -39,8 +38,8 @@ export struct InputSettingsEditor {
     return { 'state':'draft','draftRef':stamp['draftRef'],'draftRevision':stamp['draftRevision'],'name':this.profileName,
       'touch':JSON.stringify(this.touch),'joystickDeadZone':this.joystickDeadZone,'haptic':this.haptic,
       'source':this.selectedLookSource,'independent':this.lookPolicies?.mode==='independent',
-      'look':JSON.stringify(this.editorLookParameters()),'gamepad':JSON.stringify(this.gamepad),
-      'actions':TOUCH_ACTION_NAMES,'buttons':this.gamepadButtonOrder() };
+      'look':JSON.stringify(this.editorLookParameters()),
+      'actions':TOUCH_ACTION_NAMES };
   }
 
   private async playerInputAction_(method:string,args:SkillFields):Promise<SkillFields> {
@@ -48,7 +47,7 @@ export struct InputSettingsEditor {
     if (method==='readInputWorkbench') return this.inputSnapshot_();
     if (!this.playerInput_.permits(JSON.stringify(this.buildProfile()),args)) return { 'state':'unavailable','reason':'draftChanged' };
     if (this.skillLeave_?.pending()) return { 'state':'busy','reason':'originalLeavePending' };
-    if (this.leaveConfirm || this.touchBindingEditIndex>=0 || this.gamepadBtnPicker.length>0) return { 'state':'needsUser' };
+    if (this.leaveConfirm || this.touchBindingEditIndex>=0) return { 'state':'needsUser' };
     if (method==='finishInputWorkbench') {
       const decision=args['decision'];
       if (decision==='undo' && this.undoCount>0) { this.undo_(); return this.inputSnapshot_(); }
@@ -71,7 +70,6 @@ export struct InputSettingsEditor {
     }
     if (method==='setTouchOption') return this.playerTouchOption_(args);
     if (method==='setLookOption') return this.playerLookOption_(args);
-    if (method==='setGamepadOption') return this.playerGamepadOption_(args);
     return { 'state':'failed','reason':'unknownOperation' };
   }
 
@@ -102,7 +100,7 @@ export struct InputSettingsEditor {
 
   private playerLookOption_(args:SkillFields):SkillFields {
     const source=String(args['source']); const field=String(args['field']); const value=String(args['value']);const n=Number(value);
-    if (!['physical','touch','gamepad','external'].includes(source)) return { 'state':'failed','reason':'source' };
+    if (!['physical','touch','external'].includes(source)) return { 'state':'failed','reason':'source' };
     this.selectLookSource(source as LookPolicySource);
     if (field==='independent' && (value==='true'||value==='false')) this.setIndependentLook(value==='true');
     else if(field==='invertY' && (value==='true'||value==='false')) this.setLookInversion_(value==='true');
@@ -113,28 +111,8 @@ export struct InputSettingsEditor {
     return this.inputSnapshot_();
   }
 
-  private playerGamepadOption_(args:SkillFields):SkillFields {
-    const field=String(args['field']); const value=String(args['value']);const n=Number(value);
-    if (field==='reset') { this.confirmGamepadReset_(); return { 'state':'needsUser','surface':'resetGamepad' }; }
-    if(field==='enabled' && (value==='true'||value==='false')) this.setGamepadEnabled_(value==='true');
-    else if((field==='left'||field==='right') && ['move','look','none'].includes(value)) this.setStickRole_(field,value as StickRole);
-    else if(value.trim() && Number.isFinite(n) && ((field==='deadzone'&&n>=0&&n<=50)||(field==='threshold'&&n>=10&&n<=95)||
-      (field==='scale'&&n>=30&&n<=300))) this.setGamepadNumber_(field,n/100,SliderChangeMode.Click);
-    else if(field==='button' && this.gamepadButtonOrder().includes(String(args['button']))) {
-      const button=String(args['button']);
-      if(value==='none'||value==='hotbarPrev'||value==='hotbarNext') this.setGamepadAction_(button,value as 'hotbarPrev'|'hotbarNext'|'none');
-      else if(value.trim() && getKeyOptionGroups().some((g):boolean=>g.options.some((k):boolean=>k.code===n))) this.applyGamepadKey(button,n);
-      else return { 'state':'failed','reason':'buttonValue' };
-    } else return { 'state':'failed','reason':'gamepadValue' };
-    return this.inputSnapshot_();
-  }
-
   private adjustJoystickDeadZone_(value:number,mode:SliderChangeMode):void {
     if (this.prepareSliderChange('joystickDeadZone',mode,this.joystickDeadZone !== value)) this.joystickDeadZone=value;
-  }
-  private setGamepadEnabled_(value:boolean):void {
-    if (value===(this.gamepad.enabled!==false)) return;
-    this.pushUndo(); this.gamepad.enabled=value; this.gamepad=this.cloneGamepad(this.gamepad);
   }
   private setLookInversion_(value:boolean):void {
     if (this.editorLookParameters().invertY===value) return;
@@ -158,17 +136,12 @@ export struct InputSettingsEditor {
   private pendingGameTool_: string = ''
   @Prop initialSection: string = ''
   @State private category: string = 'home'
-  @State private gamepadAdvanced: boolean = false
   @State private originallyActive: boolean = true
   private sliderGestureKey: string = ''
   @State private tab: string = 'touch'
   @State private touchSection: string = 'menu'
-  @State private gamepadPane: string = 'general'
-  @State private selectedGamepadButton: string = 'A'
-  @State private gamepadBtnPicker: string = ''
   @State private touchBindingEditIndex: number = -1
   @State private touch: TouchConfiguration = new TouchConfiguration()
-  @State private gamepad: GamepadConfig = defaultGamepadConfig()
   @State private lookSensitivity: number = DEFAULT_LOOK_SENSITIVITY
   @State private invertY: boolean = DEFAULT_INVERT_Y
   @State private lookSmoothing: number = DEFAULT_LOOK_SMOOTHING
@@ -256,7 +229,6 @@ export struct InputSettingsEditor {
   /** 将完整快照的设置域投影到V1响应字段；不修改original中的布局几何或组关系。 */
   private load_(profile: LayoutProfile): void {
     this.touch=normalizeTouchPreferences(profile.touch) ?? new TouchConfiguration()
-    this.gamepad=this.cloneGamepad(profile.gamepad)
     this.lookSensitivity=profile.lookSensitivity ?? DEFAULT_LOOK_SENSITIVITY
     this.invertY=profile.invertY ?? DEFAULT_INVERT_Y
     this.lookSmoothing=profile.lookSmoothing ?? DEFAULT_LOOK_SMOOTHING
@@ -271,7 +243,6 @@ export struct InputSettingsEditor {
     if (this.original===undefined) return null
     const profile: LayoutProfile=cloneLayout(this.original)
     profile.touch=normalizeTouchPreferences(this.touch)
-    profile.gamepad=this.cloneGamepad(this.gamepad)
     profile.lookPolicies=copySourceLookPreferences(this.lookPolicies)
     profile.lookSensitivity=this.lookSensitivity; profile.invertY=this.invertY
     profile.lookSmoothing=this.lookSmoothing; profile.lookAccel=this.lookAccel
@@ -347,16 +318,16 @@ export struct InputSettingsEditor {
 
   /** 导航状态不进入草稿，不制造Undo；六类任务只映射既有设置域。 */
   private selectCategory_(category: string): void {
-    const known: string[]=['home','move','look','menu','gesture','gyro','gamepad','policy']
+    const known: string[]=['home','move','look','menu','gesture','gyro','policy']
     if (this.inGameSettings && this.allowMobileInput) known.push('devices')
     this.category=known.indexOf(category)>=0 ? category : 'home'
-    this.tab=category==='look' ? 'look' : category==='gamepad' ? 'gamepad' : 'touch'
+    this.tab=category==='look' ? 'look' : 'touch'
     if (this.tab==='touch' && this.category!=='home' && this.category!=='devices') this.touchSection=this.category
     this.sliderUndoKey=''; this.sliderGestureKey=''
   }
   /** 分类之间保留草稿；跨工具切换须走已有的放弃确认，失败时保留当前页面。 */
   private openDestination_(id: string): void {
-    if (this.busy || this.completed || this.leaveConfirm || this.touchBindingEditIndex>=0 || this.gamepadBtnPicker.length>0) return
+    if (this.busy || this.completed || this.leaveConfirm || this.touchBindingEditIndex>=0) return
     if (id==='layout' || id==='resolution') {
       if (!this.inGameSettings || (id==='resolution' && !this.allowLiveResolution)) return
       this.pendingGameTool_=id; this.cancel_()
@@ -384,35 +355,6 @@ export struct InputSettingsEditor {
     else next.acceleration=value
     this.updateEditorLook(next)
   }
-  private setStickRole_(side: string,role: StickRole): void {
-    if ((side==='left' ? this.gamepad.leftStick : this.gamepad.rightStick)===role) return
-    this.pushUndo(); if (side==='left') this.gamepad.leftStick=role; else this.gamepad.rightStick=role
-    this.gamepad=this.cloneGamepad(this.gamepad)
-  }
-  private setGamepadAction_(button: string,kind: 'hotbarPrev' | 'hotbarNext' | 'none'): void {
-    if (this.gamepad.buttonMap?.[button]?.kind===kind) return
-    this.pushUndo(); this.ensureButtonMap(); this.gamepad.buttonMap![button]={kind:kind}; this.gamepad=this.cloneGamepad(this.gamepad)
-    this.statusMsg=this.gamepadBtnDisplayName(button)+' → '+(kind==='hotbarPrev' ? '上一格' : kind==='hotbarNext' ? '下一格' : '无')
-  }
-  private setGamepadNumber_(field: string,value: number,mode: SliderChangeMode): void {
-    const old: number=field==='deadzone' ? this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE :
-      field==='threshold' ? this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD : this.gamepad.lookScale ?? 1
-    if (!this.prepareSliderChange('gamepad-'+field,mode,old!==value)) return
-    if (field==='deadzone') this.gamepad.stickDeadZone=value
-    else if (field==='threshold') this.gamepad.triggerThreshold=value
-    else this.gamepad.lookScale=value
-    this.gamepad=this.cloneGamepad(this.gamepad)
-  }
-  /** 恢复默认是显式破坏草稿的操作，确认绑定原页面与原配置；一次Undo恢复完整手柄域。 */
-  private confirmGamepadReset_(): void {
-    const generation: number=this.generation, signature: string=JSON.stringify(this.gamepad)
-    this.getUIContext().showAlertDialog({title:'恢复默认手柄配置',message:'将重置左右摇杆、参数和全部按钮映射；可在保存前撤销。',
-      primaryButton:{value:'取消',action:(): void=>{}},secondaryButton:{value:'恢复草稿',action:(): void=>{
-        if (!this.mounted || generation!==this.generation || JSON.stringify(this.gamepad)!==signature) return
-        this.pushUndo(); this.gamepad=defaultGamepadConfig()
-      }}})
-  }
-
   /** 专用键位开关仍写当前完整方案，历史手势只读提示沿用同一兼容政策。 */
   @Builder
   PolicyCard_() {
@@ -438,7 +380,6 @@ export struct InputSettingsEditor {
       (this.touch.menuMode==='direct'?'直接操作':'触摸板')+' · '+Math.round(this.touch.menuSensitivity*100)+'%',
       this.touch.hotbarSwapDoubleTap ? (this.touch.hotbarDropHold?'双击换手 · 长按丢弃':'双击换手') : this.touch.hotbarDropHold ? '长按丢弃':'手势已关闭',
       this.touch.gyroscopeMode==='off'?'已关闭':this.touch.gyroscopeMode==='aim'?'按住启用':'游戏内持续',
-      this.gamepad.enabled===false?'已关闭':'已启用 · '+this.gamepadButtonOrder().length+' 项映射',
       this.touch.followGameBindings?'跟随游戏键位':'使用默认键位'
     ]
   }
@@ -455,7 +396,6 @@ export struct InputSettingsEditor {
       } else if (this.effectiveCategory_()==='devices' && this.inGameSettings && this.allowMobileInput) {
         MobileInputSettings({ palette:this.palette, showDevices:true })
       } else if (this.effectiveCategory_()==='look') { this.LookPage_() }
-      else if (this.effectiveCategory_()==='gamepad') { this.GamepadTabContent() }
       else if (this.effectiveCategory_()==='policy') {
         Column() { this.PolicyCard_() }.width('100%').constraintSize({maxWidth:580})
       } else {
@@ -542,19 +482,10 @@ export struct InputSettingsEditor {
       }.width(gameSettingsWidth(this.screenWidth,this.screenHeight)).height(gameSettingsHeight(this.screenWidth,this.screenHeight))
         .id('game-settings-sheet')
         .backgroundColor(this.palette.panel).borderRadius(this.palette.radiusPanel).clip(true)
-        .enabled(!this.busy && !this.leaveConfirm && this.touchBindingEditIndex<0 && this.gamepadBtnPicker.length===0)
+        .enabled(!this.busy && !this.leaveConfirm && this.touchBindingEditIndex<0)
       if (this.touchBindingEditIndex>=0) {
         KeyPickerSheet({palette:this.palette,currentKeys:this.touchBindingKeys(),currentDescription:this.touchBindingDescription(),allowCombo:false,
           onPick:(keys: number[] | null): void => { this.applyTouchBinding(keys) }})
-      }
-      if (this.gamepadBtnPicker.length>0) {
-        KeyPickerSheet({palette:this.palette,currentKeys:this.gamepadBtnCurrentKeys(),allowCombo:false,
-          onPick:(keys: number[] | null): void => {
-            if (keys!==null && keys.length>1) { this.statusMsg='映射手柄只支持单键'; return }
-            const button: string=this.gamepadBtnPicker; this.gamepadBtnPicker=''
-            if (keys===null) return
-            if (keys.length===0) this.setGamepadAction_(button,'none'); else this.applyGamepadKey(button,keys[0])
-          }})
       }
       if (this.leaveConfirm) {
         Column({space:12}) {
@@ -611,158 +542,6 @@ export struct InputSettingsEditor {
     this.touch = value
   }
 
-  /** 深复制按钮映射并补齐既有缺省；调用者获得独立草稿，不能透过引用改写原方案。 */
-  private cloneGamepad(g: GamepadConfig | undefined): GamepadConfig {
-    if (!g) return defaultGamepadConfig()
-    let buttonMap: Record<string, GamepadAction> = {}
-    const src = g.buttonMap ?? defaultGamepadButtonMap()
-    const keys = Object.keys(src)
-    for (let i = 0; i < keys.length; i++) {
-      const a = src[keys[i]]
-      buttonMap[keys[i]] = { kind: a.kind, code: a.code }
-    }
-    return {
-      enabled: g.enabled ?? true,
-      buttonMap: buttonMap,
-      leftStick: g.leftStick ?? 'move',
-      rightStick: g.rightStick ?? 'look',
-      stickDeadZone: g.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE,
-      triggerThreshold: g.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD,
-      lookScale: g.lookScale ?? 1.0
-    }
-  }
-
-  /** 返回现有逻辑按钮的固定展示顺序，不依赖平台硬件键码。 */
-  private gamepadButtonOrder(): string[] {
-    const common: string[] = ['A','B','X','Y','L1','R1','L2','R2','START','SELECT','L3','R3','DPAD_UP','DPAD_DOWN','DPAD_LEFT','DPAD_RIGHT']
-    // 显式数组分支避免向Object.keys传无上下文的对象字面量；缺表不制造临时映射或覆盖存档。
-    const saved: string[] = this.gamepad.buttonMap === undefined ? [] : Object.keys(this.gamepad.buttonMap)
-    return common.concat(saved.filter((name: string): boolean => common.indexOf(name) < 0))
-  }
-
-  /** 将逻辑按钮ID转换为显示名称；未特殊命名的按钮保持其稳定ID文本。 */
-  private gamepadBtnDisplayName(btn: string): string {
-    if (btn === 'START') return 'Start'
-    if (btn === 'SELECT') return 'Select'
-    if (btn === 'DPAD_UP') return '十字↑'
-    if (btn === 'DPAD_DOWN') return '十字↓'
-    if (btn === 'DPAD_LEFT') return '十字←'
-    if (btn === 'DPAD_RIGHT') return '十字→'
-    return btn
-  }
-
-  /** 按实际绑定显示普通键、快捷栏动作或解除状态，不以零键码伪装有效动作。 */
-  private gamepadActionLabel(btn: string): string {
-    const a = this.gamepad.buttonMap ? this.gamepad.buttonMap[btn] : undefined
-    if (!a || a.kind === 'none') return '无'
-    if (a.kind === 'hotbarPrev') return '上一格'
-    if (a.kind === 'hotbarNext') return '下一格'
-    // kind === 'key'
-    const code = a.code ?? 0
-    if (code === 0) return '无'
-    return glfwKeyName(code)
-  }
-
-  /** 选择器只读取当前手柄按钮的单键；特殊动作和未绑定返回空序列。 */
-  private gamepadBtnCurrentKeys(): number[] {
-    const a = this.gamepad.buttonMap ? this.gamepad.buttonMap[this.gamepadBtnPicker] : undefined
-    if (a && a.kind === 'key' && (a.code ?? 0) !== 0) return [a.code as number]
-    return []
-  }
-
-  /** 确认单键后复制映射、记录撤销并更新该按钮；零值表示明确解除。 */
-  private applyGamepadKey(btn: string, code: number): void {
-    this.pushUndo()
-    this.ensureButtonMap()
-    this.gamepad.buttonMap![btn] = code === 0 ? { kind: 'none' } : { kind: 'key', code: code }
-    this.gamepad = this.cloneGamepad(this.gamepad)
-    this.statusMsg = this.gamepadBtnDisplayName(btn) + ' → ' + this.gamepadActionLabel(btn)
-  }
-
-  /** 沿既有键位/上一格/下一格/无动作循环，只改选中按钮，不影响其它映射。 */
-
-
-  /** 从当前草稿深复制映射，保证局部改键不会借用默认映射对象。 */
-  private ensureButtonMap(): void {
-    if (!this.gamepad.buttonMap) {
-      this.gamepad.buttonMap = defaultGamepadButtonMap()
-    }
-  }
-
-  /** 循环左或右摇杆的移动/视角/关闭角色，保存和运行采用仍由仓库及会话负责。 */
-
-
-  /** 将摇杆角色转换为用户可读文本，缺省沿原移动语义显示。 */
-  private stickLabel(role: StickRole | undefined): string {
-    if (role === 'move') return '移动'
-    if (role === 'look') return '视角'
-    return '无'
-  }
-
-  /** 左列选择控制方式，右列仅在展开时构建具体映射和高级参数。 */
-  @Builder
-  GamepadPrimary_() {
-    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'手柄映射'}) {
-      TouchOptionToggle({palette:this.palette,wide:this.wide_(),label:'启用映射手柄',description:'只控制键鼠映射，不关闭游戏的原生手柄API。',value:this.gamepad.enabled!==false,
-        onChange:(value: boolean): void => this.setGamepadEnabled_(value)})
-      ForEach(['left','right'],(side: string) => {
-        Text(side==='left' ? '左摇杆' : '右摇杆').fontSize(this.wide_()?16:14).fontColor(this.palette.text)
-        Row({space:4}) {
-          ForEach(['move','look','none'],(role: string) => {
-            Button(this.stickLabel(role as StickRole)).type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1)
-              .backgroundColor((side==='left' ? this.gamepad.leftStick : this.gamepad.rightStick)===role ? this.palette.surfaceActive : this.palette.surface)
-              .fontColor(this.palette.text).onClick((): void => { this.setStickRole_(side,role as StickRole) })
-          },(role: string): string => role)
-        }.width('100%')
-      },(side: string): string => side)
-    }
-  }
-
-  @Builder
-  GamepadSecondary_() {
-    InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'按键与参数'}) {
-      Button(this.gamepadPane==='buttons' ? '收起按钮映射' : '按钮映射 · '+this.gamepadButtonOrder().length.toString()+' 项 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
-        .onClick((): void => { this.gamepadPane=this.gamepadPane==='buttons' ? 'general' : 'buttons' })
-      if (this.gamepadPane==='buttons') {
-        ForEach(this.gamepadButtonOrder(),(button: string) => {
-          Button(this.gamepadBtnDisplayName(button)+' · '+this.gamepadActionLabel(button)).type(ButtonType.Normal).borderRadius(6).constraintSize({minHeight:44}).width('100%')
-            .backgroundColor(this.selectedGamepadButton===button ? this.palette.surfaceActive : this.palette.surface).fontColor(this.palette.text)
-            .onClick((): void => { this.selectedGamepadButton=button })
-        },(button: string): string => button)
-        Text('正在编辑：'+this.gamepadBtnDisplayName(this.selectedGamepadButton)).fontSize(14).fontColor(this.palette.accent)
-        Button('选择单键').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').onClick((): void => { this.gamepadBtnPicker=this.selectedGamepadButton })
-        Row({space:4}) {
-          Button('上一格').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.setGamepadAction_(this.selectedGamepadButton,'hotbarPrev') })
-          Button('下一格').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.setGamepadAction_(this.selectedGamepadButton,'hotbarNext') })
-          Button('无').type(ButtonType.Normal).borderRadius(6).height(44).layoutWeight(1).onClick((): void => { this.setGamepadAction_(this.selectedGamepadButton,'none') })
-        }.width('100%')
-      }
-      Button(this.gamepadAdvanced ? '收起高级参数' : '高级参数与恢复默认 ›').type(ButtonType.Normal).borderRadius(6).height(44).width('100%')
-        .onClick((): void => { this.gamepadAdvanced=!this.gamepadAdvanced })
-      if (this.gamepadAdvanced) {
-        TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'映射摇杆死区',value:(this.gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE)*100,minimum:0,maximum:50,step:1,suffix:'%',
-          onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('deadzone',value/100,mode) }})
-        TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'扳机阈值',value:(this.gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD)*100,minimum:10,maximum:95,step:1,suffix:'%',
-          onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('threshold',value/100,mode) }})
-        TouchOptionSlider({palette:this.palette,wide:this.wide_(),label:'摇杆局部视角倍率',value:(this.gamepad.lookScale ?? 1)*100,minimum:30,maximum:300,step:5,suffix:'%',
-          onChange:(value: number,mode: SliderChangeMode): void => { this.setGamepadNumber_('scale',value/100,mode) }})
-        Text('局部倍率继续与映射手柄来源的视角倍率相乘。额外保存的按钮映射完整保留。').fontSize(12).fontColor(this.palette.muted)
-        Button('恢复默认手柄配置…').type(ButtonType.Normal).borderRadius(6).height(44).width('100%').fontColor(this.palette.warning).onClick((): void => { this.confirmGamepadReset_() })
-      }
-    }
-  }
-
-  @Builder
-  GamepadTabContent() {
-    InputSettingsColumns({wide:this.wide_(),primary:():void=>{this.GamepadPrimary_()},secondary:():void=>{this.GamepadSecondary_()}})
-  }
-
-  /** 按当前显示分组选择既有逻辑按钮，不改变存档映射顺序或内容。 */
-
-
-  /** 区分等待选键与明确无动作，避免用户将尚未绑定的占位误认为有效按键。 */
-
-
   /** 读取当前来源的完整四参数；旧方案继续使用兼容全局值，不自动拆分。 */
   private editorLookParameters(): LookParameters {
     if (this.lookPolicies !== undefined) return sourceLookParameters(this.lookPolicies, this.selectedLookSource)
@@ -803,7 +582,6 @@ export struct InputSettingsEditor {
     } else {
       if (this.selectedLookSource === 'physical') next.physical = copyLookParameters(value)
       else if (this.selectedLookSource === 'touch') next.touch = copyLookParameters(value)
-      else if (this.selectedLookSource === 'gamepad') next.gamepad = copyLookParameters(value)
       else next.external = copyLookParameters(value)
       this.lookPolicies = next
     }
@@ -813,7 +591,7 @@ export struct InputSettingsEditor {
   /** 来源标识只用于说明设置归属，不从外部兼容通道推断真实硬件。 */
   private lookSourceName(source: LookPolicySource): string {
     return source === 'physical' ? '物理鼠标' : source === 'touch' ? '触控/陀螺仪' :
-      source === 'gamepad' ? '映射手柄' : '外部兼容'
+      '外部兼容'
   }
 
   /** 镜头参数一组共用当前来源。物理鼠标继续直通，旧平滑值保存在草稿内。 */
@@ -837,7 +615,7 @@ export struct InputSettingsEditor {
   LookPrimary_() {
     if (this.lookPolicies?.mode==='independent') {
       InputSettingsGroup({palette:this.palette,wide:this.wide_(),label:'编辑来源'}) {
-        ForEach([['touch','physical'],['gamepad','external']],(pair: string[]) => {
+        ForEach([['touch','physical'],['external']],(pair: string[]) => {
           Row({space:4}) {
             ForEach(pair,(source: string) => {
               TouchOptionChoice({palette:this.palette,wide:this.wide_(),label:this.lookSourceName(source as LookPolicySource),selected:this.selectedLookSource===source,

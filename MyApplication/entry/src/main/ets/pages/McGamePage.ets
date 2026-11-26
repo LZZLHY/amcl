@@ -4,7 +4,6 @@ import { SharedProcessGameLease } from 'feature_core'
 import { GameSessionHost, GameFrontendLease, getGameSessionHost, phoneGameRestartApi } from '../runtime/GameSessionHost'
 import { ProductQaGame } from 'entry/ProductQaGame'
 import { GameDialogRuntime } from '../runtime/GameDialogRuntime'
-import { GamepadOutputRoute, NativeGamepadRouteDecision, nativeGamepadRouteNotice } from '../runtime/NativeGamepadRoutePolicy'
 import { reconcileEntryInputSession } from '../components/EntryInputSessionCoordinator'
 import { isEntrySoftTextInputRequested } from '../components/EntryTextInputSession'
 import { ProcessPreferences } from 'commons'
@@ -46,7 +45,7 @@ import { normalizeDeviceId } from 'gamecontrol';
 import { WheelStepAccumulator, wheelDirectionFromAxisVertical } from 'gamecontrol';
 import { WHEEL_PAN_TAG, judgeWheelPanGesture, WheelPanJudgement } from 'gamecontrol';
 import { normalizeRelativeMouseDelta, RelativeMouseDelta } from 'gamecontrol';
-import { GamepadManager, GameInputRuntime, routeKeyToGamepad, isGamepadKey,
+import { GameInputRuntime, isGamepadButtonCode, isGamepadDirectionCode,
   OHOS_DPAD_CENTER, OHOS_ENTER, OHOS_NUMPAD_ENTER, OHOS_SPACE, OHOS_TAB } from 'gamecontrol';
 import { getInputDeviceMonitor, DeviceCapability } from 'gamecontrol';
 import { getPhysicalPointerEcho, getImeActivationGate } from 'gamecontrol';
@@ -149,7 +148,6 @@ const DESKTOP_KEY_RETIREMENT_ATTEMPTS: number = 4
 const PHYSICAL_KEY_TYPED_ROUTE_HANDLED: number = 11
 
 // 同一局可能重建前端。仅记录这局已发出过通知的路线，不延长宿主寿命或修改路由决议。
-const notifiedGamepadRoutes = new WeakMap<GameSessionHost, GamepadOutputRoute>()
 
 // 已撤销的方案：用 `responseRegionList` 把鼠标从 XComponent 的命中链剔除。
 // 真机否证记录见 build() 里 XComponent 上那段注释——属性生效了（合成包消失），
@@ -256,7 +254,6 @@ struct McGamePage {
     new DeviceInventoryPublicationGuard()
 
   /** 映射来源对象由会话宿主创建，页面事件仅直接进入该来源，不建立第二个积分器。 */
-  private gamepad: GamepadManager = this.sessionHost.gamepad
   private inputRuntime: GameInputRuntime = this.sessionHost.inputRuntime
 
   /**
@@ -536,11 +533,6 @@ struct McGamePage {
     let activityId: number = AppStorage.get<number>('mcLaunchActivityId') ?? 0
     try { activityId = (this.getUIContext().getRouter().getParams() as McGameRouteParams).activityId ?? activityId }
     catch (_) { /* 独立游戏页面使用已校验的 AppStorage 路由字段。 */ }
-    // 观察闭包固定到本次原宿主/前端/页面代，不从后来this.frontendLease或全局getter
-    // 借新局资格。attach内首次状态通知可早于返回lease，完成接点再主动读一次原快照。
-    const routeHost: GameSessionHost = this.sessionHost
-    const routeEpoch: number = this.inputLifecycleEpoch
-    let routeFrontend: GameFrontendLease | undefined = undefined
     try {
       // 页面已有真实UIContent后、任何await及JVM启动前装配；窗口级生命周期由
       // GameAbility/Host退休，页面重建不取消正在等待用户选择的原请求。
@@ -549,11 +541,9 @@ struct McGamePage {
       onState: (grabbed: boolean, active: boolean): void => {
         this.isInGame = grabbed
         this.pageInputActive = active
-        this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
       },
       onMaintenance: (): void => {
         this.flushDesktopKeyRetirements()
-        this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
         // 几何由当前前端资源绑定提供，图形观测沿现有边界；输入核心维护已由宿主独立执行。
         try {
           this.syncInputSurfaceContext(this.gameWindowCoordinator.snapshot(), 'window-heartbeat')
@@ -567,8 +557,6 @@ struct McGamePage {
         if (this.showLog) this.refreshLog()
       }
       })
-      routeFrontend = this.frontendLease
-      this.refreshNativeGamepadRouteStatus_(routeHost,routeFrontend,routeEpoch)
     } catch (error) {
       // 已结束/身份冲突的会话拒绝重建前端；不能让无人await的页面生命周期变成JS Crash。
       this.inputProductFailure_ = '游戏会话不可继续：' + (error as Error).message
@@ -656,27 +644,6 @@ struct McGamePage {
         LOG_DOMAIN_LAUNCH)
     }
 
-  }
-
-  /**
-   * 只在可见游戏页读本局实际路线。读取可能同步换页，须再次核实资格才消费通知。
-   * 先记已尝试的路线再调用 Toast，避免重入、恢复前台或通知服务失败后每个维护周期重弹。
-   */
-  private refreshNativeGamepadRouteStatus_(host: GameSessionHost, frontend: GameFrontendLease | undefined,
-    epoch: number): void {
-    if (this.sessionHost!==host || this.frontendLease!==frontend || this.inputLifecycleEpoch!==epoch || !host.accepts(frontend)) return
-    if (!this.mcStarted || !this.pageVisible || !this.pageInputActive || this.navigatedAway) return
-    let route: NativeGamepadRouteDecision | undefined
-    try {
-      route = host.nativeGamepadRouteForFrontend(frontend, true, notifiedGamepadRoutes.get(host))
-    } catch (error) { this.notePageStepFault_('gamepad', 'route-read', error); return }
-    if (this.sessionHost!==host || this.frontendLease!==frontend || this.inputLifecycleEpoch!==epoch || !host.accepts(frontend)) return
-    if (!this.mcStarted || !this.pageVisible || !this.pageInputActive || this.navigatedAway || route === undefined) return
-    const message: string = nativeGamepadRouteNotice(route, notifiedGamepadRoutes.get(host))
-    if (message.length === 0) return
-    notifiedGamepadRoutes.set(host, route.applied)
-    try { this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 }) }
-    catch (error) { this.notePageStepFault_('gamepad', 'route-toast', error) }
   }
 
   /**
@@ -1242,8 +1209,7 @@ struct McGamePage {
     // 平台 API 已对照本机 SDK 核实（依据 docs/guides/input-system-unified-direction-2026-05-29.md
     // §2.1/§2.3/§2.4 —— ⚠️ 那份文档已**部分**过期，见它头部的横幅；当前契约以
     // docs/refactor/输入架构规范.md 为准）：
-    //   onKeyEvent（键盘 + 手柄按键）/ onMouse（鼠标按键由 native，Move 用 rawDelta）/
-    //   onFocusAxisEvent（手柄摇杆+扳机，AxisModel since 15）。
+    //   onKeyEvent 接收实体键盘，onMouse 的移动使用 rawDelta。实体手柄按钮与轴经 Game Controller Kit 进入游戏。
     // ⚠️ onAxisEvent 仍然挂着，但**它不是本机的滚轮载体** —— 两台已知设备上都是零调用
     // （详见下方滚轮那段）。挂着的理由是它只是四条滚轮候选通道之一，谁赢由运行期仲裁决定。
     // 全部 try/catch 兜底，不影响触摸主路径。
@@ -1302,10 +1268,6 @@ struct McGamePage {
         .onActionEnd(() => { this.onWheelPanEnd() })
         .onActionCancel(() => { this.onWheelPanEnd() })
     )
-    // v3 手柄：摇杆 / 扳机经焦点轴事件上报（AxisModel，since 15）。
-    .onFocusAxisEvent((e: FocusAxisEvent) => {
-      this.handleFocusAxisEvent(e)
-    })
     // ⚠️ 墓碑: `.onHover` 绑定已删除（函数体为空，注册它只是让平台多派发一次回调），
     // 详见计划 §65.1。hover 的实际用途在 native：`onMouse` 的非 Move 分支已经覆盖
     // Hover/Enter/Leave（见 `handleMouseEvent` 那处早退）。
@@ -1313,98 +1275,6 @@ struct McGamePage {
 
   /** 所有事件/心跳只提供调用时机；复位域、重试和实例广播由独立会话协调器持有。 */
   private reconcileNativeResetEpoch(): void { reconcileEntryInputSession() }
-
-  /**
-   * 手柄端 `deviceId` 的真机取证探针（限量 24 条）。
-   *
-   * 为什么需要它：`GamepadManager` 已具备按设备分桶与跨设备输出聚合，但产品是否能把
-   * `KeyEvent.deviceId` 当作稳定连接身份，仍必须由真机确认。身份不可用时会落入显式的
-   * 单设备兼容桶；在证据闭合前不能把 inventory 编号域与事件编号域强行拼接。
-   *
-   * ⚠️ 注意它**不是**"拔键盘会放掉手柄按态"那条降级的前置条件 —— 那条已由 §63 用
-   * `inputDevice` 自己的编号域修好（`handleDeviceChange` 的 `gamepadKindOf` 门控），
-   * 刻意不依赖本探针的结论。这里问的是另一个问题：手柄端**内部**能否分桶。
-   *
-   * 这一条官方文档回答不了：`KeyEvent.deviceId` 的存在性是 A 级（API 11 起），但
-   * 手柄事件里它是否可用、以及 `keySource` 的取值，文档页折叠未给出取值表。
-   * 官方另有一条明确警告：同一物理设备**反复插拔或重启后 deviceId 可能变化**，
-   * 所以它只能用作"本次连接期间"的身份 —— 那对我们够用（我们要的正是这个粒度）。
-   *
-   * 判读方式：
-   *   · `dev=0` 出现 ⇒ 平台不给手柄事件的设备身份，按设备追踪**做不到**，
-   *     只能退化为"单设备桶"，行为与现在一致；
-   *   · `dev` 非零且同一手柄始终同一个值 ⇒ 前置条件成立，可以做；
-   *   · 接两个手柄时两个值不同 ⇒ 收口后"拔一个不误放另一个"才真的可实现。
-   *
-   * 探针只在手柄按键的 Down/Up 边沿打，限量 24 条，稳态零噪声。
-   */
-  private gamepadIdentityProbeCount: number = 0
-
-  private probeGamepadDeviceIdentity(e: KeyEvent): void {
-    if (!DiagnosticPolicy.inputTraceEnabled()) return
-    if (this.gamepadIdentityProbeCount >= 24) return
-    this.gamepadIdentityProbeCount++
-    try {
-      const raw: number | undefined = e.deviceId as number | undefined
-      const normalized = normalizeDeviceId(raw)
-      this.launchLogger_().info(TAG,
-        `AMCL_PADID key=${(e.keyCode as number) ?? 0} type=${e.type} ` +
-        `rawDev=${raw} dev=${normalized} keySource=${e.keySource}`,
-        LOG_DOMAIN_LAUNCH)
-    } catch (err) {
-      // 探针本身绝不能影响手柄可用性。deviceId 在某些 SDK 上可能根本不存在于
-      // KeyEvent 上，读它抛异常时静默放弃这一条。
-      this.launchLogger_().info(TAG, 'AMCL_PADID unavailable on this SDK', LOG_DOMAIN_LAUNCH)
-      this.gamepadIdentityProbeCount = 24
-    }
-  }
-
-  /**
-   * 摇杆/扳机路径的 `deviceId` 取证探针（限量 24 条）。
-   *
-   * 为什么单独要一条：按键路径（`AMCL_PADID`）与摇杆路径是**两个不同的事件类型**，
-   * 官方对它们的 deviceId 承诺也不同 —— `KeyEvent.deviceId` 是必选 `number`（API 11），
-   * 而 `FocusAxisEvent` 继承 `BaseEvent`，`deviceId?: number`（API 12）**可选**、
-   * 官方只承诺"默认值 0、取值范围 [0,+∞)"。所以按键路径取到了身份**不能**推出摇杆
-   * 路径也取到了。此前只有按键那一半有探针，最可能失败的那一半反而没取证。
-   *
-   * `kind=` 是这条探针真正的目的：拿事件里的 deviceId 去查 `inputDevice` 编号域的手柄
-   * 身份表。⚠️ **两个编号域是否相通官方从未说明**，所以它只是证据、不是结论，产品逻辑
-   * 刻意不依赖它（规范 §3.4）。**逐字段判读方式见计划 §63.4**。
-   *
-   * 限量策略：前 8 条无条件打，之后只在出现**新的** dev 值时才打，总量封顶 24 ——
-   * 否则摇杆一推就在几十毫秒内烧光配额，看不到第二个手柄。
-   */
-  private axisIdentityProbeCount: number = 0
-  private axisIdentitySeenDevices: Set<number> = new Set<number>()
-
-  private probeAxisDeviceIdentity(e: FocusAxisEvent): void {
-    if (!DiagnosticPolicy.inputTraceEnabled()) return
-    if (this.axisIdentityProbeCount >= 24) return
-    try {
-      // BaseEvent.deviceId 是可选字段，不能沿用 KeyEvent 那边的无判空写法。
-      const raw: number | undefined = e.deviceId
-      const normalized: number = normalizeDeviceId(raw)
-      const fresh: boolean = !this.axisIdentitySeenDevices.has(normalized)
-      if (!fresh && this.axisIdentityProbeCount >= 8) return
-      this.axisIdentitySeenDevices.add(normalized)
-      this.axisIdentityProbeCount++
-      this.launchLogger_().info(TAG,
-        `AMCL_PADAXIS rawDev=${raw} dev=${normalized} ` +
-        `kind=${getInputDeviceMonitor().gamepadKindOf(normalized)} ` +
-        `knownDevices=${getInputDeviceMonitor().knownDeviceCount()} ` +
-        `axes=${e.axisMap.size} source=${e.source} distinct=${this.axisIdentitySeenDevices.size}`,
-        LOG_DOMAIN_LAUNCH)
-    } catch (err) {
-      // 探针绝不能影响摇杆可用性。字段在某些 SDK 上可能不可读，抛异常时永久放弃。
-      this.launchLogger_().info(TAG, 'AMCL_PADAXIS unavailable on this SDK', LOG_DOMAIN_LAUNCH)
-      this.axisIdentityProbeCount = 24
-    }
-  }
-
-  // ⚠️ 墓碑: `McGamePage.normalizeDeviceId` 已上移到 `gamecontrol/InputDeviceAbi.ets` 的
-  // 同名导出（5 个调用点跨物理键鼠/手柄/设备生命周期三个方向，**不得**在任何一处复制第二份
-  // 实现 —— 注释门禁抓不到纯函数漂移），详见计划 §68.1。契约与已知局限写在新落点。
 
   /**
    * 物理设备插拔 → 输入 owner 生命周期。完整因果见规范 §3.4 与计划 §10.1。
@@ -1480,11 +1350,6 @@ struct McGamePage {
         testNapi.publishInputDeviceChange(
           deviceId, false, 0, InputDeviceClass.Unknown as number)
       } catch (e4) { /* 老 native 兼容 */ }
-
-      // 映射手柄的移除由稳定会话Host监听原connectionChange，在旧raw事件扇出前
-      // 精确退休该lease的controls/look。此处只处理现有物理键/Core设备出口；不依据
-      // 可能已刷新或未知的设备类型，重复取消全部Gamepad来源或后来同ID的新连接。
-      // 应用lease仍不证明Native设备generation；该跨层事实另有验收门，不能在页面猜补。
 
       if (released.length > 0) {
         this.launchLogger_().info(TAG, `device ${deviceId} removed, released ${released.length} held key(s)`, LOG_DOMAIN_LAUNCH)
@@ -1681,27 +1546,31 @@ struct McGamePage {
 
   /** Game Controller Kit 已直接接收原生手柄输入。这里只消费发回 ArkUI 的同一按键，
    * 不转发给游戏，避免方向键移动虚拟键焦点或确认键激活其 onClick。普通键盘、读屏点击、
-   * 启动器编辑器及映射模式继续使用原分发。取实际映射开关，切换尚未完成时不截断旧路线。 */
+   * 编辑器及系统控件继续使用原分发。 */
   private consumeNativeGamepadKey_(event: KeyEvent): boolean {
     // 聊天和文本输入条只申请软输入，不经过编辑器的 onInputPause；显示期间让方向键到达输入条。
     if (!this.mcStarted || !this.pageInputActive || this.inputOverlayPaused || isEntrySoftTextInputRequested() ||
-        !this.sessionHost.accepts(this.frontendLease) || this.gamepad.isMappedOutputEnabled() ||
+        !this.sessionHost.accepts(this.frontendLease) || !this.sessionHost.hasGamepadCapture() ||
         !ProductInputProfile.current().acceptDirectTouchInGame) return false
-    // 部分手柄将导航/确认报告成键盘口令。音量、媒体等系统键始终沿原窗口分发。
-    const code = event.keyCode as number
-    if (!isGamepadKey(code) && code !== OHOS_DPAD_CENTER && code !== OHOS_ENTER &&
-        code !== OHOS_NUMPAD_ENTER && code !== OHOS_SPACE && code !== OHOS_TAB) return false
-    if (event.keySource !== KeySource.JOYSTICK) {
-      // 方向键与键盘共码。仅用本次事件的有效连接补证纯手柄；组合设备和未知 ID 继续交给 ArkUI。
-      if (!(event.deviceId > 0)) return false
-      const monitor = getInputDeviceMonitor()
-      const connection = monitor.captureConnection(event.deviceId, true, false).connection
-      const sources = connection === undefined ? undefined : monitor.sourcesForConnection(connection)
-      if (sources === undefined || sources.includes('keyboard') ||
-          (!sources.includes('joystick') && !sources.includes('gamepad'))) return false
-    }
+    if (!this.isGamepadNavigationEvent_(event)) return false
     event.stopPropagation()
     return true
+  }
+
+  /** 部分手柄将确认键报告成空格或回车。仅对可证明为手柄的连接过滤窗口副本，
+   * 保留混合键盘、系统媒体键以及没有可靠设备身份的普通导航。 */
+  private isGamepadNavigationEvent_(event: KeyEvent): boolean {
+    const code = event.keyCode as number
+    if (isGamepadButtonCode(code)) return true
+    if (!isGamepadDirectionCode(code) && code !== OHOS_DPAD_CENTER && code !== OHOS_ENTER &&
+        code !== OHOS_NUMPAD_ENTER && code !== OHOS_SPACE && code !== OHOS_TAB) return false
+    if (event.keySource === KeySource.JOYSTICK) return true
+    if (!(event.deviceId > 0)) return false
+    const monitor = getInputDeviceMonitor()
+    const connection = monitor.captureConnection(event.deviceId, true, false).connection
+    const sources = connection === undefined ? undefined : monitor.sourcesForConnection(connection)
+    return sources !== undefined && !sources.includes('keyboard') &&
+      (sources.includes('joystick') || sources.includes('gamepad'))
   }
 
   private handleKeyEvent(e: KeyEvent): boolean {
@@ -1716,31 +1585,16 @@ struct McGamePage {
       // 级改变枚举值时静默失效。
       const isDown = e.type === KeyType.Down
       const isUp = e.type === KeyType.Up
-      const sourceIsKeyboard = e.keySource === KeySource.Keyboard
-      const isMappedKey: boolean = routeKeyToGamepad(ohosKey, sourceIsKeyboard)
+      // 系统可能把手柄导航键编码为键盘方向键。保留实体键盘的方向键，
+      // 其余手柄副本交给原生设备接口，避免再进入键鼠事件流。
+      if (e.keySource === KeySource.JOYSTICK || this.isGamepadNavigationEvent_(e) ||
+        (isGamepadDirectionCode(ohosKey) && e.keySource !== KeySource.Keyboard)) return false
       const rawDeviceId: number = e.deviceId
-      const mappedCapture = isMappedKey ? getInputDeviceMonitor().captureConnection(rawDeviceId, true, false) : undefined
       const originalLockState: number = composeOhosLockState(e.isCapsLockOn, e.isNumLockOn, e.isScrollLockOn)
       // unicode也是原平台事件事实；复位和Native事务可能同步回入，之后不再读取e补事实。
       const originalUnicode: number | undefined = e.unicode
-      // 手柄按键也必须先对账；不能在分流早退后让旧映射持有活到250ms心跳。
       this.reconcileNativeResetEpoch()
       if (!this.sessionHost.accepts(originalFrontend)) return false
-
-      // v3 手柄：先看是不是手柄按键，是就交给 GamepadManager 归一化。
-      //
-      // Phase 3.3：DPAD 4 个方向码与实体键盘方向键共用 keyCode，过去被整条送进
-      // GamepadManager，绕过了 physicalKeyTransaction / deviceId / 锁存快照 / core
-      // held owner 与 reset 对账。现在只在平台明确报告 KeySource.Keyboard 时把它们
-      // 交回 physical route；Unknown 保持旧手柄行为（判据与理由见 routeKeyToGamepad）。
-      if (isMappedKey) {
-        if (isDown || isUp) {
-          this.probeGamepadDeviceIdentity(e)
-          if (!this.sessionHost.accepts(originalFrontend) || mappedCapture?.connection === undefined) return false
-          this.gamepad.handleButtonForConnection(mappedCapture.connection, ohosKey, isDown)
-        }
-        return false
-      }
 
       // Native blur/overflow may have reset authoritative held state without
       // causing ArkUI page hide. Reconcile before reading held/modifier state.
@@ -2301,48 +2155,6 @@ struct McGamePage {
       }
     } catch (err) {
       this.launchLogger_().warn(TAG, 'handleAxisEvent failed', err, LOG_DOMAIN_LAUNCH)
-    }
-  }
-
-  // ============================================================
-  //   v3 手柄：摇杆 / 扳机模拟轴（onFocusAxisEvent，AxisModel since 15）
-  //
-  //   axisMap: Map<AxisModel, number>
-  //     ABS_X/Y   = 左摇杆（默认 → WASD 八向走路）
-  //     ABS_Z/RZ  = 右摇杆（默认 → 视角 sendCursorDelta）
-  //     ABS_GAS   = RT（默认 → 攻击）  ABS_BRAKE = LT（默认 → 丢弃）
-  //     ABS_HAT0X/Y = 方向键走轴（部分手柄）
-  //
-  //   归一化逻辑全部在 GamepadManager；这里只把 axisMap 解成"取轴值"回调传进去。
-  //   仅 grabbed 时把右摇杆当视角用（菜单里右摇杆不转视角，避免乱动）。
-  // ============================================================
-  private handleFocusAxisEvent(e: FocusAxisEvent): void {
-    const originalFrontend: GameFrontendLease | undefined = this.frontendLease
-    if (!this.sessionHost.accepts(originalFrontend)) return
-    // 原生路线直接从 Game Controller Kit 采轴，跳过同一事件的窗口副本。
-    // 等到旧映射按键实际释放后才停收，避免切换尚未完成时丢失映射输入。
-    if (!this.mcStarted || !this.gamepad.isMappedOutputEnabled()) return
-    try {
-      // BaseEvent.deviceId可缺席且默认0，不能据inventory有0猜原hardware身份。
-      // 当前新端口将缺身份/歧义0保持Pending；不自动借旧compat0绕过连接围栏。
-      const rawDeviceId: number = e.deviceId ?? 0
-      const identityKnown: boolean = rawDeviceId > 0
-      const captured = getInputDeviceMonitor().captureConnection(rawDeviceId, identityKnown, false)
-      if (captured.connection === undefined) return
-      const map = e.axisMap
-      // 取轴值回调：map.get(AxisModel) 在 ArkTS 里 AxisModel 是 enum，其数值与
-      // GamepadManager 的 AXIS_* 常量一致，可直接用数字 key 取。
-      const fact = this.inputRuntime.captureAxisForConnection(
-        captured.connection, (axis: number): number | undefined => {
-        const v = map.get(axis as number as AxisModel)
-        return (v === undefined || v === null) ? undefined : (v as number)
-      })
-      // 先复制八轴，再进行可回入的诊断/维护；事实仅能被原runtime activation一次领取。
-      this.probeAxisDeviceIdentity(e)
-      if (!this.sessionHost.accepts(originalFrontend) || fact === undefined) return
-      this.inputRuntime.handleAxisFact(fact)
-    } catch (err) {
-      this.launchLogger_().warn(TAG, 'handleFocusAxisEvent failed', err, LOG_DOMAIN_LAUNCH)
     }
   }
 

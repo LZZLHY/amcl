@@ -1107,8 +1107,6 @@ add('input-runtime', () => {
     ['node', 'scripts/test-game-input-runtime.mjs'],
     // Monitor原连接对象、冻结八轴/键、来源token回入与精确清理；不冒称OS/native generation。
     ['node', 'scripts/test-device-connection-runtime.mjs'],
-    // 显式Native速率模型、原连接/单位、拒绝重试与动作前样本；无JS第二份积分副作用。
-    ['node', 'scripts/test-mapped-look-execution.mjs'],
     // 保存与运行激活的真实会话分权；独立输入ABI计划的ArkTS/Native双边严格校验。
     ['node', 'scripts/test-input-configuration-runtime.mjs'],
     // 保存/原会话激活/触控发布及只读真实UI提示，含在途A与desired B、原registration反控。
@@ -1119,8 +1117,6 @@ add('input-runtime', () => {
     [isWin ? 'python' : 'python3', 'scripts/test-source-look-policy-native.py',
       '--output', workspacePath('run', 'source-look-native-' + process.pid),
       '--build-root', workspacePath('build', 'source-look-native-' + process.pid)],
-    // 所选输入ABI的原生手柄出口、平台采集事实及真正来源开关应用分开，保用户明确路线。
-    ['node', 'scripts/test-native-gamepad-route.mjs'],
     // 唯一source owner、真实ring/JNI/GLFW写读及cold身份，负控须编译后命中行为断言。
     // 三种模式各复用自己的已登记host缓存，证据每次进程独立，不覆盖先前收据。
     ...[null, 'compat-bypass', 'budget2'].map(negative => {
@@ -1171,7 +1167,6 @@ add('input-runtime', () => {
     ['node', 'scripts/test-virtual-mouse-entry-position.mjs'],
     ['node', 'scripts/test-virtual-mouse-entry-visibility.mjs'],
     ['node', 'scripts/test-virtual-mouse-wheel.mjs'],
-    ['node', 'scripts/test-gamepad-analog-stability.mjs'],
     ['node', 'scripts/test-touch-surface-controller.mjs'],
     // 真实Source/feedback/GUI必要几何与可退订观察分离，保持原Want/Host资格及迟到结果围栏。
     ['node', 'scripts/test-input-observation-control.mjs'],

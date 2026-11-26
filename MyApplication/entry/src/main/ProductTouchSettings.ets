@@ -126,7 +126,7 @@ export struct ProductTouchSettings {
         }.alignItems(HorizontalAlign.Start).width('100%').padding(16).id('settings-item-interaction')
         Row().width('100%').height(0.5).backgroundColor(this.theme.divider)
       }
-      SettingsValueRow({ title: '操控方案', description: '管理布局、触控、视角与手柄设置', showIcon: true,
+      SettingsValueRow({ title: '操控方案', description: '管理布局、触控与视角设置', showIcon: true,
         icon: AppIconName.LayoutList, theme: this.theme, controlId: 'settings-item-layouts', onAction: (): void => {
           this.getUIContext().getRouter().pushUrl({ url: 'pages/LayoutListPage' }).catch((): void => {
             if (this.mounted) this.getUIContext().getPromptAction().showToast({ message: '无法打开按键布局，请重试' });

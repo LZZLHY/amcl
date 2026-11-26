@@ -1,6 +1,6 @@
 /**
  * 单局游戏的输入运行宿主。进程模块只保存本局实例，页面拿前端租约；页面重建不会
- * 重建映射来源、配置订阅或维护时钟。高频键鼠/触控仍走原生产端口，不经宿主转发。
+ * 重建输入订阅或维护时钟。高频键鼠/触控仍走原生产端口，不经宿主转发。
  * 所有方法运行在 ArkTS 事件线程；Native 窗口/consumer 失效仍在各自线程立即生效。
  * 共同维护只依赖Native维护scope，触控前端通过受限来源接口登记；因此desktop宿主
  * 不会因持有维护资格而把移动布局、触控组件或陀螺仪前端带入编译依赖闭包。
@@ -9,16 +9,13 @@ import { common, Want } from '@kit.AbilityKit'
 import { systemDateTime } from '@kit.BasicServicesKit'
 import deviceInfo from '@ohos.deviceInfo'
 import { AppLogger, ActivityLogger, LOG_DOMAIN_LAUNCH } from 'commons'
-import { GamepadManager, GamepadEmitter, GameInputRuntime, SourceControlClient,
-  AmclInputSource, GLFW_PRESS, getInputSourceRegistry, getInputDeviceMonitor,
-  getPointerVisibility, LayoutStore, InputConfigurationRuntime,
-  InputDeviceConnectionReader, InputDeviceConnectionLease, InputDeviceConnectionChange } from 'gamecontrol'
+import { GameInputRuntime, getInputSourceRegistry, getInputDeviceMonitor,
+  getPointerVisibility, LayoutStore, InputConfigurationRuntime } from 'gamecontrol'
 import { parseInputPlan, ResolvedInputPlan } from 'launch'
 import { ProductInputProfile } from 'entry/ProductInputProfile'
 import { ProductGameWindowCoordinator, ProductGameWindowSnapshot } from 'entry/ProductGameWindowCoordinator'
 import { PreferenceManager } from 'feature_system'
 import testNapi from 'libentry.so'
-import { createEntrySourceControlClient } from '../components/EntrySourceControlClient'
 import { reconcileEntryInputSession } from '../components/EntryInputSessionCoordinator'
 import { EntryTextInputRuntime, EntryTextInputRuntimeSnapshot } from './EntryTextInputRuntime'
 import { EntryTouchInputMaintenanceLease, startEntryTouchInputMaintenance,
@@ -27,7 +24,6 @@ import { EntryTouchInputMaintenanceLease, startEntryTouchInputMaintenance,
 import { GameLaunchGate } from './GameLaunchGate'
 import { GameDialogRuntime } from './GameDialogRuntime'
 import { GameWindowKeepScreenOn } from './GameWindowKeepScreenOn'
-import { GamepadOutputRoute, NativeGamepadRouteDecision, nativeGamepadRouteNotice, resolveBoundGamepadRoute } from './NativeGamepadRoutePolicy'
 
 // 与原文本停资源同量级的有限安全预算；复用Host原250ms heartbeat槽，不新增生产时钟。
 const TOUCH_STOP_RETRY_BUDGET: number=5
@@ -90,26 +86,12 @@ export class GameSessionHost {
     this.offlineAppearanceResource = undefined
     if (resource !== undefined) await resource.close()
   }
-  readonly gamepad: GamepadManager
   readonly inputRuntime: GameInputRuntime
   /** IME controller及必要维护归本局，前端只绑定原UI资源和观察；构造不取OS/Native能力。 */
   readonly textInputRuntime: EntryTextInputRuntime = new EntryTextInputRuntime()
   /** 单局single-flight属于会话，重建页面不能并行准备第二次Native/JVM启动。 */
   readonly launchGate: GameLaunchGate = new GameLaunchGate()
-  /** 同一Monitor reader覆盖客户端/归约器；应用scope只围栏已接收事实，不冒称Native连接代。 */
-  private readonly deviceConnections: InputDeviceConnectionReader = getInputDeviceMonitor().connectionReader()
-  private controls: SourceControlClient = createEntrySourceControlClient(AmclInputSource.Gamepad,
-    (): string => '', this.deviceConnections)
-  private connectionSubscribed: boolean = false
-  /** 接入后原remove直接退原对象；页面重建/观察退订不终止映射来源的连接维护。 */
-  private connectionListener: (event: InputDeviceConnectionChange) => void =
-    (event: InputDeviceConnectionChange): void => {
-      if (!event.added && event.originalConnection !== undefined)
-        this.gamepad.releaseConnection(event.originalConnection)
-    }
   private configuration: InputConfigurationRuntime = new InputConfigurationRuntime()
-  /** 新私有契约的存在按进程冻结；错误/暂不可用不能自动改走旧JS积分并绕过身份检查。 */
-  private readonly sharedLookContractDeclared: boolean
   private state: string = 'Created'
   private activityId: number = 0
   private context: common.UIAbilityContext | undefined = undefined
@@ -150,13 +132,9 @@ export class GameSessionHost {
   /** 只持Native异步GUI服务的原会话身份；前端重建共用，停止不等待可能停在JVM里的worker。 */
   private guiObservationScope: number = 0
   private guiObservationAttempted: boolean = false
-  /** 用户路由请求和平台采集事实按本局冻结；实际ABI出口与来源开关分别确认。 */
-  private gamepadRouteFactsFrozen: boolean = false
-  private gamepadNativeRequested: boolean = false
   /** 同一会话只在输入计划确认有手柄出口后注册一次，设备以后插入由平台监听接手。 */
   private gamepadCaptureAttempted: boolean = false
   private gamepadCaptureReady: boolean = false
-  private gamepadRouteDecision: NativeGamepadRouteDecision | undefined = undefined
   /** bindPlan 已验证本局唯一计划；状态重试与前端观察复用解析结果。 */
   private boundInputPlan: ResolvedInputPlan | undefined = undefined
   private coordinator: ProductGameWindowCoordinator = new ProductGameWindowCoordinator()
@@ -172,94 +150,8 @@ export class GameSessionHost {
   minecraftDirectory: string = ''
 
   constructor() {
-    this.sharedLookContractDeclared = typeof testNapi.sharedLookExecutionSupported === 'function'
-    // emitter 捕获稳定会话而非页面；被冻结的 control/device 配对继续由共同来源客户端维护。
-    const emitter: GamepadEmitter = {
-      // 来源先登记原intent，再调Native；同步回入退连接由Client按返回原token精准收尾。
-      emitControlForConnection: (connection: InputDeviceConnectionLease, control: string, code: number, action: number): boolean => {
-        if (action === GLFW_PRESS && (!this.active() || this.state === 'Ended')) return false
-        return action === GLFW_PRESS ? this.controls.acquireForConnection(connection, control, [code]).length > 0
-          : this.controls.releaseForConnection(connection, control)
-      },
-      releaseConnectionControls: (connection: InputDeviceConnectionLease): boolean => {
-        return this.controls.releaseConnection(connection)
-      },
-      reconcileConnectionControls: (): boolean => { return this.controls.reconcileRetirements() },
-      emitLookVelocityForConnection: (connection: InputDeviceConnectionLease, child: number, x: number, y: number): boolean => {
-        if (!this.active() || !this.grabbed || !this.deviceConnections.accepts(connection) ||
-          !this.deviceConnections.allowsLegacyDeviceField(connection)) return false
-        try { return testNapi.setMappedLookVelocity(connection.rawPlatformId, child, x, y) }
-        catch (_) { return false }
-      },
-      retireLookForConnection: (connection: InputDeviceConnectionLease, child: number): boolean => {
-        // cleanup只携原lease下子流；不要求原对象仍live，不查询current(rawID)后误退新同ID。
-        try { return testNapi.retireMappedLookConnection(connection.rawPlatformId, child) }
-        catch (_) { return false }
-      },
-      emitScrollForConnection: (connection: InputDeviceConnectionLease, direction: number): boolean => {
-        if (!this.active() || !this.deviceConnections.accepts(connection) ||
-          !this.deviceConnections.allowsLegacyDeviceField(connection)) return false
-        try { return testNapi.sendSourceScrollEvent(AmclInputSource.Gamepad, 0, direction) }
-        catch (_) { return false }
-      },
-      emitLookDeltaForConnection: (connection: InputDeviceConnectionLease, x: number, y: number, ns: number): boolean => {
-        if (!this.active() || !this.grabbed || !this.deviceConnections.accepts(connection) ||
-          !this.deviceConnections.allowsLegacyDeviceField(connection)) return false
-        try { return testNapi.sendSourceCursorSample(AmclInputSource.Gamepad, x, y, ns) }
-        catch (_) { return false }
-      },
-      // 旧未声明此端口的显式兼容宿主仍使用旧delta。当前新端口必须在prepare证明owner；
-      // source/consumer未Ready时只Pending，不在一次拒绝后切另一副作用执行模型。
-      lookExecutionMode: this.sharedLookContractDeclared ? 'neutral-rate-v1' : 'legacy-delta',
-      emitLookVelocity: (device: number, connection: number, x: number, y: number): boolean => {
-        if (!this.active() || !this.grabbed) return false
-        try { return testNapi.setMappedLookVelocity(device, connection, x, y) }
-        catch (_) { return false }
-      },
-      advanceLookExecution: (): boolean => {
-        if (!this.active() || !this.grabbed) return false
-        try { return testNapi.advanceMappedLookExecution() }
-        catch (_) { return false }
-      },
-      retireLookConnection: (device: number, connection: number): boolean => {
-        // 本连接取消是清理权限，不能因Stopping或当前grab已翻转而拒绝原stream的退休。
-        try { return testNapi.retireMappedLookConnection(device, connection) }
-        catch (_) { return false }
-      },
-      emitControl: (device: number, control: string, code: number, action: number): boolean => {
-        if (action === GLFW_PRESS && !this.active()) return false
-        if (this.state === 'Ended') return false
-        return action === GLFW_PRESS ? this.controls.acquire(control, [code], device).length > 0
-          : this.controls.release(control, device)
-      },
-      dropControlsAfterNativeReset: (): void => { this.controls.dropAfterNativeReset() },
-      emitKey: (key: number, action: number): boolean => {
-        if ((action === GLFW_PRESS && !this.active()) || this.state === 'Ended') return false
-        try { return testNapi.sendSourceKeyEvent(AmclInputSource.Gamepad, key, 0, action, 0) }
-        catch (_) { return false }
-      },
-      emitMouse: (button: number, action: number): boolean => {
-        if ((action === GLFW_PRESS && !this.active()) || this.state === 'Ended') return false
-        try { return testNapi.sendSourceMouseEvent(AmclInputSource.Gamepad, button, action, 0) }
-        catch (_) { return false }
-      },
-      emitScroll: (direction: number): boolean => {
-        if (!this.active()) return false
-        try { return testNapi.sendSourceScrollEvent(AmclInputSource.Gamepad, 0, direction) }
-        catch (_) { return false }
-      },
-      emitLookDelta: (dx: number, dy: number, ns: number = 0): boolean => {
-        if (!this.active() || !this.grabbed) return false
-        try { return testNapi.sendSourceCursorSample(AmclInputSource.Gamepad, dx, dy, ns) }
-        catch (_) { return false }
-      }
-    }
-    this.gamepad = new GamepadManager(undefined, emitter, this.deviceConnections)
-    this.inputRuntime = new GameInputRuntime(this.gamepad,
-      (): number => systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE),
+    this.inputRuntime = new GameInputRuntime(
       (): void => { this.textInputRuntime.maintain() },
-      (): void => { reconcileEntryInputSession() },
-      (): void => { this.refreshEligibility() },
       (): void => { this.refreshEligibility() })
   }
 
@@ -488,7 +380,7 @@ export class GameSessionHost {
     if (this.ended()) throw new Error('Game session retired during prepare')
     if (!this.productConfigured) throw new Error('Input product not configured')
     try {
-      if (this.sharedLookContractDeclared && !testNapi.sharedLookExecutionSupported()) {
+      if (typeof testNapi.sharedLookExecutionSupported === 'function' && !testNapi.sharedLookExecutionSupported()) {
         throw new Error('Shared look execution owner contract unavailable')
       }
       getInputSourceRegistry().register(this.inputRuntime)
@@ -498,26 +390,10 @@ export class GameSessionHost {
       if (this.ended()) throw new Error('Input session retired during configuration prepare')
       this.textInputRuntime.start()
       if (this.ended()) throw new Error('Input session retired during text runtime prepare')
-      if (!this.connectionSubscribed) {
-        getInputDeviceMonitor().addConnectionListener(this.connectionListener)
-        this.connectionSubscribed = true
-      }
-      this.inputRuntime.start(store)
       this.inputRuntime.resumeAfterLifecycle()
-      // 采集就绪不能升级为实际ABI出口。尚未绑定计划保持映射，L2明确保留降级；
-      // GLFW/SDL可提供原生出口时尊重用户“由游戏处理”选择，不从查询次数推定接管。
-      if (!this.gamepadRouteFactsFrozen) {
-        this.gamepadRouteFactsFrozen = true
-        // 独立进程从已安装的启动快照读取；共享进程读取当前确认偏好。页面重建不再重读。
-        this.runStep('native-gamepad-preference', (): void => {
-          if (ProductInputProfile.canChooseNativeGamepad() && this.context !== undefined) {
-            this.gamepadNativeRequested = new PreferenceManager(this.context).desktopNativeGamepad
-          }
-        })
-      }
-      this.reconcileGamepadRoute()
       if (!this.launched) this.state = 'Bound'
       this.inputPrepared = true
+      this.openGamepadCapture()
       this.settlePreparation(true)
       this.refreshEligibility()
       this.startMaintenance()
@@ -546,7 +422,7 @@ export class GameSessionHost {
         })
       })
     }
-    if (this.gamepadRouteFactsFrozen) this.reconcileGamepadRoute()
+    this.openGamepadCapture()
     this.runStep('input-plan-log', (): void => {
       this.logger().info('InputSession', 'input_plan activity=' + this.activityId + ' ' + wire, LOG_DOMAIN_LAUNCH)
     })
@@ -701,28 +577,10 @@ export class GameSessionHost {
     }
     this.cleanupStep('source-release', (): void => { getInputSourceRegistry().releaseAllEnds(reason) })
     this.cleanupStep('native-cancel', (): void => { testNapi.cancelAllInput(4) })
-    // Runtime.stop只封住新输入并尝试退休，void并不证明原token/子流释放已确认。
-    // Native cancel也只有调用回执，不能据此虚构reset epoch或把未知清理写成Clean。
-    // 会话围栏同步完成；未确认墓碑保留为Pending，由进程退出事实承担最终资源收口。
-    const mappedStep: GameSessionCleanupStep = { name: 'mapped-stop', completed: false, reason: 'Pending' }
-    this.cleanup.push(mappedStep)
-    try {
-      this.inputRuntime.stop()
-      if (this.gamepad.reconcileConnectionCleanup()) {
-        mappedStep.completed = true
-        mappedStep.reason = ''
-      }
-    } catch (error) {
-      mappedStep.reason = (error as Error).message
-      this.noteFault('mapped-stop', error)
-    }
-    if (this.connectionSubscribed) this.cleanupStep('device-connection-unsubscribe', (): void => {
-      getInputDeviceMonitor().removeConnectionListener(this.connectionListener)
-    })
-    this.connectionSubscribed = false
     this.cleanupStep('configuration-stop', (): void => { this.configuration.stop() })
     this.cleanupStep('source-unregister', (): void => { getInputSourceRegistry().unregister(this.inputRuntime) })
-    if (this.gamepadCaptureAttempted) {
+    // 低版本只记录未注册的结果，退出时没有需要释放的手柄采集或焦点资格。
+    if (this.gamepadCaptureAttempted && deviceInfo.sdkApiVersion >= 21) {
       this.cleanupStep('native-gamepad-focus', (): void => { testNapi.desktopGamepadFocus(false, false) })
       this.cleanupStep('native-gamepad-capture', (): void => {
         if (!testNapi.desktopSetGamepadNativeMode(false)) throw new Error('Native gamepad shutdown failed')
@@ -920,73 +778,29 @@ export class GameSessionHost {
 
   private ended(): boolean { return this.state === 'Stopping' || this.state === 'Ended' }
 
-  /** 只返回独立的政策决议快照；Applied表示来源路由已切换，不表示consumer或游戏读取。 */
-  nativeGamepadRoute(): NativeGamepadRouteDecision | undefined {
-    if (!this.gamepadRouteFactsFrozen) return undefined
-    const applied: GamepadOutputRoute = this.gamepad.isMappedOutputEnabled()
-      ? GamepadOutputRoute.Mapped : GamepadOutputRoute.Native
-    return resolveBoundGamepadRoute(this.gamepadNativeRequested, this.gamepadCaptureReady,
-      this.boundInputPlan, this.boundInputPlan !== undefined, applied)
-  }
+  /** 只陈述本局 Game Controller Kit 的注册结果。消费者是否识别设备由游戏或模组决定。 */
+  hasGamepadCapture(): boolean { return this.gamepadCaptureReady && !this.ended() }
 
-  /**
-   * 前端只能读取自己原lease仍属于本局的路由值副本。旧页面/复制lease/另一会话传来的
-   * 同编号对象均无读取资格；不取得current lease补旧调用，也不推进采集或来源切换。
-   * 无前端时原250ms必要维护继续，撤销此观察资格不会撤销用户请求或停止生产路由。
-   */
-  nativeGamepadRouteForFrontend(lease: GameFrontendLease | undefined,
-    noticeOnly: boolean = false, previous?: GamepadOutputRoute): NativeGamepadRouteDecision | undefined {
-    if (!this.accepts(lease)) return undefined
-    // 心跳和状态刷新可先后到达。无通知时不构造值副本；显式查询仍读取真实来源并隔离调用者修改。
-    if (noticeOnly && (this.gamepadRouteDecision === undefined ||
-      !nativeGamepadRouteNotice(this.gamepadRouteDecision, previous))) return undefined
-    const decision: NativeGamepadRouteDecision | undefined = this.nativeGamepadRoute()
-    // 生产读取为纯值；仍守住可能同步回入的依赖边缘，旧读回不能取得后来前端的结果。
-    return this.accepts(lease) ? decision : undefined
-  }
-
-  /** 按真实来源开关收回应用回执；release拒绝保持Pending，必要维护可重试同一政策。 */
-  private reconcileGamepadRoute(): void {
-    if (!this.gamepadRouteFactsFrozen || this.ended()) return
-    const before: GamepadOutputRoute = this.gamepad.isMappedOutputEnabled()
-      ? GamepadOutputRoute.Mapped : GamepadOutputRoute.Native
-    const last = this.gamepadRouteDecision
-    // 计划一经绑定不可替换。实际来源尚未交出时仍须重试，空设备枚举与路由有效性无关。
-    if (last !== undefined && last.planBound === (this.boundInputPlan !== undefined) &&
-        last.requestedNative === this.gamepadNativeRequested && last.platformCaptureReady === this.gamepadCaptureReady &&
-        last.applied === before && last.target === before) return
-    let target: NativeGamepadRouteDecision = resolveBoundGamepadRoute(this.gamepadNativeRequested,
-      this.gamepadCaptureReady, this.boundInputPlan, this.boundInputPlan !== undefined, before)
-    if (target.requestedNative && target.abiNativeOutlet && !this.gamepadCaptureAttempted && deviceInfo.sdkApiVersion >= 21) {
-      this.gamepadCaptureAttempted = true
-      // 按当前 ABI 启动 Game Controller Kit。采集成功仅表示已注册并完成枚举，零只设备也可等待热插入。
+  /** 计划与会话准备可按任意顺序到达；仅在两者就绪后登记这局的设备读取入口。 */
+  private openGamepadCapture(): void {
+    const plan = this.boundInputPlan
+    if (!this.inputPrepared || plan === undefined || this.ended() || this.gamepadCaptureAttempted) return
+    this.gamepadCaptureAttempted = true
+    if (deviceInfo.sdkApiVersion >= 21) {
       this.runStep('native-gamepad-capture', (): void => {
         this.gamepadCaptureReady = testNapi.desktopSetGamepadNativeMode(true)
       })
-      if (this.ended()) return
-      target = resolveBoundGamepadRoute(true, this.gamepadCaptureReady, this.boundInputPlan, true, before)
     }
-    this.gamepad.setMappedOutputEnabled(target.mappedOutputEnabled)
-    const applied: NativeGamepadRouteDecision | undefined = this.nativeGamepadRoute()
-    if (applied !== undefined) {
-      this.gamepadRouteDecision = applied
-      if (last === undefined || last.reason !== applied.reason || last.applied !== applied.applied ||
-          last.target !== applied.target || last.inputAbi !== applied.inputAbi ||
-          last.platformCaptureReady !== applied.platformCaptureReady || last.status !== applied.status ||
-          last.requestedNative !== applied.requestedNative) {
-        this.runStep('gamepad-route-log', (): void => {
-          this.logger().info('InputSession', 'input_gamepad_route ' + JSON.stringify(applied) +
-            ' consumer_ready=unconfirmed game_usage=unconfirmed', LOG_DOMAIN_LAUNCH)
-        })
-      }
-    }
-    if (applied !== undefined && applied.applied !== before) this.refreshEligibility()
+    this.runStep('gamepad-capture-log', (): void => {
+      this.logger().info('InputSession', 'input_gamepad_capture abi=' + plan.abi + ' registered=' +
+        this.gamepadCaptureReady + ' game_usage=unconfirmed', LOG_DOMAIN_LAUNCH)
+    })
+    if (this.gamepadCaptureReady && !this.ended()) this.refreshEligibility()
   }
 
   /** 每次变化先同步生产资格，再投影 UI；observer 抛错只丢观察，不改变后续维护。 */
   private refreshEligibility(): void {
     const active: boolean = this.active()
-    this.inputRuntime.setState(active, this.grabbed)
     this.runStep('cursor-lock', (): void => {
       if (this.windowId > 0 && ProductInputProfile.current().supportsCursorLock) {
         testNapi.setCursorLocked(this.windowId, this.launched && active && this.grabbed && getInputDeviceMonitor().hasMouse())
@@ -997,9 +811,8 @@ export class GameSessionHost {
     })
     this.runStep('desktop-gamepad-focus', (): void => {
       if (this.gamepadCaptureReady) {
-        // 真实来源交还之后才公开连接；普通失焦只将操作归零，游戏仍能识别已连接设备。
-        const routed = this.gamepadRouteDecision?.applied === GamepadOutputRoute.Native
-        testNapi.desktopGamepadFocus(active && routed, routed)
+        // 焦点只控制按键和轴；已连接的实体设备在后台仍可被游戏枚举。
+        testNapi.desktopGamepadFocus(active, true)
       }
     })
     if (this.desktopSdlTextInput) this.syncDesktopSdlTextInput(active)
@@ -1021,12 +834,7 @@ export class GameSessionHost {
   }
 
   private applyGrab(grabbed: boolean): void {
-    if (grabbed !== this.grabbed) {
-      this.grabbed = grabbed
-      this.runStep('grab-source-release', (): void => {
-        getInputSourceRegistry().releaseEndsOfSource(AmclInputSource.Gamepad, 'grab-flip')
-      })
-    }
+    this.grabbed = grabbed
     this.refreshEligibility()
   }
 
@@ -1039,11 +847,8 @@ export class GameSessionHost {
       this.heartbeat = -1
       this.maintenanceExecuting = true
       this.runStep('grab-state', (): void => { this.applyGrab(testNapi.isGrabbed()) })
-      let maintainedStore: LayoutStore | undefined = undefined
-      this.runStep('configuration', (): void => { maintainedStore = this.configuration.reconcile() })
+      this.runStep('configuration', (): void => { this.configuration.reconcile() })
       this.runStep('game-dialog', (): void => { GameDialogRuntime.maintain() })
-      this.runStep('gamepad-route', (): void => { this.reconcileGamepadRoute() })
-      this.runStep('mapped-runtime', (): void => { this.inputRuntime.reconcile(maintainedStore) })
       this.runStep('text-session', (): void => { this.textInputRuntime.maintain() })
       this.runStep('reset-domains', (): void => { reconcileEntryInputSession() })
       this.runStep('touch-maintenance', (): void => {

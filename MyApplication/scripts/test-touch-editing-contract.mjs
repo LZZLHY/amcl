@@ -253,8 +253,7 @@ try {
   const source=model.getDefaultLayout();source.name='触控回归';source.isPreset=false;
   Object.assign(source.controls.find(item=>item.id==='atk'),{dragLook:false,swipeGroup:'1'});
   Object.assign(source.controls.find(item=>item.id==='place'),{dragLook:false,swipeGroup:'2'});
-  source.touch={menuSensitivity:1.73,actionOverrides:{attack:77}};source.gamepad=model.defaultGamepadConfig();
-  source.gamepad.buttonMap.MODE={kind:'key',code:88};
+  source.touch={menuSensitivity:1.73,actionOverrides:{attack:77}};source.gamepad={buttonMap:{MODE:{kind:'key',code:88}}};
   source.controls.find(item=>item.systemAction==='input').keys=[341,89];
   f.ownerData.set('control_layout',new Map([['profiles',JSON.stringify([source])],['active_profile',source.name]]));
   await f.launchV2();const store=f.child.store;

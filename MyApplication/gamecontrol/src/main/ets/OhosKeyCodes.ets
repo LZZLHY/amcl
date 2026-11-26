@@ -10,7 +10,7 @@
  * 本文件所有数值**逐个对照本机 SDK** 核对：
  *   D:\Huawei\command-line-tools\sdk\default\openharmony\ets\api\@ohos.multimodalInput.keyCode.d.ts
  *
- * 这是叶子模块（无任何 import），KeyMap / GamepadManager 单向 import，不引入循环。
+ * 这是叶子模块（无任何 import），KeyMap 与窗口按键判型单向 import，不引入循环。
  * SDK 升级若改了数值，只需改这一处。
  *
  * 命名约定：去掉 SDK 的 KEYCODE_ 前缀，保留其余（如 KEYCODE_DPAD_UP → OHOS_DPAD_UP）。
@@ -118,3 +118,14 @@ export const ARKUI_MOUSE_RIGHT = 2
 export const ARKUI_MOUSE_MIDDLE = 3
 export const ARKUI_MOUSE_BACK = 4
 export const ARKUI_MOUSE_FORWARD = 5
+
+/** 识别与键盘共码的方向键，调用方同时检查系统输入来源。 */
+export function isGamepadDirectionCode(code: number): boolean {
+  return code === OHOS_DPAD_UP || code === OHOS_DPAD_DOWN || code === OHOS_DPAD_LEFT || code === OHOS_DPAD_RIGHT
+}
+
+/** 标准手柄专用键用于过滤同一物理按键的窗口副本，不产生任何游戏操作。 */
+export function isGamepadButtonCode(code: number): boolean {
+  return code === OHOS_BUTTON_A || code === OHOS_BUTTON_B || code === OHOS_BUTTON_X || code === OHOS_BUTTON_Y ||
+    (code >= OHOS_BUTTON_L1 && code <= OHOS_BUTTON_THUMBR)
+}

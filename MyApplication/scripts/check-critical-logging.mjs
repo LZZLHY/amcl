@@ -15,7 +15,7 @@ export const criticalFiles = [
   'feature_core/src/main/ets/download/phases/MergePhase.ets',
   'feature_core/src/main/ets/download/phases/ModloaderPhase.ets',
   'gamecontrol/src/main/ets/InputSourceRegistry.ets', 'gamecontrol/src/main/ets/InputDeviceMonitor.ets',
-  'gamecontrol/src/main/ets/LayoutStore.ets', 'gamecontrol/src/main/ets/GamepadManager.ets',
+  'gamecontrol/src/main/ets/LayoutStore.ets',
   'gamecontrol/src/main/ets/PointerVisibilityCoordinator.ets',
   'entry/src/main/cpp/jvm/jvm_launcher.cpp', 'entry/src/main/cpp/jvm/mc_launcher.cpp',
   'entry/src/main/cpp/jvm/elf_loader.cpp', 'entry/src/main/cpp/platform/touch_input.cpp',

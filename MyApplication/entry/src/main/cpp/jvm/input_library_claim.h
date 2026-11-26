@@ -47,7 +47,7 @@ public:
     // 首次装入精确制品并永久保留handle；同一路径幂等，不把已有SDK换成另一路径/库。
     // 成功只表示该selected artifact满足冻结契约。allowLegacy必须来自显式legacy计划，
     // 只能接受缺marker；错误版本/不同映像永不降级。失败不假Ready或卸载已借出映像。
-    bool Claim(const std::string& exactPath,bool allowLegacy,std::string& error,bool requireAuxiliary=false){
+    bool Claim(const std::string& exactPath,bool allowLegacy,std::string& error,bool requireAuxiliary=false,bool controller=false){
         if(process_!=InputLibraryProcessId()){error="InputContractMismatch:sdl_claim_inherited";return false;}
         if(!AbsoluteInputLibraryPath(exactPath)){error="InputContractMismatch:sdl_path_not_absolute";return false;}
         std::lock_guard<std::mutex> lock(mutex_);
@@ -62,6 +62,15 @@ public:
 #endif
             if(!loaded){error="InputContractMismatch:sdl_selected_artifact_unloadable";return false;}
             handle_=loaded;path_.swap(candidate);
+        }
+        // 两个制品都导出完整 SDL 接口。独立控制器标记及实际文件映像防止同名主库冒充辅助实例。
+        if (controller) {
+            uint32_t role = 0;
+            if (amclCheckSelectedSdlProtocolV1(handle_, path_.c_str(), "SDL_AMCL_ControllerHostProtocolV1",
+                    1, false, &role) < 0) {
+                error = "InputContractMismatch:sdl_controller_artifact";
+                return false;
+            }
         }
         uint32_t observed=0;
         const int result=amclCheckSelectedSdlInputContractV1(handle_,path_.c_str(),allowLegacy,&observed);

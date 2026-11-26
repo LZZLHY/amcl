@@ -60,24 +60,24 @@ function execute(text, bindings = {}) {
 
 if (!snapshotFlag) {
   assert.ok(gameKeyPreIme, '游戏外层焦点组必须在 ArkUI 默认走焦之前接收窗口按键');
-  const method = owner.members.find(item => item.name?.getText(pageAst) === 'consumeNativeGamepadKey_');
+  const methods = owner.members.filter(item => ['consumeNativeGamepadKey_', 'isGamepadNavigationEvent_'].includes(item.name?.getText(pageAst))).map(item => item.getText(pageAst)).join('\n');
   const KeySource = { Unknown: 0, Keyboard: 1, JOYSTICK: 2 };
   const sources = new Map([[11, ['joystick']], [12, ['keyboard']], [13, ['keyboard', 'joystick']]]);
   const monitor = {
     captureConnection: id => ({ connection: sources.has(id) ? { id } : undefined }),
     sourcesForConnection: connection => sources.get(connection.id)
   };
-  let touchHud = true, mapped = false, softInput = false;
-  const Page = execute('class Page {\n' + method.getText(pageAst) +
+  let touchHud = true, registered = true, softInput = false;
+  const Page = execute('class Page {\n' + methods +
     '\npreIme = ' + gameKeyPreIme + '\n} return Page;', {
     KeySource, getInputDeviceMonitor: () => monitor, isEntrySoftTextInputRequested: () => softInput,
-    ...environment().load('gamecontrol/src/main/ets/GamepadManager.ets'),
+
     ...makePureEtsLoader()('gamecontrol/src/main/ets/OhosKeyCodes.ets'),
     ProductInputProfile: { current: () => ({ acceptDirectTouchInGame: touchHud }) }
   });
   const currentLease = {}, page = new Page();
   Object.assign(page, { mcStarted: true, pageInputActive: true, inputOverlayPaused: false, frontendLease: currentLease,
-    sessionHost: { accepts: lease => lease === currentLease }, gamepad: { isMappedOutputEnabled: () => mapped } });
+    sessionHost: { accepts: lease => lease === currentLease, hasGamepadCapture: () => registered } });
   function check(source, id, key, type, expected) {
     let stopped = 0;
     assert.equal(page.preIme({ keySource: source, deviceId: id, keyCode: key, type,
@@ -95,7 +95,7 @@ if (!snapshotFlag) {
     check(KeySource.Unknown, 0, 2012, type, false);
     check(KeySource.Unknown, 41, 2012, type, false);
   }
-  mapped = true; check(KeySource.JOYSTICK, 11, 2301, 0, false); mapped = false;
+  registered = false; check(KeySource.JOYSTICK, 11, 2301, 0, false); registered = true;
   touchHud = false; check(KeySource.JOYSTICK, 11, 2012, 0, false); touchHud = true;
   softInput = true; check(KeySource.JOYSTICK, 11, 2012, 0, false);
   softInput = false; check(KeySource.JOYSTICK, 11, 2012, 0, true);
@@ -173,7 +173,7 @@ function fixture(observe) {
   const deviceMonitor = { hasMouse: () => true, connectionReader: () => deviceConnections.reader,
     addConnectionListener: callback => connectionListeners.add(callback),
     removeConnectionListener: callback => connectionListeners.delete(callback) };
-  Object.assign(gamecontrol, env.load('gamecontrol/src/main/ets/GameInputRuntime.ets'), env.load('gamecontrol/src/main/ets/GamepadManager.ets'),
+  Object.assign(gamecontrol, env.load('gamecontrol/src/main/ets/GameInputRuntime.ets'),
     env.load('gamecontrol/src/main/ets/InputSourceRegistry.ets'), { InputConfigurationRuntime: Configuration,
       GLFW_PRESS: 1, getInputDeviceMonitor: () => deviceMonitor, getPointerVisibility: () => ({ sync: noop, tick: noop, restore: noop }) });
   const registry = gamecontrol.getInputSourceRegistry();
@@ -196,7 +196,7 @@ function fixture(observe) {
     removeInputConfigurationListener: noop, reconcileInputConfiguration: noop });
   host.bindPlan('v=v1;abi=GLFW;slot=LWJGL3;window=GLFW;binding=libglfw.so;policy=glfw-present-2');
   host.markRunning(); page.updatePageInputActive();
-  const snapshot = () => ({ requested: host.requestedActive, lifecycle: host.inputRuntime.isLifecycleActive(), active: host.inputRuntime.active,
+  const snapshot = () => ({ requested: host.requestedActive, lifecycle: host.inputRuntime.isLifecycleActive(), active: host.active(),
     raw: [page.pageVisible, page.surfaceFocused, page.gameWindowReady, page.inputOverlayPaused] });
   const close = async () => { host.stop('page-facts-test'); await flush(); assert.equal(env.timer.size, 0); assert.equal(connectionListeners.size, 0); };
   return { host, page, registry, native, focus, snapshot, close, env, gamecontrol,
@@ -262,7 +262,7 @@ if (!negative) {
       TAG: 'page-hotplug-fixture', LOG_DOMAIN_LAUNCH: 1,
     });
     const page = new Subject(); const { PhysicalHeldKeyTracker } = f.env.load('gamecontrol/src/main/ets/PhysicalHeldKeyTracker.ets');
-    Object.assign(page, { gamepad: f.host.gamepad, heldKeys: new PhysicalHeldKeyTracker(),
+    Object.assign(page, { heldKeys: new PhysicalHeldKeyTracker(),
       deviceInventoryGuard: new lifecycle.DeviceInventoryPublicationGuard(),
       reconcileNativeResetEpoch: () => f.physicalEvents.push(['reconcile']),
       readDeviceDescriptor: () => undefined,
@@ -277,22 +277,9 @@ if (!negative) {
     f.native.grab(true);
     const first = f.deviceConnections.observeAdd(7).originalConnection;
     const sibling = f.deviceConnections.observeAdd(8).originalConnection;
-    const { AXIS_ABS_Y } = f.env.load('gamecontrol/src/main/ets/GamepadManager.ets');
-    for (const connection of [first, sibling]) {
-      const fact = f.host.inputRuntime.captureAxisForConnection(connection, axis => axis === AXIS_ABS_Y ? -1 : 0);
-      assert.ok(fact); f.host.inputRuntime.handleAxisFact(fact);
-    }
-    assert.equal(f.controlTokens.size, 2, '两个真实连接各有独立Native贡献回执');
-    // Monitor的生产顺序先发布原connection，后旧raw fanout；原身份由真实Registry签发。
-    const removed = f.deviceConnections.retireCurrent(7);
-    for (const listener of [...f.connectionListeners]) listener(removed);
-    assert.equal(f.controlTokens.size, 1, 'Host先精确退休原连接');
     page.heldKeys.noteDown(7, 2017); page.heldKeys.noteDown(8, 2017);
     page.handleDeviceChange({ deviceId: 7, added: false });
-    if (hotplugNegative) assert.equal(f.host.gamepad.hasConnectionState(sibling), false, '真实旧Page会误清仍连接的兄弟');
-    else {
-      assert.equal(f.host.gamepad.hasConnectionState(sibling), true, '拔一路不能清掉兄弟映射状态');
-      assert.equal(f.controlTokens.size, 1, '页面不得再取消整个Gamepad来源');
+    {
       assert.deepEqual([...page.heldKeys.heldKeys()], [2017], '兄弟物理同键持有保持');
       assert.equal(page.heldKeys.releaseDevice(7).length, 0, '被拔设备物理缓存已摘');
       assert.equal(page.heldKeys.releaseDevice(8).length, 1);

@@ -80,7 +80,6 @@
     "entry/src/main/cpp/platform/mouse_synth_touch_source.h": 21,
     "gamecontrol/src/main/ets/PhysicalKeyEdge.ets": 21,
     "entry/src/main/cpp/input/adapters/glfw_source_plane_aggregate.h": 20,
-    "gamecontrol/src/main/ets/GamepadManager.ets": 20,
     "entry/src/main/cpp/platform/input_channel_census.h": 19,
     "entry/src/main/cpp/types/libentry/index.d.ts": 19,
     "gamecontrol/src/main/ets/KeyMap.ets": 18,

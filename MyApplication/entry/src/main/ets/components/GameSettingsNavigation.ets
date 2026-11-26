@@ -10,14 +10,17 @@ interface SettingsDestination {
   icon: AppIconName
 }
 
+/** 专用键位属于方案通用设置；按对象定位可避免类别增删后引用错误的条目。 */
+const POLICY_DESTINATION: SettingsDestination = {
+  id:'policy', title:'专用键位', detail:'跟随游戏键位与手动覆盖', icon:AppIconName.Keyboard
+}
 const INPUT_DESTINATIONS: SettingsDestination[] = [
   { id:'look', title:'视角', detail:'镜头灵敏度、跟手度与反馈', icon:AppIconName.Aim },
   { id:'move', title:'移动', detail:'摇杆中心、死区与疾跑', icon:AppIconName.Trigger },
   { id:'menu', title:'菜单与背包', detail:'指针操作与双指滚动', icon:AppIconName.Scene },
   { id:'gesture', title:'快捷栏', detail:'交换副手与丢弃物品', icon:AppIconName.Hotbar },
   { id:'gyro', title:'陀螺仪', detail:'体感辅助瞄准与方向', icon:AppIconName.Refresh },
-  { id:'gamepad', title:'映射手柄', detail:'摇杆、按钮与键鼠映射', icon:AppIconName.GameController },
-  { id:'policy', title:'专用键位', detail:'跟随游戏键位与手动覆盖', icon:AppIconName.Keyboard }
+  POLICY_DESTINATION
 ]
 const GAME_TOOLS: SettingsDestination[] = [
   { id:'layout', title:'编辑按键布局', detail:'编辑游戏画面上的虚拟按键', icon:AppIconName.LayoutList },
@@ -91,13 +94,13 @@ export struct GameSettingsDirectory {
         this.Caption_('手感与输入')
         Column({space:1}) {
           if (this.allowMobileInput) { this.Destination_(INPUT_DEVICES) }
-          ForEach(INPUT_DESTINATIONS.slice(0,6),(entry: SettingsDestination) => {
+          ForEach(INPUT_DESTINATIONS.slice(0,-1),(entry: SettingsDestination) => {
             this.Destination_(entry)
           },(entry: SettingsDestination): string=>entry.id)
         }.width('100%').padding(this.compact ? 0 : 4).borderRadius(this.palette.radiusSmall)
           .backgroundColor(this.compact ? Color.Transparent : this.palette.surface)
         this.Caption_('方案通用')
-        Column() { this.Destination_(INPUT_DESTINATIONS[6]) }.width('100%').padding(this.compact ? 0 : 4)
+        Column() { this.Destination_(POLICY_DESTINATION) }.width('100%').padding(this.compact ? 0 : 4)
           .borderRadius(this.palette.radiusSmall).backgroundColor(this.compact ? Color.Transparent : this.palette.surface)
       }
       if (this.includeGameTools) {

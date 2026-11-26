@@ -169,7 +169,6 @@ for boundary in re.findall(r'extern "C" (?:void|int) (inputBridge_\w+)\(',prefix
     production=re.sub(r'\b'+re.escape(boundary)+r'\b',replacement,production)
 prefix=source_recording_prefix(ROOT/'entry/src/main/cpp')+prefix
 prefix+='\nvoid recordSourceEdge(const Output& output,int action){events.push_back({output.kind==OutputKind::Key?1005:1006,output.code,action});}\n'
-prefix+='\n#include "platform/mapped_look_producer.h"\n'
 # 启用真实日志参数后，来源名字叶函数也逐字抽取生产正文，避免用命名替身填链接。
 name_source=(ROOT/'entry/src/main/cpp/platform/input_source.cpp').read_text(encoding='utf-8')
 prefix+='\n'+definition('extern "C" const char* amcl_input_source_name(',name_source)+'\n'
@@ -371,7 +370,7 @@ with temporary_directory(prefix='menu-mouse-production-') as directory:
         return [instrumented if item==provider else item for item in actual_dependencies(cpp_root)]
     source_host.source_dependencies=counted_dependencies
     try:
-        compile_source_fixture(path,binary,cpp,[cpp/'platform/mapped_look_producer.cpp',cpp/'platform/source_look_producer.cpp',cpp/'platform/source_look_processor.cpp'])
+        compile_source_fixture(path,binary,cpp,[cpp/'platform/source_look_producer.cpp',cpp/'platform/source_look_processor.cpp'])
     finally:
         source_host.source_dependencies=actual_dependencies
     result=subprocess.run([str(binary)],text=True,capture_output=True,timeout=20)

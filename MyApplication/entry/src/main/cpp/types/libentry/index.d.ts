@@ -412,12 +412,6 @@ export const beginTouchGyroLease: (schemaGeneration: number) => string;
 export const submitTouchGyroLease: (lease: string, dx: number, dy: number, sensorTimeNs: number) => boolean;
 /** 停源无需前台/surface gate；精确原token幂等，不退休后来gyro流。 */
 export const retireTouchGyroLease: (lease: string) => boolean;
-/** counts/second来自1080×lookScale；Native采样同域时钟并按family求和后统一加工。 */
-export const setMappedLookVelocity: (device: number, connection: number, vx: number, vy: number) => boolean;
-/** timer只推进neutral owner；动作前缀由Native运输批次封存。 */
-export const advanceMappedLookExecution: () => boolean;
-/** 精确停本设备连接，拒绝控制release也不保留运动；旧连接不得改绑新资源。 */
-export const retireMappedLookConnection: (device: number, connection: number) => boolean;
 /**
  * 只释放该端在 native external 表里持有的输出，其余端不受影响。
  * 设备插拔与端级生命周期边界用它，取代"全局 releaseAll 连带误放其它端"。
@@ -1296,9 +1290,6 @@ declare const testNapi: {
   beginTouchGyroLease: typeof beginTouchGyroLease;
   submitTouchGyroLease: typeof submitTouchGyroLease;
   retireTouchGyroLease: typeof retireTouchGyroLease;
-  setMappedLookVelocity: typeof setMappedLookVelocity;
-  advanceMappedLookExecution: typeof advanceMappedLookExecution;
-  retireMappedLookConnection: typeof retireMappedLookConnection;
   releaseSourceHeld: typeof releaseSourceHeld;
   noteSourceReset: typeof noteSourceReset;
   inputInvariantTick: typeof inputInvariantTick;

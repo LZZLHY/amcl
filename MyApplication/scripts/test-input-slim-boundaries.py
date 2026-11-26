@@ -37,6 +37,15 @@ body = body.replace('@GAMEPAD@', '\n'.join(function(gamepad, s) for s in [
     'bool SetNativeGamepadMode(', 'void SetGamepadFocus(', 'int ReadGamepadTopology(', 'int ReadGamepadChanges(', 'int32_t amclGamepadRead(',
     'int ReadGamepad(']))
 body = body.replace('@GAMEPAD_READER@', function(glfw, 'static AmclGamepadReadFn gamepadReader('))
+# 直接编译游戏调用的 GLFW 公共接口与实际结构，平台读端使用同一生产快照。
+glfw_header = (CPP/'glfw/glfw_compat.h').read_text(encoding='utf-8')
+start = glfw_header.index('typedef struct GLFWgamepadstate {')
+gamepad_type = glfw_header[start:glfw_header.index('} GLFWgamepadstate;',start)+len('} GLFWgamepadstate;')]
+public_queries = ['static bool readGamepad(', 'int glfwJoystickPresent(', 'const float* glfwGetJoystickAxes(',
+                  'const unsigned char* glfwGetJoystickButtons(', 'const unsigned char* glfwGetJoystickHats(',
+                  'const char* glfwGetJoystickName(', 'const char* glfwGetJoystickGUID(', 'int glfwJoystickIsGamepad(',
+                  'const char* glfwGetGamepadName(', 'int glfwGetGamepadState(']
+body = body.replace('@GLFW_PAD_QUERIES@', gamepad_type+'\n'+'\n'.join(function(glfw,s) for s in public_queries))
 body = body.replace('@GAMEPAD_POLL@', function(glfw, 'void glfwOHOS_PollGamepads('))
 with temporary_directory(prefix='input-slim-boundaries-') as fixture:
     source = Path(fixture)/'boundary.cpp'

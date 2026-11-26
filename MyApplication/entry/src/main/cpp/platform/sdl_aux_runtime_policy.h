@@ -4,18 +4,22 @@
 #include "sdl_aux_runtime_abi.h"
 
 namespace amcl::graphics {
+// 仅供同一 libentry 的启动器与图形宿主使用，SDK 仍用原 claim/peek/quit ABI。
+inline constexpr uint32_t SdlControllerRequestVersion = 2;
 class SdlAuxRuntimePolicy final {
     uint64_t pid_=0, session_=0, instance_=0, generation_=0;
     uint64_t fileDevice_=0,fileInode_=0;
     int32_t launch_=0, owner_=0;
-    bool retired_=false, proofValid_=false;
+    bool retired_=false, proofValid_=false, controllerOnly_=false;
     AmclSdlAuxRequestV1 proof_{};
     int32_t proofThread_=0;
 public:
-    int configure(uint64_t pid,int32_t thread,uint64_t session,uint64_t fileDevice=0,uint64_t fileInode=0) noexcept {
+    int configure(uint64_t pid,int32_t thread,uint64_t session,uint64_t fileDevice=0,uint64_t fileInode=0,bool controllerOnly=false) noexcept {
         if(!pid || thread<=0 || !session)return AMCL_SDL_AUX_INVALID;
         if(retired_)return AMCL_SDL_AUX_RETIRED;
-        if(pid_)return pid_==pid && launch_==thread && session_==session && fileDevice_==fileDevice && fileInode_==fileInode ? AMCL_SDL_AUX_READY : AMCL_SDL_AUX_CHANGED;
+        if(pid_)return pid_==pid && launch_==thread && session_==session && fileDevice_==fileDevice && fileInode_==fileInode && controllerOnly_==controllerOnly ? AMCL_SDL_AUX_READY : AMCL_SDL_AUX_CHANGED;
+        if(controllerOnly && !fileInode)return AMCL_SDL_AUX_INVALID;
+        controllerOnly_=controllerOnly;
         pid_=pid;launch_=thread;session_=session;fileDevice_=fileDevice;fileInode_=fileInode;return AMCL_SDL_AUX_FIRST;
     }
     bool configured(uint64_t pid) const noexcept { return pid_==pid && session_ && !retired_; }
@@ -50,7 +54,9 @@ public:
             if(instance_!=instance)return AMCL_SDL_AUX_FOREIGN_INSTANCE;
             return owner_==tid?AMCL_SDL_AUX_READY:AMCL_SDL_AUX_WRONG_THREAD;
         }
-        if(tid!=launch_ && !(pendingProof(tid) && currentRenderProofVerified))return AMCL_SDL_AUX_UNPROVEN;
+        // 已核独立制品自身禁止 video/显示服务及主输入。首个真实手柄消费者可以是
+        // EGL 或 Vulkan 游戏渲染线程；首次绑定后仍只允许同 PID、会话、实例与线程。
+        if(!controllerOnly_ && tid!=launch_ && !(pendingProof(tid) && currentRenderProofVerified))return AMCL_SDL_AUX_UNPROVEN;
         instance_=instance;owner_=tid;return AMCL_SDL_AUX_FIRST;
     }
     int quit(uint64_t pid,int32_t tid,uint64_t session,uint64_t instance) noexcept {

@@ -43,7 +43,7 @@ public final class L2SourceProductionTest {
     private static native void ownedTextFocus(boolean active);
     private static native void ownedTextBoundary();
     private static native void fillPressure(int records);
-    private static native void velocity(boolean active);
+    private static native void touchSample(boolean active);
     private static native void sealFuturePrefix();
     /** 逐字生产physical事务入口，typed选择/Core/backend资格仍是正式实现。 */
     private static native int physical(boolean down);
@@ -682,7 +682,7 @@ public final class L2SourceProductionTest {
         compat(66, false); poll(); check(Keyboard.isKeyDown(Keyboard.KEY_B) && keyEdges().isEmpty(), "ownerless compat UP cannot steal source token");
         check(release(touch)[1] == 1, "original holder release"); poll(); empty();
 
-        Mouse.setGrabbed(true); poll(); empty(); takeTransportTrace(); velocity(true);
+        Mouse.setGrabbed(true); poll(); empty(); takeTransportTrace(); touchSample(true);
         fillPressure(2); long[] before = sourceSnapshot();
         int[] combo = new int[]{340, 70, 71, 72, 73, 74};
         long[] rejected = acquire(2, "combo-six", combo); long[] after = sourceSnapshot();
@@ -701,7 +701,7 @@ public final class L2SourceProductionTest {
         check(first >= 0 && last > first && keys == 6, "actual prefix-six-edges-future-prefix transport order");
         check(Mouse.next() && Mouse.getEventButton() == -1, "actual first immutable MOVE22");
         check(Mouse.next() && Mouse.getEventButton() == -1 && !Mouse.next(), "actual future MOVE22 independent of Keyboard.next");
-        velocity(false); check(release(gamepad)[1] == 1, "original six owner release"); poll(); empty();
+        touchSample(false); check(release(gamepad)[1] == 1, "original six owner release"); poll(); empty();
         System.out.println("PASS L2_SOURCE real capacity/source atomicity/prefix-six-edge-prefix/actual MOVE22 and Keyboard.next");
 
         compat(78, true); poll(); empty(); check(Keyboard.isKeyDown(Keyboard.KEY_N), "compat native held before pressure UP");

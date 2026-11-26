@@ -236,7 +236,7 @@ finally:k.CloseHandle(h)`;
       assert.equal(decision(session,{...gate,id,quickPilot:'download-tab'},[]).action,'RUN');
     }
     for(const id of ['test-game-layout-v2','test-control-groups-storage','test-gyro-policy-activation',
-      'test-gamepad-analog-stability','test-owner-layout-source','test-virtual-mouse-wheel']) {
+      'test-owner-layout-source','test-virtual-mouse-wheel']) {
       const isolated={...gate,id,script:'scripts/'+id+'.mjs',quickPilot:'download-tab'};
       assert.equal(decision(session,isolated,[]).action,'RUN');
       assert.equal(decision({profile:'full'},isolated,[]).action,'RUN');

@@ -22,6 +22,7 @@ export interface SourceLookPreferences {
   legacy: LookParameters
   physical: LookParameters
   touch: LookParameters
+  /** 旧格式保留原手感用于导出，原生手柄由游戏读取。 */
   gamepad: LookParameters
   external: LookParameters
 }

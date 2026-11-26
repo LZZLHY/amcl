@@ -1,15 +1,16 @@
 {
   "schema": 1,
   "javaOutputRelease": 8,
-  "inputSha256": "cb5b1368e9879033f5e620d99ae78c5a07ca1049ec029f2a639345c8c40e3dc2",
-  "sha256": "529b618dda5113b868bfef8a278d39393c2720c88be2039bbcf8903154bb6218",
-  "size": 137416,
+  "compiler": "javac 25.0.2",
+  "inputSha256": "78816db55fa7614c740ff93573354979833846dfd53fc67afa2decd38ecf7d04",
+  "sha256": "544bb6ef2983060abbfd73a159cd896aebe2b90c9bdb3adeab78e243b35307f6",
+  "size": 145321,
   "asmSha256": "03d99a74ad1ee5c71334ef67437f4ef4fe3488caa7c96d8645abc73c8e2017d4",
-  "contractSha256": "95ab61069886addae7e8a6cff0fcc2e641aa0c9508d4d011fbbc43b1abdd8c82",
+  "contractSha256": "10ab186a6fc7acc2b7536dce92096981945b9b943e741d7e9f04cd1ed402e9e2",
   "sources": [
     {
       "path": "scripts/build-cpu-agent.py",
-      "sha256": "e92bdb795ce9c43c4dd5899e1f4b067d45d761b11e5038f1b2ce4d001c4336b6"
+      "sha256": "7ce0775b943d853a4b69d9f18eca4813579e583c6ec95dc9b8241271c7366182"
     },
     {
       "path": "scripts/lwjgl-stack-backfill/lib/sources.json",
@@ -21,7 +22,11 @@
     },
     {
       "path": "JavaCpuAgent/src/com/amcl/cpu/CpuAgent.java",
-      "sha256": "d899e06bcd0df2491e9a78a9e2e97f8e1424f09ea4e6b9215ae91954c25e8f7c"
+      "sha256": "dad313124b9344ef192e6c6b2dccf20871c472b4722dfba8d4f921f073bb82bc"
+    },
+    {
+      "path": "JavaCpuAgent/src/com/amcl/gamepad/Sdl2NativeLoader.java",
+      "sha256": "926f01599f26a04a8447e58d00b2be21916f3e040f31e518ed1e7aabefa1e539"
     }
   ],
   "classes": [
@@ -68,6 +73,11 @@
     "com/amcl/cpu/internal/asm/TypeReference.class",
     "com/amcl/cpu/internal/asm/signature/SignatureReader.class",
     "com/amcl/cpu/internal/asm/signature/SignatureVisitor.class",
-    "com/amcl/cpu/internal/asm/signature/SignatureWriter.class"
+    "com/amcl/cpu/internal/asm/signature/SignatureWriter.class",
+    "com/amcl/gamepad/Sdl2NativeLoader$Redirect$1.class",
+    "com/amcl/gamepad/Sdl2NativeLoader$Redirect$2.class",
+    "com/amcl/gamepad/Sdl2NativeLoader$Redirect$3.class",
+    "com/amcl/gamepad/Sdl2NativeLoader$Redirect.class",
+    "com/amcl/gamepad/Sdl2NativeLoader.class"
   ]
 }

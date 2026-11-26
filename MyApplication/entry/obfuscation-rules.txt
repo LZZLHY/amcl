@@ -338,9 +338,6 @@ restoreGameGuiScale
 restoreGameGuiScaleForSource
 # 共同look执行端口仅交换primitive；名字是NAPI固定字符串，不新增JSON wire属性。
 sharedLookExecutionSupported
-setMappedLookVelocity
-advanceMappedLookExecution
-retireMappedLookConnection
 # gyro以原policy/resource opaque lease识别资格，sensor timestamp只属于本采样钟。
 beginTouchGyroLease
 submitTouchGyroLease

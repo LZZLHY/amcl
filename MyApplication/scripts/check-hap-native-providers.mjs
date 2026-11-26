@@ -8,13 +8,13 @@ import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
 import {resolve,join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readUniqueZipEntry} from './zip-entry-buffer.mjs';
-import {resolveBundleFileLock} from './lib/sdl3-artifact-lock.mjs';
+import {readSdl3ArtifactLock,resolveBundleFileLock} from './lib/sdl3-artifact-lock.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const PROVIDERS=[
   ['libglfw.so','cmake'],['libopenal.so','cmake'],['libamcl_vulkan_wsi.so','cmake'],
   ['libamcl_game_dialog.so','cmake'],
-  ['libamcl_lwjgl_jemalloc.so','prebuilt'],['libSDL3.so','prebuilt'],['libfreetype.so','prebuilt'],['libshaderc.so','prebuilt'],['libspirv-cross.so','prebuilt'],
+  ['libamcl_lwjgl_jemalloc.so','prebuilt'],['libSDL3.so','prebuilt'],['libamcl_sdl_controller.so','controller-prebuilt'],['libfreetype.so','prebuilt'],['libshaderc.so','prebuilt'],['libspirv-cross.so','prebuilt'],
   // zstd JNI沿同一source→stage→strip→HAP字节链审核，身份来自独立版本/绑定锁。
   ['libamcl_zstdjni_std.so','zstd-prebuilt'],['libamcl_zstdjni_dh.so','zstd-prebuilt']
 ];
@@ -102,6 +102,12 @@ export function checkHapNativeProviders({root=ROOT,product,mode,hapPath}){
       expectedSourceSha256=lock.sha256;
       expectedSourceSize=lock.size;
       expectedHap=lock.hap;
+    }
+    // FFM 独立库不属于 LWJGL 模块，其 raw 与实际 SDK strip 身份由同一制品锁提供。
+    if(kind==='controller-prebuilt'){
+      const lock=readSdl3ArtifactLock(root,true);
+      expectedSourceSha256=lock.get('sha256');expectedSourceSize=Number(lock.get('size'));
+      expectedHap={size:Number(lock.get('hap_size')),sha256:lock.get('hap_sha256')};
     }
     if(kind==='zstd-prebuilt'){
       const lock=JSON.parse(readFileSync(resolve(root,'prebuilt/mod-natives/zstd-jni/artifacts.json'),'utf8'));

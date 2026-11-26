@@ -17,11 +17,10 @@ import { PROJECT_ROOT, assertExternalOutputPath, resolveWorkspacePath } from './
 const P='feature_system/src/main/ets/PreferenceManager.ets';
 const storageSource='feature_system/src/main/ets/GameStorage.ets';
 const R='entry/src/main/ets/product/RuntimeProductProfile.ets';
-const G='entry/src/main/ets/components/DesktopGamepadSettings.ets';
 const T='entry/src/main/ProductTouchSettings.ets';
 const mobilePreference='entry/src/main/ets/runtime/MobileInputPreference.ets';
 const mobileSkill='entry/src/main/ets/launcherskill/MobileInputSkill.ets';
-const sources=[P,R,G,T,mobilePreference,mobileSkill,storageSource,'entry/src/main/ets/pages/Index.ets','gamecontrol/src/main/ets/ProductRuntimePolicy.ets',
+const sources=[P,R,T,mobilePreference,mobileSkill,storageSource,'entry/src/main/ets/pages/Index.ets','gamecontrol/src/main/ets/ProductRuntimePolicy.ets',
   'gamecontrol/src/main/ets/ProductInputPolicy.ets','scripts/test-frozen-settings-save.mjs',
   'scripts/lib/load-pure-ets.mjs','scripts/lib/ets-runtime-fixture.mjs','scripts/lib/ets-compiler.mjs'];
 const hashes=()=>Object.fromEntries(sources.map(name=>[name,createHash('sha256')
@@ -77,7 +76,7 @@ function fixture(overrides={}, deviceType='2in1', sdkApiVersion=26, family='univ
   const ui=environment({globals:{AppStorage:{get:key=>visibility.get(key)}},imports:{...imports,'entry/ProductInputProfile':{ProductInputProfile:profile},
     './ets/components/AppIcon':{AppIcon:{}}},sourceOverrides:Object.fromEntries(Object.entries(overrides)
       .map(([key,value])=>[key,()=>value]))});
-  const component=(name,ctx=main)=>{const Class=ui.load(name,true)[name===G?'DesktopGamepadSettings':'ProductTouchSettings'];
+  const component=(name,ctx=main)=>{const Class=ui.load(name,true)['ProductTouchSettings'];
     const view=new Class();view.getUIContext=()=>({getHostContext:()=>ctx,getPromptAction:()=>({showToast:notice=>notices.push(notice)})});
     view.aboutToAppear();return view;};
   return {PreferenceManager,manager:ctx=>new PreferenceManager(ctx??main),profile,context,main,storage,component,notices,visibility,
@@ -265,40 +264,17 @@ function event(view,relative,method,eventName,values={}){
   passed('mobile preference retries a transient cross-process read once, reconciles on visibility and fences retired observers');
 }
 
-// 真实产品策略限定设置入口，命令仍执行同一组件的偏好保存与严格回读。
-for(const [form,api,family,available] of [
-  ['phone',20,'universal',false],['phone',21,'universal',true],
-  ['tablet',21,'universal',true],['2in1',20,'universal',true],
-  ['2in1',26,'desktop',true],['phone',26,'desktop',false],['default',26,'universal',false]
-]){
-  const f=fixture({},form,api,family);
-  assert.equal(f.profile.canChooseNativeGamepad(),available);
-  if(!available)continue;
-  // 历史损坏的数据可能残留字符串，不能因其为非空而未经用户选择打开采集。
-  f.storage().cache.set('desktopNativeGamepad','false');
-  assert.equal(f.manager().desktopNativeGamepad,false);
-  f.storage().cache.delete('desktopNativeGamepad');
-  const panel=f.component(G);
-  const readMode=await panel.skillGamepad_('getGamepadMode',{});
-  assert.equal(readMode.native,false);
-  const invalidRead=await panel.skillGamepad_('getGamepadMode',{unexpected:true});
-  verifySkillCases('getGamepadMode',readMode,invalidRead,form==='2in1'?'L063':'L054');
-  const result=await panel.skillGamepad_('setGamepadMode',{native:true});
-  assert.deepEqual(result,{state:'ready',native:true,effectiveAt:'nextLaunch'});
-  assert.equal(f.manager().desktopNativeGamepad,true);
-  const invalidWrite=await panel.skillGamepad_('setGamepadMode',{native:'yes'});
-  verifySkillCases('setGamepadMode',result,invalidWrite,form==='2in1'?'L063':'L054');
-  panel.aboutToDisappear();
-}
-passed('next-launch controller mode uses the shared setting owner across supported phone, tablet and PC products');
-
+// 旧包中的手柄开关不参与设置接口，桌面交互模式仍按当前产品策略读写。
 {
-  const f=fixture(),s=f.storage(),wait=deferred();s.steps.push(wait);let done=false;
-  const save=f.manager().saveDesktopNativeGamepad(true).then(()=>{done=true;});await settle();
-  assert.equal(done,false);assert.equal(s.cache.get('desktopNativeGamepad'),true);assert.equal(s.disk.get('desktopNativeGamepad'),false);
-  assert.equal(f.manager().desktopNativeGamepad,false,'新manager读原确认值，不能mount清屏障');
-  wait.resolve();await save;assert.equal(f.manager().desktopNativeGamepad,true);assert.equal(s.disk.get('desktopNativeGamepad'),true);
-  passed('native gamepad awaits actual flush; same-owner new manager reads old confirmation, success is durable');
+  const f=fixture();f.profile.initialize(f.main);const panel=f.component(T);
+  const read=await panel.skillInteraction_('getDesktopInteraction',{});
+  assert.equal(read.mode,'auto');
+  verifySkillCases('getDesktopInteraction',read,await panel.skillInteraction_('getDesktopInteraction',{unexpected:true}),'L063');
+  const saved=await panel.skillInteraction_('setDesktopInteraction',{mode:'touch'});assert.equal(saved.mode,'touch');
+  verifySkillCases('setDesktopInteraction',saved,await panel.skillInteraction_('setDesktopInteraction',{mode:'invalid'}),'L063');
+  assert.throws(()=>f.manager().strictLauncherField('desktopNativeGamepad'),/未知设置项/);
+  assert.equal(f.storage().disk.get('desktopNativeGamepad'),false);
+  panel.aboutToDisappear();
 }
 {
   const f=fixture(),s=f.storage(),wait=deferred();s.steps.push(wait);f.profile.initialize(f.main);
@@ -311,117 +287,85 @@ passed('next-launch controller mode uses the shared setting owner across support
   assert.equal(cold.selection().input.productKind,2,'实际下次初始化采纳已持久选择');
   passed('interaction wait/reinitialize/freeze keeps exact current selection; next process adopts durable value');
 }
-for(const [key,value]of [['desktopNativeGamepad',true],['desktopInteraction','touch']]){
-  const f=fixture(),s=f.storage(),wait=deferred();s.steps.push(wait);const method=key==='desktopInteraction'?'saveDesktopInteraction':'saveDesktopNativeGamepad';
-  const request=f.manager()[method](value),failure=assert.rejects(request,/disk rejected/);await settle();
-  wait.reject(new Error('disk rejected'));await failure;
-  assert.equal(f.manager()[key],key==='desktopInteraction'?'auto':false);assert.equal(s.disk.get(key),key==='desktopInteraction'?'auto':false);
-  await f.manager()[method](value);assert.equal(s.disk.get(key),value);
-  passed(key+' rejection restores old confirmed/cache/disk; explicit retry succeeds');
-}
 {
-  const f=fixture(),s=f.storage();s.failPut();await assert.rejects(f.manager().saveDesktopNativeGamepad(true),/put rejected/);
-  assert.equal(f.manager().desktopNativeGamepad,false);assert.equal(s.disk.get('desktopNativeGamepad'),false);
-  f.setGame(true);const size=s.calls.length;await assert.rejects(f.manager().saveDesktopNativeGamepad(true),/启动器/);
-  await assert.rejects(f.manager().saveDesktopInteraction('touch'),/启动器/);assert.equal(s.calls.length,size);
-  await assert.rejects(f.manager({}).saveDesktopNativeGamepad(true),/启动器/);
+  const f=fixture(),s=f.storage();s.failPut();await assert.rejects(f.manager().saveDesktopInteraction('touch'),/put rejected/);
+  assert.equal(f.manager().desktopInteraction,'auto');assert.equal(s.disk.get('desktopInteraction'),'auto');
+  f.setGame(true);const size=s.calls.length;await assert.rejects(f.manager().saveDesktopInteraction('touch'),/启动器/);
+  assert.equal(s.calls.length,size);
+  await assert.rejects(f.manager({}).saveDesktopInteraction('touch'),/启动器/);
   passed('put rejection rolls back; game snapshot role rejects both writes before platform IO');
 }
 {
   const f=fixture(),s=f.storage(),first=deferred(),rollback=deferred();first.partial=true;s.steps.push(first,rollback);
-  const pending=f.manager().saveDesktopNativeGamepad(true),failure=assert.rejects(pending,/磁盘回滚尚未确认/);await settle();
+  const pending=f.manager().saveDesktopInteraction('touch'),failure=assert.rejects(pending,/磁盘回滚尚未确认/);await settle();
   first.reject(new Error('partial disk failure'));await settle();rollback.reject(new Error('rollback disk failure'));await failure;
-  assert.equal(s.disk.get('desktopNativeGamepad'),true,'平台边缘实际模拟了部分写盘，不能声称旧磁盘');
-  assert.equal(f.manager().desktopNativeGamepad,false,'新manager只保原确认基线');
-  await f.manager().saveDesktopNativeGamepad(false);assert.equal(s.disk.get('desktopNativeGamepad'),false);
+  assert.equal(s.disk.get('desktopInteraction'),'touch','平台边缘实际模拟了部分写盘，不能声称旧磁盘');
+  assert.equal(f.manager().desktopInteraction,'auto','新manager只保原确认基线');
+  await f.manager().saveDesktopInteraction('auto');assert.equal(s.disk.get('desktopInteraction'),'auto');
   passed('rollback flush failure stays disk unknown/old confirmation; same-value explicit retry really writes disk');
 }
 {
   const f=fixture(),s=f.storage(),wait=deferred();s.steps.push(wait);
-  const a=f.manager().saveDesktopNativeGamepad(true),b=f.manager().saveDesktopNativeGamepad(true),c=f.manager().saveDesktopInteraction('touch');
-  await settle();assert.deepEqual(s.calls.filter(x=>x[0]==='put'),[['put','desktopNativeGamepad',true]]);
+  const a=f.manager().saveDesktopInteraction('touch'),b=f.manager().saveDesktopInteraction('touch'),c=f.manager().recordPrivacyConsent();
+  await settle();assert.deepEqual(s.calls.filter(x=>x[0]==='put'),[['put','desktopInteraction','touch']]);
   wait.resolve();await Promise.all([a,b,c]);assert.deepEqual(s.calls.filter(x=>x[0]==='put'),
-    [['put','desktopNativeGamepad',true],['put','desktopInteraction','touch']]);
+    [['put','desktopInteraction','touch'],['put','privacyAgreed',true]]);
   passed('same-owner duplicate/same-key and cross-key requests serialize; confirmed duplicate is one actual write');
 }
 {
   const f=fixture(),s=f.storage(),first=deferred(),rollback=deferred();s.steps.push(first,rollback);
-  const a=f.manager().saveDesktopNativeGamepad(true),failure=assert.rejects(a,/first disk rejected/);
-  const b=f.manager().saveDesktopInteraction('touch');await settle();first.reject(new Error('first disk rejected'));await settle();
-  assert.deepEqual(s.calls.filter(x=>x[0]==='put'),[['put','desktopNativeGamepad',true]],'另一键等待原rollback flush完成');
-  rollback.resolve();await failure;await b;assert.equal(s.disk.get('desktopNativeGamepad'),false);
-  assert.equal(s.disk.get('desktopInteraction'),'touch');
+  const a=f.manager().saveDesktopInteraction('touch'),failure=assert.rejects(a,/first disk rejected/);
+  const b=f.manager().recordPrivacyConsent();await settle();first.reject(new Error('first disk rejected'));await settle();
+  assert.deepEqual(s.calls.filter(x=>x[0]==='put'),[['put','desktopInteraction','touch']],'另一键等待原rollback flush完成');
+  rollback.resolve();await failure;await b;assert.equal(s.disk.get('desktopInteraction'),'auto');
+  assert.equal(s.disk.get('privacyAgreed'),true);
   passed('cross-key queued save waits original failed transaction rollback, then recovers on same owner');
 }
 {
   const f=fixture(),a=f.storage(),other=f.context('other'),b=f.storage(other),wa=deferred(),wb=deferred();a.steps.push(wa);b.steps.push(wb);
-  const ra=f.manager().saveDesktopNativeGamepad(true),rb=f.manager(other).saveDesktopNativeGamepad(true);await settle();
+  const ra=f.manager().saveDesktopInteraction('touch'),rb=f.manager(other).saveDesktopInteraction('touch');await settle();
   assert.equal(a.calls.filter(x=>x[0]==='put').length,1);assert.equal(b.calls.filter(x=>x[0]==='put').length,1);
-  wa.resolve();await ra;assert.equal(f.manager(other).desktopNativeGamepad,false,'旧owner完成不能清后来owner屏障');
-  wb.resolve();await rb;assert.equal(b.disk.get('desktopNativeGamepad'),true);
+  wa.resolve();await ra;assert.equal(f.manager(other).desktopInteraction,'auto','旧owner完成不能清后来owner屏障');
+  wb.resolve();await rb;assert.equal(b.disk.get('desktopInteraction'),'touch');
   passed('genuinely different Preferences owner isolates original queue/read barrier and late completion');
 }
-for(const relative of [G,T]){
+{
+  const relative=T;
   const f=fixture(),s=f.storage(),wait=deferred();s.steps.push(wait);f.profile.initialize(f.main);f.profile.freeze();
   const selected=f.profile.selection(),view=f.component(relative);let pending;
-  if(relative===G){event(view,G,'build','onChange')(true);await settle();pending=view.changeNativeMode_(true);}
-  else{event(view,T,'Choice','onClick',{value:'touch'})();await settle();pending=view.changeInteraction_('desktop');}
+  event(view,T,'Choice','onClick',{value:'touch'})();await settle();pending=view.changeInteraction_('desktop');
   await pending;assert.equal(view.saving,true);assert.match(view.saveMessage,/正在保存/);
-  assert.equal(relative===G?view.nativeMode:view.interaction,relative===G?false:'auto');
+  assert.equal(view.interaction,'auto');
   assert.equal(s.calls.filter(x=>x[0]==='put').length,1,'实际事件闭包重复调用不并发写');
   wait.reject(new Error('UI disk rejected'));await settle();assert.equal(view.saving,false);assert.match(view.saveMessage,/保存失败/);
-  assert.equal(relative===G?view.nativeMode:view.interaction,relative===G?false:'auto');assert.equal(f.profile.selection(),selected);
-  if(relative===G)await view.changeNativeMode_(true);else await view.changeInteraction_('touch');
-  if(relative===G){
-    assert.equal(view.saveMessage,'');assert.deepEqual(f.notices,[{message:'已保存，下次启动时由游戏处理手柄。',duration:2000}]);
-    await view.changeNativeMode_(false);assert.match(f.notices[1].message,/下次启动时使用启动器手柄映射/);
-    await view.changeNativeMode_(false);assert.equal(f.notices.length,2,'相同偏好不重复反馈');
-    f.visibility.set('appInForeground',false);await view.changeNativeMode_(true);assert.equal(f.notices.length,2);
-  }else assert.match(view.saveMessage,/已保存/);
-  assert.equal(relative===G?view.nativeMode:view.interaction,relative===G?true:'touch');
+  assert.equal(view.interaction,'auto');assert.equal(f.profile.selection(),selected);
+  await view.changeInteraction_('touch');assert.match(view.saveMessage,/已保存/);
+  assert.equal(view.interaction,'touch');
   assert.equal(f.profile.selection(),selected);passed(relative+' actual event/UI wait, duplicate rejection, failure, retry and frozen route');
 }
-for(const relative of [G,T]){
+{
+  const relative=T;
   const f=fixture(),s=f.storage(),wait=deferred();s.steps.push(wait);f.profile.initialize(f.main);f.profile.freeze();
-  const view=f.component(relative),operation=relative===G?view.changeNativeMode_(true):view.changeInteraction_('touch');await settle();
+  const view=f.component(relative),operation=view.changeInteraction_('touch');await settle();
   view.aboutToDisappear();view.aboutToAppear();view.saveMessage='new appearance owns this message';
-  const value=relative===G?view.nativeMode:view.interaction;wait.resolve();await operation;
-  assert.equal(view.saveMessage,'new appearance owns this message');assert.equal(relative===G?view.nativeMode:view.interaction,value);
+  const value=view.interaction;wait.resolve();await operation;
+  assert.equal(view.saveMessage,'new appearance owns this message');assert.equal(view.interaction,value);
   assert.deepEqual(f.notices,[],'退出旧页面的保存续体不弹消息');
   passed(relative+' old await cannot overwrite remounted appearance; durable operation remains owned by Preferences');
 }
-{
-  const f=fixture(),s=f.storage(),first=deferred(),rollback=deferred();first.partial=true;s.steps.push(first,rollback);
-  const view=f.component(G),saving=view.changeNativeMode_(true);await settle();first.reject(new Error('partial UI disk rejected'));await settle();
-  rollback.reject(new Error('UI rollback rejected'));await saving;
-  assert.equal(view.nativeMode,false);assert.match(view.saveMessage,/磁盘回滚尚未确认/);assert.equal(view.saving,false);
-  assert.deepEqual(f.notices,[]);await view.changeNativeMode_(true);assert.equal(view.nativeMode,true);
-  assert.equal(view.saveMessage,'');assert.equal(f.notices.length,1);assert.match(f.notices[0].message,/已保存/);
-  passed('actual UI displays rollback disk unknown, retains old value and permits explicit durable retry');
-}
-{
-  const f=fixture(),s=f.storage(),wait=deferred();s.steps.push(wait);const view=f.component(G);
-  const first=view.changeNativeMode_(true);await settle();view.aboutToDisappear();view.aboutToAppear();
-  const repeat=view.changeNativeMode_(true);await settle();assert.equal(s.calls.filter(x=>x[0]==='put').length,1);
-  wait.resolve();await Promise.all([first,repeat]);assert.equal(s.calls.filter(x=>x[0]==='put').length,1);
-  assert.equal(view.nativeMode,true);assert.equal(view.saveMessage,'');assert.equal(f.notices.length,1);
-  assert.match(f.notices[0].message,/已保存/);
-  passed('same component remount/repeated desired request cannot cross original owner transaction or duplicate actual write');
-}
-
 // 两个内存撤回都必须执行到原行为断言。坏语法/装载失败不得算捕获成功。
 {
   const original=fs.readFileSync(path.join(PROJECT_ROOT,P),'utf8');
   const anchor=/await this\.pref\.flush\(\);\r?\n        state\.originals\.delete\(key\);/g;
   // 负对照只撤回被测冻结设置方法，其他功能也可以合法使用相同的持久化屏障。
   const methodStart=original.indexOf('  private saveFrozenSetting_(');
-  const methodEnd=original.indexOf('  /** 原生手柄偏好',methodStart);
+  const methodEnd=original.indexOf('  /** 交互模式保存',methodStart);
   assert.ok(methodStart>=0&&methodEnd>methodStart);
   const method=original.slice(methodStart,methodEnd);
   assert.equal([...method.matchAll(anchor)].length,1);
   const changed=original.slice(0,methodStart)+method.replace(anchor,match=>match.replace('await this.pref.flush()','void this.pref.flush()'))+original.slice(methodEnd);
   const f=fixture({[P]:changed}),s=f.storage(),wait=deferred();s.steps.push(wait);let finished=false;
-  const saving=f.manager().saveDesktopNativeGamepad(true).then(()=>{finished=true;});await settle();
+  const saving=f.manager().saveDesktopInteraction('touch').then(()=>{finished=true;});await settle();
   assert.throws(()=>assert.equal(finished,false),assert.AssertionError);wait.resolve();await saving;
   passed('compiled negative removing flush await fails actual completion assertion');
 }
@@ -430,8 +374,8 @@ for(const relative of [G,T]){
   const changed=original.replace('if (state !== undefined && state.originals.has(key)) return state.originals.get(key) as LaunchPreferenceValue;',
     '/* negative: expose tentative platform cache */');assert.notEqual(changed,original);
   const f=fixture({[P]:changed}),s=f.storage(),wait=deferred();s.steps.push(wait);
-  const saving=f.manager().saveDesktopNativeGamepad(true);await settle();
-  assert.throws(()=>assert.equal(f.manager().desktopNativeGamepad,false),assert.AssertionError);wait.resolve();await saving;
+  const saving=f.manager().saveDesktopInteraction('touch');await settle();
+  assert.throws(()=>assert.equal(f.manager().desktopInteraction,'auto'),assert.AssertionError);wait.resolve();await saving;
   passed('compiled negative removing read barrier fails actual new-manager wait assertion');
 }
 {

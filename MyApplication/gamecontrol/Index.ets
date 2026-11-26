@@ -34,7 +34,6 @@ export * from './src/main/ets/JoystickSector';
 export * from './src/main/ets/PhysicalKeyEdge';      // 一次键边沿 → 两个平面的动作码 + ESC 去抖判据
 export * from './src/main/ets/WheelChannel';         // 两条滚轮通道的符号约定 + 分格累加 + Pan 入口闸门
 export * from './src/main/ets/PhysicalMouseMotion';  // rawDelta 存在性的**唯一**判定（生产与探针共用）
-export * from './src/main/ets/GamepadManager';
 export * from './src/main/ets/GameInputRuntime';
 export * from './src/main/ets/InputConfiguration';
 export * from './src/main/ets/LookPreferences';

@@ -26,6 +26,8 @@ public final class CpuAgent {
 
     /** 无合法的宿主协议时不启用；可选信息采集失败不阻止 JVM 启动。 */
     public static void premain(String arguments, Instrumentation instrumentation) {
+        // 手柄库是独立的首次定义变换，CPU 信息缺失不影响 JNI 装载。
+        com.amcl.gamepad.Sdl2NativeLoader.install(instrumentation);
         try {
             Facts facts = Facts.read();
             instrumentation.addTransformer(new CpuTransformer(facts), false);

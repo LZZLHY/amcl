@@ -94,7 +94,7 @@ inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
         {"org.lwjgl.sdl.libname", nativeDir + "/libSDL3.so"},
         // SDL的独立FFM绑定在system fallback读取此公开属性。显式Path加载的第三方内嵌
         // 库仍由原绑定处理；这里只冻结fallback到已审核的同包制品，不抢先初始化SDL。
-        {"dev.isxander.sdl.library", nativeDir + "/libSDL3.so"},
+        {"dev.isxander.sdl.library", nativeDir + "/libamcl_sdl_controller.so"},
         {"org.lwjgl.freetype.libname", nativeDir + "/libfreetype.so"},
         {"org.lwjgl.vulkan.libname", nativeDir + "/libamcl_vulkan_wsi.so"},
         {"org.lwjgl.shaderc.libname", nativeDir + "/libshaderc.so"},
@@ -110,6 +110,8 @@ inline std::vector<BootstrapProperty> RuntimeBootstrapProperties(
         {"amcl.audio.enabled", "true"}, {"amcl.audio.service.schema", "1"},
         // 自有候选路径只描述已交付 native。Java 只读 resolver 命中真实绑定后才启用官方属性。
         {"amcl.sherpa.native.path", nativeDir},
+        // 供已核实的 SDL2/JNI 和 JNA 绑定在各自游戏类加载器内打开随包库。
+        {"amcl.gamepad.sdl2.dir", nativeDir},
         // zstd标准/DH绑定先按完整Java身份选择；只发布当前HAP目录，不预加载或改变上游用户值。
         {"amcl.zstd.native.path", nativeDir},
         {"minecraft.applet.TargetDirectory", gameDir},

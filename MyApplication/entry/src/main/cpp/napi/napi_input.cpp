@@ -24,7 +24,6 @@
 #include "../platform/native_mouse_route_policy.h"
 #include "../platform/pointer_device_registry.h"
 #include "../platform/source_look_processor.h"
-#include "../platform/mapped_look_producer.h"
 #include "../input/delivery/look_execution.h"
 #include "../input/source/source_control.h"
 #include "../platform/product_input_policy.h"
@@ -1181,35 +1180,11 @@ napi_value SendSourceScrollEvent(napi_env env, napi_callback_info info) {
 // 服务手柄右摇杆与触控端 dragLook，两者量纲不同却共用一个端标注。
 /** 冷能力仅证明neutral生产端口存在；Host据此冻结模式，不能当游戏consumer Ready。 */
 napi_value SharedLookExecutionSupported(napi_env env,napi_callback_info) {
-    return amcl::napi::MakeBoolResult(env,amclMappedLookSupported());
-}
-/** device/connection用整数身份，Native入口采样owner monotonic；拒绝不更新已有速度事实。 */
-napi_value SetMappedLookVelocity(napi_env env,napi_callback_info info) {
-    if(!amclLookExecutionGetPortV1())return amcl::napi::MakeBoolResult(env,false);
-    size_t argc=4;napi_value args[4]{};double device=0,connection=0,x=0,y=0;
-    const bool valid=napi_get_cb_info(env,info,&argc,args,nullptr,nullptr)==napi_ok&&argc==4&&
-        napi_get_value_double(env,args[0],&device)==napi_ok&&napi_get_value_double(env,args[1],&connection)==napi_ok&&
-        napi_get_value_double(env,args[2],&x)==napi_ok&&napi_get_value_double(env,args[3],&y)==napi_ok&&
-        std::isfinite(device)&&device>=0&&device<=4294967295.0&&std::floor(device)==device&&
-        std::isfinite(connection)&&connection>0&&connection<=4294967295.0&&std::floor(connection)==connection;
-    if(!valid)return amcl::napi::MakeBoolResult(env,false);amcl::input::SurfaceInputGateTransaction gate;
-    return amcl::napi::MakeBoolResult(env,gate&&TouchSourceAdmission(2)&&
-        amclMappedLookSet(static_cast<uint64_t>(device),static_cast<uint64_t>(connection),x,y));
-}
-/** timer是源执行维护，不依赖UI反馈订阅；准入失败不补后台dt。 */
-napi_value AdvanceMappedLookExecution(napi_env env,napi_callback_info) {
-    if(!amclLookExecutionGetPortV1())return amcl::napi::MakeBoolResult(env,false);
-    amcl::input::SurfaceInputGateTransaction gate;
-    return amcl::napi::MakeBoolResult(env,gate&&TouchSourceAdmission(2)&&amclMappedLookAdvance());
-}
-/** 停源不要求surface gate；先结束运动流，即使控制release被拒也不留下速率/尾量。 */
-napi_value RetireMappedLookConnection(napi_env env,napi_callback_info info) {
-    size_t argc=2;napi_value args[2]{};double device=0,connection=0;
-    const bool valid=napi_get_cb_info(env,info,&argc,args,nullptr,nullptr)==napi_ok&&argc==2&&
-        napi_get_value_double(env,args[0],&device)==napi_ok&&napi_get_value_double(env,args[1],&connection)==napi_ok&&
-        std::isfinite(device)&&device>=0&&device<=4294967295.0&&std::floor(device)==device&&
-        std::isfinite(connection)&&connection>0&&connection<=4294967295.0&&std::floor(connection)==connection;
-    return amcl::napi::MakeBoolResult(env,valid&&amclMappedLookRetire(static_cast<uint64_t>(device),static_cast<uint64_t>(connection)));
+    const auto* port = amclLookExecutionGetPortV1();
+    // 触控和陀螺仪仍须核验当前进程持有的执行接口。
+    const bool ready = port && port->magic == AMCL_LOOK_EXECUTION_MAGIC && port->version == 1 &&
+        port->size == sizeof(*port) && port->verifyOwner(port->ownerHost) >= 0;
+    return amcl::napi::MakeBoolResult(env, ready);
 }
 napi_value SendSourceCursorDelta(napi_env env, napi_callback_info info) {
     size_t argc = 3;
@@ -2871,9 +2846,6 @@ constexpr napi_property_descriptor kInputDescriptors[] = {
     NAPI_FUNC("applyLookConfiguration", ApplyLookConfiguration),
     NAPI_FUNC("applySourceLookConfiguration", ApplySourceLookConfiguration),
     NAPI_FUNC("sharedLookExecutionSupported", SharedLookExecutionSupported),
-    NAPI_FUNC("setMappedLookVelocity", SetMappedLookVelocity),
-    NAPI_FUNC("advanceMappedLookExecution", AdvanceMappedLookExecution),
-    NAPI_FUNC("retireMappedLookConnection", RetireMappedLookConnection),
     NAPI_FUNC("setInvertY",          SetInvertY),
     NAPI_FUNC("setLookSmoothing",    SetLookSmoothing),
     NAPI_FUNC("setLookAccel",        SetLookAccel),

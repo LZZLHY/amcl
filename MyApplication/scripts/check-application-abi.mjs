@@ -183,6 +183,12 @@ export function checkApplicationAbi(archive, { root, product, target = product }
       const manifest = JSON.parse(fs.readFileSync(path.join(sourceFolder, 'build-provenance.json'), 'utf8'));
       if (manifest.elf?.soname === basename) lockedSource = manifest.unstripped;
     }
+    if (basename === 'libamcl_sdl_controller.so') {
+      // 辅助手柄 SDL 独立交叉编译；源目录中交付未剥离 ELF，保留局部 unwind 表的完整审计。
+      const proof = JSON.parse(fs.readFileSync(path.join(root,'prebuilt/sdl3/controller-build-provenance.json'),'utf8'));
+      lockedSource = proof.artifacts.raw;
+      sourcePath = path.join(root,'entry/libs/arm64-v8a',basename);
+    }
     if (sourceFolder) {
       if (lockedSource?.path !== `symbols/${basename}` || !Number.isSafeInteger(lockedSource.size) ||
           lockedSource.size <= 0 || !/^[0-9a-f]{64}$/.test(lockedSource.sha256))

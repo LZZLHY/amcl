@@ -52,12 +52,16 @@ struct GraphicsFeatureState {
     std::map<uint64_t, PresentingEglIdentity> presentingSurfaces;
     uint64_t nextContextPermit = 0;
     // 与contextPermits同锁，保证角色验证和首次消费不能跨越context退休。
-    SdlAuxRuntimePolicy sdlAux;
-    // 首次claim在资源锁内填值后release发布；身份字段之后不重写。退休只清alive，
-    // SDK事件泵可不加锁、不查EGL、不gettid地核会话仍存活，fork仍先核OS PID。
-    uint64_t sdlAuxSession=0,sdlAuxInstance=0;
-    int32_t sdlAuxLaunchThread=0,sdlAuxOwnerThread=0;
-    std::atomic<bool> sdlAuxAlive{false};
+    struct SdlAuxSessionState {
+        // 每个实例分别持有准入策略和已确认的线程、会话身份。
+        SdlAuxRuntimePolicy policy;
+        // 首次 claim 在资源锁内发布固定身份；退休只清 alive，事件泵按 acquire 无锁核验。
+        uint64_t sessionId=0,instanceId=0;
+        int32_t launchThreadId=0,ownerThreadId=0;
+        std::atomic<bool> alive{false};
+    };
+    // LWJGL 平台 SDK 与第三方无窗口 SDK 独立登记，只读同一平台手柄快照。
+    SdlAuxSessionState sdlAux,controllerAux;
 };
 // 在新context交付游戏前执行一次有界小对象探针；任何清理/原context恢复失败均返回false。
 AMCL_GRAPHICS_PUBLIC bool ProbeGraphicsFeatures(const GraphicsRuntimeBinding&, EglContextState&);

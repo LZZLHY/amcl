@@ -18,6 +18,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
 from lib.workspace_paths import external_output_path
+from lib.lwjgl2_gamepad import gamepad_members, package
 
 
 def digest(path):
@@ -127,7 +128,7 @@ def build(options):
     jni = ROOT / 'prebuilt/mod-natives/imgui-java/jni/jni-headers'
     includes = [jni, jni / 'linux', native / 'common', native / 'common/opengl',
                 native / 'linux', native / 'linux/opengl', headers,
-                ROOT / 'entry/src/main/cpp/input/delivery']
+                ROOT / 'entry/src/main/cpp/input/delivery', ROOT / 'entry/src/main/cpp/platform']
     flags = ['--target=aarch64-linux-ohos', '--sysroot=' + str(sdk / 'native/sysroot'),
              '-O2', '-fPIC', '-std=c99', '-fno-strict-aliasing', '-DLWJGL_LINUX', '-D_GNU_SOURCE']
     sources = []
@@ -170,17 +171,10 @@ def build(options):
         'org/lwjgl/opengl/ContextGL.class', 'org/lwjgl/opengl/AMCLDisplay.class',
         'org/lwjgl/opengl/Display.class', 'org/lwjgl/input/Keyboard.class', 'org/lwjgl/input/Mouse.class','org/lwjgl/opengl/EventQueue.class']}
     jar = output / 'lwjgl.jar'
-    with zipfile.ZipFile(base_jar) as original, zipfile.ZipFile(jar, 'w') as result:
-        for member in original.infolist():
-            data = replacements[member.filename].read_bytes() if member.filename in replacements else original.read(member)
-            result.writestr(member, data)
-    # JAR 非目标成员必须逐字一致，Java ABI 面由正式回归与兼容槽门禁另行核对。
-    with zipfile.ZipFile(base_jar) as original, zipfile.ZipFile(jar) as result:
-        if original.namelist() != result.namelist():
-            raise ValueError('JAR membership changed')
-        for name in original.namelist():
-            if name not in replacements and original.read(name) != result.read(name):
-                raise ValueError('Unrelated JAR member changed: ' + name)
+    members = {name: path.read_bytes() for name, path in replacements.items()}
+    members.update(gamepad_members(ROOT, inputs / 'lwjgl-2df01dd.zip', spec['sourceCommit'],
+                                   jdk, base_jar, output))
+    package(base_jar, jar, members)
     report = {'schema': 1, 'upstreamCommit': spec['sourceCommit'], 'sourceArchiveSha256': digest(inputs / 'lwjgl-2df01dd.zip'),
               'patchSha256': digest(patch), 'readpointsPatchSha256': digest(readpoints_patch),
               'controlPortHeaders': {p.name: digest(p) for p in [
@@ -203,7 +197,7 @@ def build(options):
               'compiler': subprocess.check_output([str(clang), '--version'], text=True).splitlines()[0],
               'baseJarSha256': digest(base_jar), 'sources': {str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p.relative_to(source)): digest(p) for p in sources},
               'artifacts': {p.name: {'size': p.stat().st_size, 'sha256': digest(p)} for p in [library, jar]},
-              'javaChangedMembers': sorted(replacements),
+              'javaChangedMembers': sorted(members),
               'javaSources': {str(p.relative_to(ROOT)): digest(p) for p in java_sources},
               'upstreamReadpointSources': {str(p.relative_to(source)): digest(p) for p in readpoints}, 'nativeIdentity': identity}
     (output / 'provenance.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

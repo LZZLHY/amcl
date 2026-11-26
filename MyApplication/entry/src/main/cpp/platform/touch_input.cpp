@@ -37,7 +37,6 @@
 #include "look_delta_math.h"
 #include "look_pipeline_stats.h"
 #include "source_look_processor.h"
-#include "mapped_look_producer.h"
 #include "source_look_producer.h"
 #include "../input/delivery/look_transport.h"
 #include "input_source.h"
@@ -1759,7 +1758,6 @@ extern "C" void ohos_release_input_source_held(int sourceValue) {
         inputBridge_retireTouchMenuScopeV1();
         releaseMenuToolControls();
     }
-    if(source==AMCL_INPUT_SOURCE_GAMEPAD)amclMappedLookRetireAll();
     const size_t retired = amcl::input::SourceReleaseSource(source);
     if (touch.owns_lock()) touch.unlock();
     // 刻意**不**在这里 note_reset：本函数是释放原语，记账由 ohos_note_input_source_reset
@@ -4881,7 +4879,6 @@ extern "C" void ohos_route_arkui_physical_mouse_button(
 // 4) 清 finger registry 与 look backlog。返回时 neutral core 与 legacy 输出都位于零状态。
 extern "C" void ohos_cancel_all_input(int reason) {
     // 此兜底先结束mapped速率，再走原控制清理；停源不依赖release成功或UI仍持连接句柄。
-    amclMappedLookRetireAll();
     // Every caller, including NAPI/pause/window-recreate paths, joins the same
     // surface transaction used by native callbacks. The mutex is recursive so
     // blur/destroy may safely call this while already holding the gate. Global
@@ -5005,25 +5002,7 @@ extern "C" void ohos_cancel_all_input(int reason) {
     });
     s_legacyRingTracker.AbsorbLocked(ringEpochCovered);
     pthread_mutex_unlock(&s_schemaMutex);
-    // 端级记账：本函数覆盖的是**触控端与物理键鼠端**在 native 侧的全部状态。
-    // 手柄端的状态机整体在 ArkTS（GamepadManager 的 pressedButtons / activeMoveKeys /
-    // triggerDown），本函数**碰不到它**。
-    //
-    // ⚠️ 这段注释曾接着写：「而 onPageHide 与两个 Ability 的 onBackground 只调本函数、
-    // 不调 GamepadManager.releaseAll()，那段窗口内 ArkTS 手柄状态会与 native ledger 失步」。
-    // **那已经不成立**，而且它描述的是一个 §45/§46 就消灭掉的故障：
-    // 三个边界现在都**先**走 `getInputSourceRegistry().releaseAllEnds(reason)`
-    // （McGamePage.onPageHide / GameAbility.onBackground / EntryAbility.onBackground），
-    // 而它会调到 `GamepadManager.releaseAllInputs()` → `releaseAll()`，
-    // 三个集合全清。真机已确认：那三个边界的日志都打 `ends=3`（§51.3 ①）。
-    // 留着这句会让下一个人去"补一条手柄释放"——那要么双发，要么把 §46 拆掉的 UI 副作用
-    // 耦合重新引进来。
-    //
-    // 把三端的复位次数打成一行仍然有价值：它让"某个端漏了复位"在日志里可见，
-    // 而不是靠读三个文件互相比对。
-    //
-    // 注意下面只 note 了两端 —— 这是**正确**的，不是漏写：本函数确实碰不到手柄端，
-    // 手柄端的复位由 `ohos_note_input_source_reset(Gamepad)` 从 ArkTS 侧记账。
+    // 这里只复位触控与键鼠。原生手柄连接及失焦归中由设备采集端维护。
     amcl_input_source_note_reset(AMCL_INPUT_SOURCE_TOUCH_CONTROLS);
     amcl_input_source_note_reset(AMCL_INPUT_SOURCE_PHYSICAL_KBM);
     amcl_input_source_log_reset_state();

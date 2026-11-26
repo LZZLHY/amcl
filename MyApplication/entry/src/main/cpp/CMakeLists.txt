@@ -507,7 +507,6 @@ set(PLATFORM_SOURCES
     platform/control_schema_contract.cpp
     platform/touch_interaction.cpp # 触控菜单/摇杆策略，与宿主测试共用真实实现。
     platform/source_look_processor.cpp # 公共source视角加工，投递与配置/时间状态分离
-    platform/mapped_look_producer.cpp # 设备连接租约薄适配，速度/积分/pending只在neutral。
     platform/source_look_producer.cpp # delta/gyro只保opaque stream，真实队列原子提交加工量。
     platform/mouse_synth_touch_source.cpp # "这个触摸包其实是鼠标吗"的分类器（原 tap 识别器已删）
     platform/native_mouse_route_policy.cpp

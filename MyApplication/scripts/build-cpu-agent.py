@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import struct
 import subprocess
 import zipfile
@@ -66,14 +67,21 @@ def build(output=None):
     artifact = ROOT / 'entry/src/main/resources/rawfile/amcl-cpu-agent.jar'
     contract = ROOT / 'launch/src/main/ets/CpuCompatibilityArtifact.ets'
     receipt = ROOT / 'JavaCpuAgent/artifact.json'
-    if receipt.exists() and artifact.exists() and contract.exists():
-        old = json.loads(receipt.read_text(encoding='utf-8'))
-        if old.get('inputSha256') == identity and old.get('sha256') == digest(artifact.read_bytes()) \
-                and old.get('contractSha256') == digest(contract.read_text(encoding='utf-8').encode('utf-8')):
-            print('[cpu-agent] UP-TO-DATE sha256=' + old['sha256']); return artifact
+    old = json.loads(receipt.read_text(encoding='utf-8')) if receipt.exists() else {}
+    locked = old.get('inputSha256') == identity
+    if locked and artifact.exists() and contract.exists() and old['sha256'] == digest(artifact.read_bytes()) \
+            and old['contractSha256'] == digest(contract.read_text(encoding='utf-8').encode('utf-8')):
+        print('[cpu-agent] UP-TO-DATE sha256=' + old['sha256']); return artifact
     directory = new_compat_session('cpu-agent-build', output)
     classes = directory / 'classes'; classes.mkdir()
-    subprocess.run([jdk_tool('javac', minimum=17), '--release', '8', '-encoding', 'UTF-8', '-proc:none',
+    # --release 8 固定 API 和字节码版本，匿名类捕获字段的输出次序仍取决于实际 javac。
+    javac = jdk_tool('javac', minimum=17)
+    version_output = subprocess.check_output([javac, '-version'], stderr=subprocess.STDOUT, text=True)
+    compiler_version = re.search(r'^javac ([0-9][^\s]*)$', version_output, flags=re.M)
+    if not compiler_version:
+        raise RuntimeError('Cannot identify CPU agent javac')
+    compiler = 'javac ' + compiler_version.group(1)
+    subprocess.run([javac, '--release', '8', '-encoding', 'UTF-8', '-proc:none',
                     '-cp', str(asm), '-d', str(classes), *map(str, sources)], check=True)
     entries = {'META-INF/MANIFEST.MF': b'Manifest-Version: 1.0\r\nPremain-Class: com.amcl.cpu.CpuAgent\r\n\r\n'}
     for path in sorted(classes.rglob('*.class')):
@@ -90,13 +98,18 @@ def build(output=None):
             archive.writestr(zipfile.ZipInfo(name, (2000, 1, 1, 0, 0, 0)), data,
                              compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     data = temporary.read_bytes(); checksum = digest(data)
+    # 同一来源的制品已经冻结。不同工具链即便编译成功，也不能在构包途中改写已提交的 HAR 摘要。
+    if locked and old['sha256'] != checksum:
+        raise RuntimeError('CPU agent rebuild differs from frozen artifact: expected ' + old['sha256']
+                           + ' (' + old.get('compiler', 'unknown javac') + '), got ' + checksum + ' (' + compiler
+                           + '). Select the recorded JDK with AMCL_COMPAT_JAVA_HOME. Candidate retained at ' + str(temporary))
     artifact.parent.mkdir(parents=True, exist_ok=True); artifact.write_bytes(data)
     text = '/** 由 build-cpu-agent.py 生成；运行时按摘要交付独立的生产 CPU Agent。 */\n'
     text += "export const CPU_AGENT_JAR = 'amcl-cpu-agent.jar';\n"
     text += f"export const CPU_AGENT_RUNTIME_JAR = 'amcl-cpu-agent-{checksum}.jar';\n"
     text += f"export const CPU_AGENT_SIZE = {len(data)};\nexport const CPU_AGENT_SHA256 = '{checksum}';\n"
     contract.write_text(text, encoding='utf-8')
-    result = {'schema': 1, 'javaOutputRelease': 8, 'inputSha256': identity, 'sha256': checksum,
+    result = {'schema': 1, 'javaOutputRelease': 8, 'compiler': old.get('compiler', compiler) if locked else compiler, 'inputSha256': identity, 'sha256': checksum,
               'size': len(data), 'asmSha256': record['sha256'], 'contractSha256': digest(contract.read_text(encoding='utf-8').encode('utf-8')),
               'sources': inputs, 'classes': sorted(name for name in entries if name.endswith('.class'))}
     receipt.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')

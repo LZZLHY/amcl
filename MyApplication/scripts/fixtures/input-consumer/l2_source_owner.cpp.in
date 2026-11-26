@@ -28,7 +28,7 @@ int inputBridge_setInputReady(int);
 extern "C" int inputBridge_configureMenuCursorConsumerV1(uint32_t,uint64_t);
 void inputBridge_pushEvent(int,int,int,int,int);
 static const AmclSourceControlPortV1* sourcePort;
-static uint64_t sourceProducer,rateStream;
+static uint64_t sourceProducer,touchStream;
 static AmclInputTextCoreResourceV1 ownedTextResource{};
 static uint64_t ownedTextKeyboardScope=0;
 static std::vector<jint> actualTrace;
@@ -174,18 +174,18 @@ extern "C" JNIEXPORT jint JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_p
     return PlatformInputPhysicalKeyTransaction(2017,37,0,down?AMCL_INPUT_ACTION_DOWN:AMCL_INPUT_ACTION_UP,
         0,0,17,65,down?1:0,true,nullptr);
 }
-extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_velocity(JNIEnv* env,jclass,jboolean active){
+extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_touchSample(JNIEnv* env,jclass,jboolean active){
     const auto* look=amclLookExecutionGetPortV1();
-    if(!active){if(rateStream){require(env,look->submitVelocity(rateStream,0,0,now())==0&&look->retireStream(rateStream)==0,"L2_SOURCE retire original velocity");rateStream=0;}return;}
-    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=2;stream.kind=AMCL_LOOK_MAPPED_RATE;
-    stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;stream.device=9;stream.connection=1;
-    if(!require(env,inputBridge_getLookResourceV1(&stream.resource)==1&&look->openStream(&stream,&rateStream)==0&&
-        look->submitVelocity(rateStream,1080,0,now())==0,"L2_SOURCE original real velocity"))return;
+    if(!active){if(touchStream){require(env,look->retireStream(touchStream)==0,"L2_SOURCE retire touch delta");touchStream=0;}return;}
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=1;stream.kind=AMCL_LOOK_TOUCH_DELTA;
+    stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_VIRTUAL_COUNTS;stream.device=9;stream.connection=1;
+    if(!require(env,inputBridge_getLookResourceV1(&stream.resource)==1&&look->openStream(&stream,&touchStream)==0&&
+        look->submitDelta(touchStream,9,0,now())==0,"L2_SOURCE original touch delta"))return;
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
-/** 新零delta只封正式owner已有速率尾量；不手工创建token或MOVE记录。 */
+/** 第二个触控样本封入下一前缀；不手工创建token或MOVE记录。 */
 extern "C" JNIEXPORT void JNICALL Java_org_lwjgl_opengl_L2SourceProductionTest_sealFuturePrefix(JNIEnv* env,jclass){
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));require(env,inputBridge_submitLookV1(0,0,0,0,1)==1,"L2_SOURCE actual future prefix");
+    require(env,amclLookExecutionGetPortV1()->submitDelta(touchStream,5,0,now())==0 && inputBridge_submitLookV1(0,0,0,0,1)==1,"L2_SOURCE actual future prefix");
 }
 
 /** 固定文案是UTF8输入样本，不在fixture实现codec；原Core负责scalar合法性与blob资源。 */

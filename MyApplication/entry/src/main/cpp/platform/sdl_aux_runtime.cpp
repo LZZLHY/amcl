@@ -47,33 +47,35 @@ int SdlAuxRuntimeOperation(const GraphicsRuntimeBinding& runtime,uint32_t operat
     const uint64_t pid=static_cast<uint64_t>(getpid());
     // fork拒绝必须早于任何继承mutex和driver/broker访问。
     if(runtime.processId!=static_cast<int>(pid))return AMCL_SDL_AUX_WRONG_PID;
-    if(!runtime.features || !request || request->structSize<sizeof(*request) || request->abiVersion!=1 ||
+    if(!runtime.features || !request || request->structSize<sizeof(*request) || (request->abiVersion!=1 && request->abiVersion!=SdlControllerRequestVersion) ||
        request->reserved || !output || output->structSize<sizeof(*output) || output->abiVersion!=1)
         return AMCL_SDL_AUX_INVALID;
     if(request->processId!=pid)return AMCL_SDL_AUX_WRONG_PID;
     auto& features=*runtime.features;
+    const bool controller = request->abiVersion == SdlControllerRequestVersion;
+    auto& role = controller ? features.controllerAux : features.sdlAux;
     if(operation==AMCL_SDL_AUX_PEEK_ACTIVE) {
         // alive的acquire对应首次claim的release；身份只写一次，退休并发不改这些值。
-        if(!features.sdlAuxAlive.load(std::memory_order_acquire))return AMCL_SDL_AUX_RETIRED;
-        if(request->sessionId!=features.sdlAuxSession || request->instanceCookie!=features.sdlAuxInstance ||
-           request->launchThreadId!=features.sdlAuxLaunchThread)return AMCL_SDL_AUX_CHANGED;
-        *output={sizeof(*output),1u,AMCL_SDL_AUX_READY,features.sdlAuxLaunchThread,
-            features.sdlAuxOwnerThread,0u,features.sdlAuxSession,features.sdlAuxInstance,0u};
+        if(!role.alive.load(std::memory_order_acquire))return AMCL_SDL_AUX_RETIRED;
+        if(request->sessionId!=role.sessionId || request->instanceCookie!=role.instanceId ||
+           request->launchThreadId!=role.launchThreadId)return AMCL_SDL_AUX_CHANGED;
+        *output={sizeof(*output),1u,AMCL_SDL_AUX_READY,role.launchThreadId,
+            role.ownerThreadId,0u,role.sessionId,role.instanceId,0u};
         return AMCL_SDL_AUX_READY;
     }
     const int32_t tid=static_cast<int32_t>(syscall(SYS_gettid));
     if(tid<=0)return AMCL_SDL_AUX_WRONG_THREAD;
     std::lock_guard<std::recursive_mutex> lock(features.resourcesMutex);
-    auto& policy=features.sdlAux;
+    auto& policy=role.policy;
     int result=AMCL_SDL_AUX_INVALID;
     switch(operation) {
         case AMCL_SDL_AUX_CONFIGURE:
             if(!request->selectedFileInode)result=AMCL_SDL_AUX_INVALID;
             else result=request->launchThreadId==tid ? policy.configure(pid,tid,request->sessionId,
-                request->selectedFileDevice,request->selectedFileInode) : AMCL_SDL_AUX_WRONG_THREAD;
+                request->selectedFileDevice,request->selectedFileInode,controller) : AMCL_SDL_AUX_WRONG_THREAD;
             break;
         case AMCL_SDL_AUX_PUBLISH_EGL:
-            if(policy.configured(pid) && VerifiedPresentingEgl(runtime,*request))
+            if(!controller && policy.configured(pid) && VerifiedPresentingEgl(runtime,*request))
                 result=policy.publishVerified(*request,tid);
             else result=AMCL_SDL_AUX_UNPROVEN;
             break;
@@ -91,18 +93,18 @@ int SdlAuxRuntimeOperation(const GraphicsRuntimeBinding& runtime,uint32_t operat
             const bool verified=!policy.instance() && proof && VerifiedPresentingEgl(runtime,*proof);
             result=policy.claim(pid,tid,request->launchThreadId,request->sessionId,request->instanceCookie,verified);
             if(result==AMCL_SDL_AUX_FIRST){
-                features.sdlAuxSession=request->sessionId;features.sdlAuxInstance=request->instanceCookie;
-                features.sdlAuxLaunchThread=request->launchThreadId;features.sdlAuxOwnerThread=tid;
-                features.sdlAuxAlive.store(true,std::memory_order_release);
+                role.sessionId=request->sessionId;role.instanceId=request->instanceCookie;
+                role.launchThreadId=request->launchThreadId;role.ownerThreadId=tid;
+                role.alive.store(true,std::memory_order_release);
             }
             break;
         }
         case AMCL_SDL_AUX_QUIT:
             result=policy.quit(pid,tid,request->sessionId,request->instanceCookie);
-            if(result>=0)features.sdlAuxAlive.store(false,std::memory_order_release);break;
+            if(result>=0)role.alive.store(false,std::memory_order_release);break;
         case AMCL_SDL_AUX_RETIRE_SESSION:
             result=policy.retireSession(pid,tid,request->sessionId);
-            if(result>=0)features.sdlAuxAlive.store(false,std::memory_order_release);break;
+            if(result>=0)role.alive.store(false,std::memory_order_release);break;
         default:break;
     }
     policy.describe(result,*output);

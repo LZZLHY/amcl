@@ -70,6 +70,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { inflateRawSync } from 'node:zlib';
 import process from 'node:process';
+import {fileURLToPath} from 'node:url';
 
 // ---------------------------------------------------------------------------
 // MC 26.3 引用的 32 个绑定类（.tmp-sdl3/scan-mc-sdl.mjs 扫 client jar
@@ -89,10 +90,11 @@ const MC_BINDING_CLASSES_FALLBACK = [
 
 // ---------------------------------------------------------------------------
 function parseArgs(argv) {
-  const o = { so: null, jar: null, mcJar: null, json: null, verbose: false };
+  const o = { so: null, jar: null, mcJar: null, json: null, verbose: false, controller: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--so') o.so = argv[++i];
+    else if (a === '--controller') o.controller = true;
     else if (a === '--jar') o.jar = argv[++i];
     else if (a === '--mc-jar') o.mcJar = argv[++i];
     else if (a === '--json') o.json = argv[++i];
@@ -106,6 +108,8 @@ function parseArgs(argv) {
   return o;
 }
 const opt = parseArgs(process.argv.slice(2));
+// 主 SDK 与手柄 FFM 运行库必须拥有独立装载身份。
+const expectedSoname = opt.controller ? 'libamcl_sdl_controller.so' : 'libSDL3.so';
 for (const [k, p] of [['--so', opt.so], ['--jar', opt.jar], ['--mc-jar', opt.mcJar]]) {
   if (p && !existsSync(p)) { console.error(`${k} 不存在: ${p}`); process.exit(1); }
 }
@@ -320,7 +324,7 @@ const auxiliaryHostExport = validCodeExport('SDL_AMCL_AuxHostProtocolV2');
 console.log('=== ELF ===');
 console.log(`  大小      : ${elf.size} B (${(elf.size / 1048576).toFixed(2)} MB)`);
 console.log(`  machine   : 0x${elf.machine.toString(16)} ${elf.machine === EM_AARCH64 ? '(AArch64) ✅' : '❌ 期望 AArch64(0xb7)'}`);
-console.log(`  SONAME    : ${elf.soname ?? '(无)'} ${elf.soname === 'libSDL3.so' ? '✅' : '❌ 期望 libSDL3.so'}`);
+console.log(`  SONAME    : ${elf.soname ?? '(无)'} ${elf.soname === expectedSoname ? '✅' : '❌ 期望 ' + expectedSoname}`);
 console.log(`  NEEDED    : ${elf.needed.join(', ')}`);
 console.log(`  导出符号  : ${elf.defined.size}   未定义符号: ${elf.undef.size}`);
 console.log(`  输入冷协议: standard=${inputStandardExport ? 'calibrated' : 'invalid'} common-v1-marker=${inputControlExport ? 'exported-code' : 'missing-or-invalid'} look-v1-marker=${inputLookExport ? 'exported-code' : 'missing-or-invalid'}`);
@@ -489,8 +493,15 @@ if (opt.json) {
 
 // ---- 闸门 ----
 const fatals = [];
+if (opt.controller) {
+  // 独立 Java FFM 绑定会提前解析未选用子系统的函数，因此校准整个主 SDK 的公开 ABI。
+  const main = parseElf(fileURLToPath(new URL('../entry/libs/arm64-v8a/libSDL3.so', import.meta.url)));
+  const missing = [...main.defined].filter(name => name.startsWith('SDL_') && !elf.defined.has(name));
+  if (missing.length) fatals.push('独立手柄 SDK 缺少主 SDK 的公开符号: ' + missing.join(', '));
+}
 if (elf.machine !== EM_AARCH64) fatals.push('machine 不是 AArch64');
-if (elf.soname !== 'libSDL3.so') fatals.push(`SONAME 不是 libSDL3.so（是 ${elf.soname}）—— 构建时加 -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON`);
+if (opt.controller && !validCodeExport('SDL_AMCL_ControllerHostProtocolV1')) fatals.push('缺少独立手柄实例角色标识');
+if (elf.soname !== expectedSoname) fatals.push(`SONAME 不是 ${expectedSoname}（是 ${elf.soname}）—— 构建时加 -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON`);
 if (missingRequired.length) fatals.push(`必需符号缺 ${missingRequired.length} 个`);
 if (!inputStandardExport) fatals.push('I11 SDL_GetVersion不是有效可执行动态函数导出，不能校准输入协议');
 if (!inputControlExport) fatals.push('I11 SDL_AMCL_InputControlProtocolV1缺失或不是有效可执行动态函数导出');
@@ -503,7 +514,7 @@ if (!hasOhosDriver) fatals.push(`产物里找不到任何已知的 OHOS video �
 console.log('');
 if (fatals.length === 0) {
   console.log('VERDICT: PASS');
-  console.log(`  必需集 ${required.size} 个符号 100% 导出；ELF64/AArch64；SONAME=libSDL3.so；`);
+  console.log(`  必需集 ${required.size} 个符号 100% 导出；ELF64/AArch64；SONAME=${expectedSoname}；`);
   console.log(`  无 libc++ 污染；GL 全走动态解析；OHOS 驱动在位（${ohosBackend.flavor}，driver="${ohosBackend.driver}"）。`);
   if (missingAll.length) {
     console.log(`  ⚠️ 绑定全集尚缺 ${missingAll.length} 个符号 —— MC 今天不碰，`);

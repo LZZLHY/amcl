@@ -92,9 +92,10 @@ int main() {
     REQUIRE(std::find(args.begin(), args.end(), "-Dorg.lwjgl.opengles.contextAPI=EGL") != args.end());
     REQUIRE(FreezeBootstrapProperties(args, properties, error) && args == once);
     REQUIRE(std::count(args.begin(), args.end(), "-Dorg.lwjgl.sdl.libname=/hap/libs/libSDL3.so") == 1);
-    // 独立FFM消费者与LWJGL命中同一制品；这只绑定fallback，不提前执行其SDL_Init。
-    REQUIRE(std::count(args.begin(), args.end(), "-Ddev.isxander.sdl.library=/hap/libs/libSDL3.so") == 1);
+    // SDL 窗口与 FFM 辅助库的实际属性在启动前分别冻结；其它窗口继续用原辅助库。
+    REQUIRE(std::count(args.begin(), args.end(), "-Ddev.isxander.sdl.library=/hap/libs/libamcl_sdl_controller.so") == 1);
     REQUIRE(std::count(args.begin(), args.end(), "-Dorg.lwjgl.openal.libname=/hap/libs/libopenal.so") == 1);
+    REQUIRE(std::count(args.begin(), args.end(), "-Damcl.gamepad.sdl2.dir=/hap/libs") == 1);
     for (const auto& alias : HapOwnedProviderAliases()) {
         REQUIRE(std::count(args.begin(), args.end(), std::string("-D") + alias.key + "=/hap/libs/" + alias.artifact) == 1);
     }
@@ -161,7 +162,9 @@ int main() {
     REQUIRE(HasImplicitInvocationOptions("exit", nullptr));
     REQUIRE(HasImplicitInvocationOptions(nullptr, "exit"));
     REQUIRE(HasImplicitInvocationOptions("-Dotherwise.valid=1", ""));
+    // 独立 FFM 消费者在 GLFW 游戏中也使用无窗口 SDL。
     const auto desktop = RuntimeBootstrapProperties("/hap/libs", "/instance", "nativegl", "libGLv4.so", false);
+    REQUIRE(std::find(desktop.begin(), desktop.end(), BootstrapProperty{"dev.isxander.sdl.library", "/hap/libs/libamcl_sdl_controller.so"}) != desktop.end());
     REQUIRE(std::find(desktop.begin(), desktop.end(), BootstrapProperty{"org.lwjgl.opengl.contextAPI", "native"}) != desktop.end());
     // 同时开始也只能有一个创建者；Ready/Spent 均不得重新创建，避免失败后偷换 ClassLoader。
     RuntimeOnce runtime;

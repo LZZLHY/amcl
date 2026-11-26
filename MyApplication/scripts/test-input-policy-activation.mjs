@@ -136,7 +136,7 @@ function fixture(options={}){
   assert.deepEqual(calls,[{sensitivity:1.7,invertY:true,smoothing:.35,acceleration:.8}]);
   const feedback=f.store.getActiveProfile();feedback.haptic=false;feedback.controls[0].label+='颜色';feedback.controls[0].style={bg:'#abcdef'};
   await f.store.saveProfile(feedback);const report=runtime.snapshot();assert.equal(calls.length,1);
-  assert.deepEqual(report.difference,{lookChanged:false,touchChanged:false,gamepadChanged:false});
+  assert.deepEqual(report.difference,{lookChanged:false,touchChanged:false});
   const durable=[...f.data.values()].filter(v=>typeof v==='string').join('\n');
   assert.ok(durable.includes('lookSensitivity'));assert.ok(!durable.includes('LegacyGlobalLookCompat'));
   assert.ok(!durable.includes('activationState'));assert.ok(!durable.includes('definitionDeliveryRevision'));

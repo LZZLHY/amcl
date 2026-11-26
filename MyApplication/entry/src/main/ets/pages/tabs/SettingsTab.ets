@@ -19,7 +19,6 @@ import { ProductDeveloperSettings, developerToolRoute } from 'entry/ProductDevel
 import { ProductTouchSettings } from 'entry/ProductTouchSettings';
 import { ProductInputProfile } from 'entry/ProductInputProfile';
 
-import { DesktopGamepadSettings } from '../../components/DesktopGamepadSettings';
 import { MobileglRendererSettings } from '../../components/MobileglRendererSettings';
 import { GameResolutionSettings } from '../../components/GameResolutionSettings';
 import { TouchLearningStore } from '../../components/TouchLearningStore';
@@ -245,7 +244,7 @@ export struct SettingsTab {
       touch: ProductInputProfile.supportsTouchLayouts(),
       chooseInteraction: ProductInputProfile.canChooseInteraction(),
       mobileInput: ProductInputProfile.canChooseMobileInput(),
-      tabletProcess: ProductInputProfile.canChooseTabletProcess(), nativeGamepad: ProductInputProfile.canChooseNativeGamepad(),
+      tabletProcess: ProductInputProfile.canChooseTabletProcess(),
       developer: DiagnosticPolicy.hasTestHooks(), fixedRefreshRate: deviceInfo.sdkApiVersion >= 20 };
   }
 
@@ -547,7 +546,7 @@ export struct SettingsTab {
   /** 子组件的视觉开关、存储事务与系统权限由其当前所有者执行。 */
   private skillChildTargets_: Map<string,string> = new Map<string,string>([
     ['settingsGraphics','graphics'],['settingsResolution','resolution'],['settingsRetention','retention'],
-    ['settingsMic','mod-audio'],['settingsMidi','mod-audio'],['settingsInteraction','interaction'],['settingsGamepad','gamepad'],
+    ['settingsMic','mod-audio'],['settingsMidi','mod-audio'],['settingsInteraction','interaction'],
     ['settingsMobileInput','mobile-input']
   ]);
   private skillChildMethods_: Map<string,string> = new Map<string,string>([
@@ -557,7 +556,6 @@ export struct SettingsTab {
     ['bluetoothMidiAccess','settingsMidi'],['configureModMicrophone','settingsMic'],['getModMicrophone','settingsMic'],
     ['getDesktopInteraction','settingsInteraction'],['setDesktopInteraction','settingsInteraction'],
     ['getMobileInputMode','settingsMobileInput'],['setMobileInputMode','settingsMobileInput'],
-    ['getGamepadMode','settingsGamepad'],['setGamepadMode','settingsGamepad']
   ]);
 
   private readSkillSetting_(id: string): SettingsSkillData {
@@ -1322,11 +1320,6 @@ export struct SettingsTab {
         SettingsGroup({ title: '触控与输入', theme: this.theme, content: (): void => { this.InputContent_(); } });
         SettingsGroup({ title: '操作帮助', theme: this.theme, content: (): void => { this.TouchHelp_(); } });
       }
-      if (this.hasItem_('gamepad')) {
-        Column() { DesktopGamepadSettings({ theme: this.theme }); }
-          .width('100%').backgroundColor(this.theme.bgCard).borderRadius(20).id('settings-item-gamepad')
-          .onAreaChange((): void => { this.locateItem_('gamepad'); });
-      }
       if (!ProductInputProfile.canChooseTabletProcess()) {
         SettingsGroup({ title: '游戏窗口', theme: this.theme, content: (): void => { this.WindowContent_(); } });
       }
@@ -1358,7 +1351,7 @@ export struct SettingsTab {
   }
   @Builder
   private InputContent_() {
-    SettingsValueRow({ title: '手感与输入', description: '视角、触觉反馈与手柄映射', showIcon: true, icon: AppIconName.GameController,
+    SettingsValueRow({ title: '手感与输入', description: '视角与触觉反馈', showIcon: true, icon: AppIconName.GameController,
       theme: this.theme, controlId: 'settings-item-input', highlighted: this.highlightedItem === 'input',
       onLayout: (): void => { this.locateItem_('input'); }, onAction: (): void => {
         this.getUIContext().getRouter().pushUrl({ url: 'pages/LayoutEditorPage', params: { settingsOnly: true } })

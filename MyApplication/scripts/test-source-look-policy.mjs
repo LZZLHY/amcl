@@ -107,35 +107,35 @@ async function acceptedWriteThenLostConfirmation(kind) {
   old.lookSensitivity=2;old.lookSmoothing=.3;old.lookAccel=.4;editor.original=gc.cloneLayout(old);editor.session.open(old);editor.load_(old);
   assert.equal(editor.buildProfile().version,3);
   editor.setIndependentLook(true);assert.equal(editor.buildProfile().version,4);
-  editor.selectLookSource('gamepad');
-  const initialGamepad = sensitivitySlider();
-  assert.equal(initialGamepad.value, 200);
-  initialGamepad.onChange(150, modes.Click);
-  const draft=editor.buildProfile();assert.equal(draft.lookPolicies.gamepad.sensitivity,1.5);
-  for (const source of ['touch', 'physical', 'external', 'legacy']) assert.equal(draft.lookPolicies[source].sensitivity, 2, source);
+  editor.selectLookSource('external');
+  const initialExternal = sensitivitySlider();
+  assert.equal(initialExternal.value, 200);
+  initialExternal.onChange(150, modes.Click);
+  const draft=editor.buildProfile();assert.equal(draft.lookPolicies.external.sensitivity,1.5);
+  for (const source of ['touch', 'physical', 'gamepad', 'legacy']) assert.equal(draft.lookPolicies[source].sensitivity, 2, source);
   editor.selectLookSource('touch');
   assert.equal(sensitivitySlider().value, 200, '触控仍显示原来的倍率');
-  editor.selectLookSource('gamepad');
-  assert.equal(sensitivitySlider().value, 150, '切回手柄应显示手柄自己的倍率');
-  editor.undo_();assert.equal(editor.buildProfile().lookPolicies.gamepad.sensitivity,2);
+  editor.selectLookSource('external');
+  assert.equal(sensitivitySlider().value, 150, '切回外部兼容来源应显示外部兼容来源自己的倍率');
+  editor.undo_();assert.equal(editor.buildProfile().lookPolicies.external.sensitivity,2);
   editor.setIndependentLook(false);assert.equal(editor.buildProfile().lookPolicies.mode,'legacy-global');
   editor.undo_();assert.equal(editor.buildProfile().lookPolicies.mode,'independent');
-  // 拖动中切源时，迟到的触控事件不能改手柄；新手势的撤销也必须保留之前的触控编辑。
+  // 拖动中切源时，迟到的触控事件不能改外部兼容来源；新手势的撤销也必须保留之前的触控编辑。
   editor.selectLookSource('touch');
   const touch = sensitivitySlider();
   touch.onChange(200, modes.Begin);
   touch.onChange(150, modes.Moving);
-  editor.selectLookSource('gamepad');
+  editor.selectLookSource('external');
   touch.onChange(250, modes.Moving);
-  const gamepad = sensitivitySlider();
-  assert.equal(gamepad.value, 200, '迟到的触控拖动不得写入手柄');
-  gamepad.onChange(200, modes.Begin);
-  gamepad.onChange(300, modes.Moving);
-  gamepad.onChange(300, modes.End);
+  const external = sensitivitySlider();
+  assert.equal(external.value, 200, '迟到的触控拖动不得写入外部兼容来源');
+  external.onChange(200, modes.Begin);
+  external.onChange(300, modes.Moving);
+  external.onChange(300, modes.End);
   assert.equal(sensitivitySlider().value, 300);
   editor.undo_();
   assert.equal(editor.buildProfile().lookPolicies.touch.sensitivity,1.5);
-  assert.equal(editor.buildProfile().lookPolicies.gamepad.sensitivity,2);
+  assert.equal(editor.buildProfile().lookPolicies.external.sensitivity,2);
   console.log('PASS full production editor old load/explicit split/source selection/save assembly/undo/compat restore');
 }
 
@@ -164,12 +164,12 @@ async function acceptedWriteThenLostConfirmation(kind) {
   const runtime=new f.Runtime();runtime.start(f.store,101);assert.equal(global.length,1);
   const p=f.store.getActiveProfile();p.version=4;p.lookPolicies=f.policy.splitLegacyLookPolicy({sensitivity:1,invertY:false,smoothing:.6,acceleration:0});
   assert.equal(await f.store.saveProfile(p),true);
-  let states=runtime.status();assert.equal(states.length,4);assert.equal(states.filter(s=>s.pending).length,1);
+  let states=runtime.status();assert.equal(states.length,3);assert.equal(states.filter(s=>s.pending).length,1);
   assert.equal(states.find(s=>s.name==='look-touch').pending,true);assert.equal(runtime.snapshot().activationState,'Pending');
   const before=calls.length;rejectTouch=false;runtime.reconcile();assert.equal(calls.length,before+1,'只重试失败域');
   assert.equal(calls.at(-1)[0],'touch');assert.equal(runtime.snapshot().activationState,'Applied');
-  const next=f.store.getActiveProfile();next.lookPolicies.gamepad.sensitivity=2;await f.store.saveProfile(next);
-  assert.equal(calls.length,before+2);assert.equal(calls.at(-1)[0],'gamepad');assert.equal(global.length,1);
+  const next=f.store.getActiveProfile();next.lookPolicies.external.sensitivity=2;await f.store.saveProfile(next);
+  assert.equal(calls.length,before+2);assert.equal(calls.at(-1)[0],'external');assert.equal(global.length,1);
   const stable=calls.length,revision=runtime.status()[0].appliedRevision;
   f.fail();const failed=f.store.getActiveProfile();failed.lookPolicies.physical.sensitivity=3;
   await assert.rejects(f.store.saveProfile(failed),/save-failure/);assert.equal(calls.length,stable);assert.equal(runtime.status()[0].appliedRevision,revision);

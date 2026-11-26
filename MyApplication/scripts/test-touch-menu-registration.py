@@ -51,7 +51,7 @@ def main():
     if args.cxx and not (Path(args.cxx).is_file() or shutil.which(args.cxx)):
         raise FileNotFoundError('Requested C++ compiler not found: '+args.cxx)
     cpp=ROOT/'entry/src/main/cpp'
-    extra=[cpp/'platform/mapped_look_producer.cpp',cpp/'platform/source_look_producer.cpp',cpp/'platform/source_look_processor.cpp']
+    extra=[cpp/'platform/source_look_producer.cpp',cpp/'platform/source_look_processor.cpp']
     if args.cxx:
         compiler=str(Path(shutil.which(args.cxx) or args.cxx).resolve())
         inputs=[source,*source_dependencies(cpp),*extra]

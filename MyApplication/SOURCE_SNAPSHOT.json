@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "sourceCommit": "e94e7b2bde2126bf5d39d8bf63d30915669ebe73",
+  "sourceCommit": "2d114e925ab191fde276a84274d131960b487e30",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
     "versionName": "1.0.8",
-    "versionCode": 1001119
+    "versionCode": 1001122
   },
   "exporter": {
     "schemaVersion": 2,
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "90017f5f08a628cafd1f7ccb2bdbd0af99d88e8414a3e2bf0340d685f12dec38",
+      "sha256": "0415a97742899b9a5275898fb226ee16252c3560f34e255ff43678a7e2db4ce5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -299,7 +299,7 @@
     },
     {
       "path": "build-hap.ps1",
-      "sha256": "e281a1450ae609db5bd479a485c7c78b04c716622c0a8927f822539873d788b7",
+      "sha256": "4f4152a7f2460f4842832725f62425e95b3b63ab5f31dbe5c9b1480464c49296",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -761,21 +761,21 @@
     },
     {
       "path": "config/build-gate-baseline.json",
-      "sha256": "11fccd2a2506002dde7d3c0be161c9a663483ac3250dec4bdc257b1a1feff0cc",
+      "sha256": "1dbc968f9b859333f1215cba1c53b02fb0092e8c5bb4ae99c362916ee71f9f43",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "config/build-gates.json",
-      "sha256": "eb25240c298b976e3bec0125cc922feb84295f87d840365101d2adf219622c23",
+      "sha256": "a5b4d48ea3005fe2b530d36f18ed9f9e946fa3c24bb045b1d892648410ee5c3f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "config/launcher-skill/account-layout.json",
-      "sha256": "8af46988a2846cdb2b3aab8b67525fc3c502d020a4ec3a3e6b46df5e6efc2eb6",
+      "sha256": "eacd07c6dc9ab1b8ed3fe3f7c79eb20c879d2d5a04780d8cba8b1421033168c3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -796,7 +796,7 @@
     },
     {
       "path": "config/launcher-skill/settings.json",
-      "sha256": "14e4971629e55f105011d8166a52d5224783611730ee672e06bd4529f854450e",
+      "sha256": "d980a5f14ff19fde66e143fff6a5ab6e8beed4990e09045fa71ebcbdd841d2f8",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -817,7 +817,7 @@
     },
     {
       "path": "config/log-domains.json",
-      "sha256": "f9565b000439acda37b56e079c9e0c0f7f0623e1af275b76267328a5a8ba7834",
+      "sha256": "f3e62225009c5c210939f3abdbbda74545f294ce804d0f5f48117d3e8bbf443f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -852,14 +852,14 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "0c1aa81057a070fcdb2f9278224f2bfb3fb2098fa07410a915ced1aba6ecf646",
+      "sha256": "cc3455f2d02950d70b4de94b66f0f0d0bfabcc13cdd1c4740715634ac3c8ed5a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
     },
     {
       "path": "deps.lock",
-      "sha256": "26ca6d01514348eaaf24b860b47765fa84890881d4d0c2751f0442dc8d48024b",
+      "sha256": "0d98a8ebf73bd8bfbeb8ab0bd3e9c48548d3bb9d85852a425e6fc1a63c557f3a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -1678,7 +1678,7 @@
     },
     {
       "path": "entry/hvigorfile.ts",
-      "sha256": "6b1d944874a5f0abbdb26afa1538ae5501f023a975a5c10fa6587f80ab62a966",
+      "sha256": "7f293d0c0a7c6b66fd32a7bcdb8fc640635ae6f0c3ba92a1e1c03d6cbaf8823d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -1686,6 +1686,13 @@
     {
       "path": "entry/libs/arm64-v8a/libamcl_lwjgl_jemalloc.so",
       "sha256": "12026c1f4170e46db2234639ee695dfd2d49fee3e1ec385d07af6755af1ec21c",
+      "normalization": "none",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/libs/arm64-v8a/libamcl_sdl_controller.so",
+      "sha256": "3bf40a49213862ba321f9756b21d2413550508297d112135f5b29a21b0f939d3",
       "normalization": "none",
       "mode": "100644",
       "owner": "source"
@@ -1763,6 +1770,13 @@
     {
       "path": "entry/libs/arm64-v8a/libimgui-java64.so",
       "sha256": "635d7995ac3308748cdcebeed024d8f7b58bdd9b0462d6f674e88c119c359c70",
+      "normalization": "none",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/libs/arm64-v8a/libjamepad.so",
+      "sha256": "1293eb2fab23ec16e00ed6804566a925af481afffab318b982081973570c9912",
       "normalization": "none",
       "mode": "100644",
       "owner": "source"
@@ -1853,7 +1867,7 @@
     },
     {
       "path": "entry/libs/arm64-v8a/liblwjgl_v2.so",
-      "sha256": "53034f06c96cd1d851e8e3fde616452f1e1ed6d9386986dd33a11925c657e7d0",
+      "sha256": "4c456192188207837fbd8009b3401a2149d3b06199c9b9ba63db9ca9df53124b",
       "normalization": "none",
       "mode": "100644",
       "owner": "source"
@@ -1882,6 +1896,20 @@
     {
       "path": "entry/libs/arm64-v8a/libonnxruntime.so",
       "sha256": "f9fd9080a10f2b93323d597225fbaa63d06f93b384bdfdd7285db9a9115fcc2b",
+      "normalization": "none",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/libs/arm64-v8a/libSDL2.so",
+      "sha256": "d05a79c349615020320d57e1a5fbf8db21655c41afe4308943b0958690aab01c",
+      "normalization": "none",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "entry/libs/arm64-v8a/libsdl2gdx.so",
+      "sha256": "87889d2ca3c6b26b80a393759500c801f6801f234c7e4e4c3506e7c93e944a77",
       "normalization": "none",
       "mode": "100644",
       "owner": "source"
@@ -1916,7 +1944,7 @@
     },
     {
       "path": "entry/obfuscation-rules.txt",
-      "sha256": "45652935c9ff4edf6b3740bafde4ea4c9c53e2f8a1cf8c095978b75300940a9b",
+      "sha256": "40194130c3c7ac2c0aec0284a52bfc3c060d6330c57406a2306866ff29e4d7b7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -1958,7 +1986,7 @@
     },
     {
       "path": "entry/skills/amcl-launcher/references/account-layout-4.md",
-      "sha256": "59554c5c13f82f812ccb2a58bca6fdf9b93151276f2ded0e17e8e5a79444247c",
+      "sha256": "71589fc1284a9ff551375770326a6dd7be86aa227393e8ec241557f6c2ac167c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -2028,21 +2056,21 @@
     },
     {
       "path": "entry/skills/amcl-launcher/references/settings-2.md",
-      "sha256": "ac9d27b7f0bf2c5a8d4aacfa53a09d0fcbe9c917efa9ebc8fe5ed8a56c55c541",
+      "sha256": "993df5f05431d057cae8a0ae4722bd26de6faa94dec194524d9dbd0eb1c6372f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/skills/amcl-launcher/references/settings-3.md",
-      "sha256": "0f175fd3d0a07db25f24ff99736055e970b33eb55470baa3cbd2646ae74c0d02",
+      "sha256": "62d752b9e6045dc54951dd53555e0488bb1396ddcf6f4a457c3c89c31cf0d9b8",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/skills/amcl-launcher/references/settings-4.md",
-      "sha256": "995c730cdf0a8be79e41224751d5fcf3eb15f7f7ad097feafebbf377eb8ccd84",
+      "sha256": "ed95fe28aa0d702e77740a77eb8283cbb404be93a0e593c71e5177158e760ece",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -2084,14 +2112,14 @@
     },
     {
       "path": "entry/skills/amcl-launcher/scripts/LauncherSkill.ets",
-      "sha256": "e231d458a2a15c5f9f5b2e7c525f8da3770bd51bf30e180a7b0d4a547d00508d",
+      "sha256": "65475afa6e3dc50745e61432fa277fd06ba286d317a9a5a3b666b460b22b6f01",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/skills/amcl-launcher/SKILL.md",
-      "sha256": "55d1fc2be4579a1ee2d04f78ab86fa4052812d3565eb783864d780f4693e860f",
+      "sha256": "4b08d30edc808c4242f941f58be349f9ff59a5fcf4887c213410de0233c1f221",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -2364,7 +2392,7 @@
     },
     {
       "path": "entry/src/main/cpp/CMakeLists.txt",
-      "sha256": "32f25ee5eb20c41d4a2556399ed7da94f2469b4e01c137e3f23b5665b58bc8e9",
+      "sha256": "11e317a9451fd54729ab9e5e66210143c74f98b5aea52c8ef514e7e383fb4836",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -3218,7 +3246,7 @@
     },
     {
       "path": "entry/src/main/cpp/input/delivery/look_execution.cpp",
-      "sha256": "1d8c50f3efc6a38f2e909539edd491abd73c51994c67622305311715c90f6f99",
+      "sha256": "2428cec3122014e8b95a0ef92777b6823104cd64447e889dc101201fa0b010b9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -3743,7 +3771,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/hap_native_provider_contract.h",
-      "sha256": "69be8e2728dbeaae2596b696565d34c175620e7eb8fb48d4db4a8319633009a3",
+      "sha256": "3ff69b8a75c8fd947dd0c185391eb90192140b629e6530bbe8341e7a3b43df35",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -3778,7 +3806,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/input_library_claim.h",
-      "sha256": "86e2cedeb8746c32142859071759b1158d1e1aa673ed709ebc779de34d0ad706",
+      "sha256": "c7eb91a685cd0ed0a3dea60528870b05c1f331f689dee27f367d3c943b809124",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -3967,7 +3995,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/mc_launcher.cpp",
-      "sha256": "b09df9415ce9e2b97d560482556b59984485f71305703d45515c08ab046082a1",
+      "sha256": "e5f67c0c60c9ab1cdd97adc54ed4cce3b0b86138edaf7dce94bf95ac5aef3685",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -4016,7 +4044,7 @@
     },
     {
       "path": "entry/src/main/cpp/jvm/runtime_bootstrap_contract.h",
-      "sha256": "20039d18a51c3ccd724e2c71f24d7873f14184ae3fa3cd025a7b44e972c8de84",
+      "sha256": "b614a12f614694c353acf819bb740fb7edc075b86d97ac2ad2bd1de7f797a908",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -4289,7 +4317,7 @@
     },
     {
       "path": "entry/src/main/cpp/napi/napi_input.cpp",
-      "sha256": "bd6d1d6b37d1365cf62f95af47bc77bb48b4daafc73548997f29d2d78c112389",
+      "sha256": "8cb6bd482b9840f1e5f24498212e719c74e1897384756d542427d2377cb6d803",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -4688,7 +4716,7 @@
     },
     {
       "path": "entry/src/main/cpp/platform/gamepad_topology.h",
-      "sha256": "de45094a3fa514f0c6c7177a36735f38a1b38bb529b3d0d7e3a99b73d025f32c",
+      "sha256": "a0931969ebf9a341252c3f00070a0c5279aff4a3c2d46aca3cc6357b2d53eff5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -4828,14 +4856,14 @@
     },
     {
       "path": "entry/src/main/cpp/platform/graphics_features.cpp",
-      "sha256": "6a4d03d58233971cfad8049024315ed2d5eaf9f732f28216970eedc5af929b6a",
+      "sha256": "6745e32c8b1549f7e3e04c6811742749bf1042029e9139eb61ec795266c93346",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/cpp/platform/graphics_features.h",
-      "sha256": "82b454164435ca651ff88494cdf8c09b9665225888e2e926afbb8d65c25c0ff0",
+      "sha256": "2d05025bbe2c2fe7b80d5b55f4eb08326e37770d086d83f710b6bbbb4620ca32",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5010,7 +5038,7 @@
     },
     {
       "path": "entry/src/main/cpp/platform/input_source.h",
-      "sha256": "2cbf15ebfc4cf9344219e5efca15dae58a5a9ae576d95ba59d425c5e7316d8ba",
+      "sha256": "772edd1d68e2c944a3fddb9b4364072707dccca49c5e812d81d429b56b4114d5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5073,7 +5101,7 @@
     },
     {
       "path": "entry/src/main/cpp/platform/joystick_sector.h",
-      "sha256": "cb59dea1befe37ea0712f3c27634a1c839ae12fbd9d61b6d2b6b05c9a4edd9b5",
+      "sha256": "669c98b84a981c9a8f83fe00af8d1b526b51ede21b80d54d3799bc7fb4646286",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5165,20 +5193,6 @@
     {
       "path": "entry/src/main/cpp/platform/lwjgl_egl_bridge.version",
       "sha256": "d69aa6edcde541f49fca87659fe8c026b8c82450dc70f269e42376c6ccb53ec5",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
-      "path": "entry/src/main/cpp/platform/mapped_look_producer.cpp",
-      "sha256": "5a03edbe6ededaf9f60e8fa86e33c56b7ccc67a1d83edc8c47988b1cf388ee79",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
-      "path": "entry/src/main/cpp/platform/mapped_look_producer.h",
-      "sha256": "84bec20aa07c8c1747348eefa9344182026817b2905aa6ef1d06274e3989d30b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5444,14 +5458,14 @@
     },
     {
       "path": "entry/src/main/cpp/platform/sdl_aux_runtime_policy.h",
-      "sha256": "27469a30e4e34a667045861a2a93835a4d75bef8485f7480b3796257452cb450",
+      "sha256": "87cbd6f97a30c670320b1f6d1133f094ab7ab6e2e18372e8b4e84d05b953026d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/cpp/platform/sdl_aux_runtime.cpp",
-      "sha256": "0f46b157846f468d03e8712b9636af60a21dc67aa376b2f0de43905e03f186c8",
+      "sha256": "70b357064deab2c2476a16e8fc9aeb478e6cd7886a4ad33f132da38a4b496d96",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -5549,7 +5563,7 @@
     },
     {
       "path": "entry/src/main/cpp/platform/touch_input.cpp",
-      "sha256": "09ad33b44de010e590128836900ec0df81dfef8f41ac371216d61614ef1435a8",
+      "sha256": "fbe61da5291405ab8e6455bbc445d3380ee7dc49015799c73f663096dee9e8b5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -6368,7 +6382,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/input_slim_boundaries.cpp.in",
-      "sha256": "437d05e2280c46b8b9d1d426a921236a45318a7a914386bca7b06d7999387f64",
+      "sha256": "e2bc14af11b78151c0981a3ed92097acb4dbdd92ad6aae0e5e233699a6bd5822",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -6571,7 +6585,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/look_clock_test.cpp.in",
-      "sha256": "7c7f6cbdd88adb25b2763b748717708e26ee7d484749d15f09ed175f085b2457",
+      "sha256": "b503c57ac63997a325d1b0445cb9611abb7a2d3ed296887c4fff3d2308924a31",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -6592,7 +6606,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/look_execution_test.cpp",
-      "sha256": "3cb35bcb19455564611a4e6eb924b40fb77ab6762da62344983a27dc1ab5b5a1",
+      "sha256": "156b70c9be4d576b0f605a7340e8b76fb002be8f6bfb9531317b745aec4706a2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -6613,7 +6627,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/look_transport_test.cpp.in",
-      "sha256": "bffe6e3758be02cbdbef83f39edba5f441c1f9b2333f6e6895a9949f09227d0c",
+      "sha256": "97423f40a679cca4f48cc264a5b2986b535f8d7205c9092ba975da8580601893",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -6984,7 +6998,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/runtime_bootstrap_contract_test.cpp",
-      "sha256": "bd1c39ea1fd154b90f40da03d737ff36e214a5fe574b0603b414c35894156246",
+      "sha256": "ed1d30b473352dd5914694a502dad090c995834a71a22c8034eec8b4f8244079",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -6998,7 +7012,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/sdl_aux_runtime_policy_test.cpp",
-      "sha256": "adc9620e596ddc723fa3ea453f5e65da5063182ba844b0d4a46a556c627b8350",
+      "sha256": "85f66a1e9dcd642f1c4a835797e62dff5af3786435283d9bb2c03b6669e181d3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7012,7 +7026,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/sdl_aux_surface.cpp.in",
-      "sha256": "81eb7db3418fa95b14ef0f5ffe4b0ff4ddc104fdb55ac3d72745aceac8e3896f",
+      "sha256": "cdfac9ebcd7aa7bb58813b3d796d81148b3f97075b4cbebce4f54fcc3221bde2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7089,7 +7103,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/source_control_transport_test.cpp.in",
-      "sha256": "639c5db9903a19d80f3f8d1b8ca51b191b43bb2e72801e9361e5b318e033ce0a",
+      "sha256": "82842831728f6088aaae8fe2fba66226525f789a2f528d3eb386daabd55845b3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7453,7 +7467,7 @@
     },
     {
       "path": "entry/src/main/cpp/types/libentry/index.d.ts",
-      "sha256": "7387133e0127821ae9deb96e05839c5c104c70ada204a05349eed122d9b421ff",
+      "sha256": "1166738f5c2ab09a15e032d486f0bee5910e9124e64525aae50a2523bf6027c9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -7802,13 +7816,6 @@
       "owner": "source"
     },
     {
-      "path": "entry/src/main/ets/components/DesktopGamepadSettings.ets",
-      "sha256": "a2d5e3eb43bfb5cc1ef50cce4a2f50a45dcf5328c5be3799e8020eb2e4fb04ab",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
       "path": "entry/src/main/ets/components/DesktopPhysicalTextInput.ets",
       "sha256": "13fc8d24c7d1c0e047aa0b32d4634910e07e09f44b5210b51ab5cdaa5ce3ea0b",
       "normalization": "lf",
@@ -8020,7 +8027,7 @@
     },
     {
       "path": "entry/src/main/ets/components/GameSettingsNavigation.ets",
-      "sha256": "dd060897236d53cf1b40dc9c353c63a3917fd1ca7294c98b2beef91520d2b247",
+      "sha256": "90bced28855e60b891d4c6d58a90b55382df33f39c67521fc6a8923d6722e7cf",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8055,7 +8062,7 @@
     },
     {
       "path": "entry/src/main/ets/components/InputSettingsEditor.ets",
-      "sha256": "2ae4d4ba1784c4fe7d53b150128be12d4b5982a826787c30143652d88a3e4ba3",
+      "sha256": "978fec4fa7697e60999534b0c9d7c86c2e23feb3dda204db1c2b37017edc11ab",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8090,7 +8097,7 @@
     },
     {
       "path": "entry/src/main/ets/components/KeyPickerSheet.ets",
-      "sha256": "1ca67ecce513f24a7fbe2e28aba541c1d5e8e45e0f44ae9d3afa42b5115ee627",
+      "sha256": "a9131cc9f82747c0fb47e06b7dae3b5d11fcbec5d90796f03a05774c074712ab",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8118,7 +8125,7 @@
     },
     {
       "path": "entry/src/main/ets/components/LayoutEditor.ets",
-      "sha256": "1595892e465faf89b9f2169eb7693c00031eead5a4b294065c2693c180c342f8",
+      "sha256": "edef28e67d26e3ea079b434eaa06b90a8065cdb8e58146dc1cdb224dc6a11716",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8874,7 +8881,7 @@
     },
     {
       "path": "entry/src/main/ets/launcherskill/SkillMethodCatalog.ets",
-      "sha256": "feaaea408a36057b6302e4ef3a2f00bb677e5c07c5653392270db3ac244dea98",
+      "sha256": "2ff72d13f7060711a90a89998bc21612ee387fb97b6bdc458c44d834d37c3b77",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -8993,7 +9000,7 @@
     },
     {
       "path": "entry/src/main/ets/pages/LayoutListPage.ets",
-      "sha256": "9fff8d9c35a68cda08c01d44b1ce62dd383adb2d58ce9aacfa98d1dce695849a",
+      "sha256": "729a1022f0cb8f6c7fff3eb1440429d90a99f5725cdf9eafacf6af8b4ffc2136",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9014,7 +9021,7 @@
     },
     {
       "path": "entry/src/main/ets/pages/McGamePage.ets",
-      "sha256": "9af15dcbaec6f265f5f29d125f4d3cb8dc2c1f9e07bba8bbeda84c71d667a025",
+      "sha256": "8a0d8c948dcbcf71ba0ddf8c0161d2d0bed546ef7d1e4171004b83d1c55c2335",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9077,14 +9084,14 @@
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsCatalog.ets",
-      "sha256": "9cbe274816abda6b88f2df503f8199403e9b88d1ec9282faf7f44c2fdbce8abe",
+      "sha256": "a6a8793be191619290df56a1588b1acbd414d9ce374956593a2f085a28d5a07b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "entry/src/main/ets/pages/tabs/SettingsTab.ets",
-      "sha256": "33dd0d5a6cb3ea5ecb04f8a4d2dcda05d2da81498dfd96017bed3453db48bf06",
+      "sha256": "8c795d25d85386d57452d69d701da0bf6db24675db91ed372624a8a106a757f1",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9112,7 +9119,7 @@
     },
     {
       "path": "entry/src/main/ets/product/RuntimeProductProfile.ets",
-      "sha256": "cff399b1cfeaaf50faa96faa94c9798dc8687e17274335d55107cb7dd9030924",
+      "sha256": "ca252372d6cfc1b29bc822e30793ba49554d190378da45d701f8009f59b43818",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9217,7 +9224,7 @@
     },
     {
       "path": "entry/src/main/ets/runtime/GameSessionHost.ets",
-      "sha256": "679c9fbbb51cf4022881a9c2d6e51ce749b0a3722f4169275a5a2355ce1aa1ff",
+      "sha256": "acc7e8a78c6a78189ffd184aecbd4e05ead4bad36334e06bb3ab36f023827eca",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9337,13 +9344,6 @@
     {
       "path": "entry/src/main/ets/runtime/ModAudioRuntime.ets",
       "sha256": "960bd1e33b531a6ebcd81ecf70ca1efc6a9082e6cfc0f7d9c230b46a927aa475",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
-      "path": "entry/src/main/ets/runtime/NativeGamepadRoutePolicy.ets",
-      "sha256": "064a865b4f4cbd7bcb9e5e23bad3863735dbe8940411945669ed43cef5bececa",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -9798,7 +9798,7 @@
     },
     {
       "path": "entry/src/main/ProductTouchSettings.ets",
-      "sha256": "348f3a6ab2fe133aa1940899a1002c9faaf28132f358b147210ef477bfafaacc",
+      "sha256": "f1f54c8d3495b412e9f9d1fd73e506a22068d25afe61113a2b38d56859243ac4",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10057,7 +10057,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "4a8f45bab82ecd42931494867fc83951c206931cfc418a3c755c6986364ada23",
+      "sha256": "c4baf213abef5676337080e5195eccd6fc9af39821155682e7d267660019d13c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10148,7 +10148,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/lwjgl2/lwjgl.jar",
-      "sha256": "3bbc0fa3df402219b3051d91dcde1cfee80fcdbefd659c2372024d22ebd50c66",
+      "sha256": "fe0fa781264e3ff98eee7a6e75291c5178bc82ac434b20a3938cc27c710e5981",
       "normalization": "none",
       "mode": "100644",
       "owner": "source"
@@ -10518,13 +10518,6 @@
       "owner": "source"
     },
     {
-      "path": "entry/src/test/GamepadManager.test.ets",
-      "sha256": "56155c3e0ba574e5b88c2cbf6a3dfd48bb4a4ccdd973b34335e92f68a1bf31a6",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
       "path": "entry/src/test/GameWindowRestorePolicy.test.ets",
       "sha256": "83ddaf5d055d44c4db0e5310a620bc1d36dc1d024a088d35ee8d1fb9d91b5c49",
       "normalization": "lf",
@@ -10582,7 +10575,7 @@
     },
     {
       "path": "entry/src/test/List.test.ets",
-      "sha256": "24c2fa06f4372841a745bbbbe5b2c0a909f35a52b085be2fea7d94e75dd684dc",
+      "sha256": "440ab19aa3d6139311ba238ab3b3b79690160ef9a4ccd0e1567b1002866e088d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10771,7 +10764,7 @@
     },
     {
       "path": "entry/src/test/PhysicalHeldKeyTracker.test.ets",
-      "sha256": "21de3523a30d3851942b486c8eca819d24beae80f6c1598640d3fb51aa23a719",
+      "sha256": "c4b58a74b545b449ba249a3fdb09df838db6830379ea62eb23356ed989d7b945",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11464,7 +11457,7 @@
     },
     {
       "path": "feature_system/src/main/ets/PreferenceManager.ets",
-      "sha256": "a253bb69de9caf77d3d63a64ebb3e235e44dd25af90ba0271dfc950ca0499628",
+      "sha256": "c82f1a7e5c32b284f4c7aa935b96a71f912f2ffe16bced3153930c9103058578",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11527,7 +11520,7 @@
     },
     {
       "path": "gamecontrol/Index.ets",
-      "sha256": "df0261157194a7406e1b0c563925e10a4db00e3bd0eb0c6d86f2aac71d9884fc",
+      "sha256": "f5ec592fa8c270368717c2a294d3247d115f409c49401ec38286f723e84c80b9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11576,7 +11569,7 @@
     },
     {
       "path": "gamecontrol/src/main/ets/ControlLayout.ets",
-      "sha256": "c20fb39dc905d885cbb38bf34a15cbea7bea50f8192390eebd3ec1edf75516d4",
+      "sha256": "29d059dfd6fe430e628cd4aa3b1122964c5f3e494fe5aaec225d24c6533e581f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11597,7 +11590,7 @@
     },
     {
       "path": "gamecontrol/src/main/ets/GameInputRuntime.ets",
-      "sha256": "22ecf23a3568e5bbec0d778f35e945fd31f149f680b1e1c3d69f4abf1b971ea7",
+      "sha256": "2424d3bf9339e23893d5bec68560f28e3c79b9c0e937a90c6593ddc6b73e4235",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11605,13 +11598,6 @@
     {
       "path": "gamecontrol/src/main/ets/GameLayoutSessionMerge.ets",
       "sha256": "490c1bd25285a91116a889f726bd2d1372fad28c912983860811f4d092c5f038",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
-      "path": "gamecontrol/src/main/ets/GamepadManager.ets",
-      "sha256": "4492648e7b7caf8ed723518c5325b490030b1d75526dd63f7373ad7df159f32d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11646,7 +11632,7 @@
     },
     {
       "path": "gamecontrol/src/main/ets/InputConfiguration.ets",
-      "sha256": "8cadaaa74e693574ed142378b3f4d9fa9ba63763f0bc98494eb7d702deda81a5",
+      "sha256": "b072a253a6810032c403ff2d7dae4406658e3e2975f6595266a7e4faba409b1a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11660,21 +11646,21 @@
     },
     {
       "path": "gamecontrol/src/main/ets/InputConfigurationRuntime.ets",
-      "sha256": "793ef11c070c975b77904309d19511a15435ebae62a1829a69ab8c0825a8c731",
+      "sha256": "68eb7f062b2d0a6c5f8016a3fb913a8ce253383bc266f501cfcb5aae6b6a520a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "gamecontrol/src/main/ets/InputDeviceAbi.ets",
-      "sha256": "c387edd65f7643a0abad306fd8b3d62ac83da08376f6a18577f5753612ce9e05",
+      "sha256": "fe612ee9e228209712b1376211b9f741204ad254513f1cd5a2cd5bdd475a8dc2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "gamecontrol/src/main/ets/InputDeviceConnectionLease.ets",
-      "sha256": "c3ace9ccf0d568b4197e0b590cc5490a9346c7b75f94b41b63db77abdc43d7f7",
+      "sha256": "042be4ffbfe33fcc1c88fb9c50807b02a98e58db5788bb1ff8c74821279adf90",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11702,7 +11688,7 @@
     },
     {
       "path": "gamecontrol/src/main/ets/InputSourceRegistry.ets",
-      "sha256": "72f2884422b46fc02d736a9ca2857081560613af9b30c915a0fe226ebd33ef40",
+      "sha256": "9454c19f66c830362a5ec9b67e25c7e0713974dad7d82cfa2a3203580a4103f8",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11716,7 +11702,7 @@
     },
     {
       "path": "gamecontrol/src/main/ets/JoystickSector.ets",
-      "sha256": "0bb5e406935eea121083853aed1a65c242e0b8d184385b4cfb7000803b71c97e",
+      "sha256": "64bbebc8da498d17916fb674336b5ab8f67fef226b11ae1602ce46e3a9e4dccf",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -11786,14 +11772,14 @@
     },
     {
       "path": "gamecontrol/src/main/ets/LookPreferences.ets",
-      "sha256": "92c5bf4230234c4bcf742b4bf4901d5190fdcb9e2272d4618947398d1b34c28a",
+      "sha256": "1e3fa00ab677cecad350b45fca6fa415aac045aca2e257f02925dc0f15fb71e9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "gamecontrol/src/main/ets/OhosKeyCodes.ets",
-      "sha256": "8f162b0565d61521ecb64d7fbd93b8d3aae23ee1e673422074858b2331efa0b9",
+      "sha256": "a69e91409c13fcdefd9c5970e9248a83694dc9365f8ebc6be5d89faad3bc4a6c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -12521,7 +12507,7 @@
     },
     {
       "path": "JavaCpuAgent/artifact.json",
-      "sha256": "45c516344680461afc2411ad14ea1a1a2a29bfe89b6badace97ea6ed83e82a05",
+      "sha256": "e6c8656b8836a9b893ee07ae84b7776db341679fe8e9ba637bac098619edf6bb",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -12542,7 +12528,14 @@
     },
     {
       "path": "JavaCpuAgent/src/com/amcl/cpu/CpuAgent.java",
-      "sha256": "d899e06bcd0df2491e9a78a9e2e97f8e1424f09ea4e6b9215ae91954c25e8f7c",
+      "sha256": "dad313124b9344ef192e6c6b2dccf20871c472b4722dfba8d4f921f073bb82bc",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "JavaCpuAgent/src/com/amcl/gamepad/Sdl2NativeLoader.java",
+      "sha256": "926f01599f26a04a8447e58d00b2be21916f3e040f31e518ed1e7aabefa1e539",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -12564,6 +12557,20 @@
     {
       "path": "JavaCpuAgent/test/com/amcl/cpu/CpuQueryTest.java",
       "sha256": "1a306d6704122609f43a12081ab8ce724e6215a9e816eaa81ffbbcd395bff015",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "JavaCpuAgent/test/com/amcl/gamepad/ForgeModLoadProbe.java",
+      "sha256": "b94e684e1d41b1aec2e321c4cf213219c46cff372e434d1aa7113bb748256a27",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "JavaCpuAgent/test/com/amcl/gamepad/ModLoadProbe.java",
+      "sha256": "9515adce9e44ea1a1a65e4ebabaef918c33d802569b093b44941acff8eb2be45",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -12647,7 +12654,7 @@
     },
     {
       "path": "launch/src/main/ets/CpuCompatibilityArtifact.ets",
-      "sha256": "95ab61069886addae7e8a6cff0fcc2e641aa0c9508d4d011fbbc43b1abdd8c82",
+      "sha256": "10ab186a6fc7acc2b7536dce92096981945b9b943e741d7e9f04cd1ed402e9e2",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -12864,7 +12871,7 @@
     },
     {
       "path": "launch/src/main/ets/LwjglRuntimeSlots.ets",
-      "sha256": "4f3fbdff83e07e40c336c144fe394af52fe10ff56f0f2446a587d287ef83d287",
+      "sha256": "42b2621bb96b86f4864c04dc597a2df366241772230a846170c1231e74202677",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -14697,8 +14704,22 @@
       "owner": "source"
     },
     {
+      "path": "prebuilt/lwjgl2/gamepad/DefaultControllerEnvironment.java",
+      "sha256": "fcce13d06f09f3c6d0c0482b977d8bb40829bc6a4b1ee8b181aa58d964f7a903",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "prebuilt/lwjgl2/ohos-backend/amcl_lwjgl2_backend.c",
       "sha256": "54fec4ecea6179b18316023012bbcab515a7ae25c2a27ff8fc26644e94141952",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/lwjgl2/ohos-backend/amcl_lwjgl2_gamepad.c",
+      "sha256": "d21a0b0819b03a01d219f30f53a3e07417e03eda7620b2f995952916dce7b57b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -14720,6 +14741,13 @@
     {
       "path": "prebuilt/lwjgl2/patches/control-readpoints.patch",
       "sha256": "3e24f29e9a426032b978b795ae89e29d4e1e187ff4fa0a32fae4eb0300e2f319",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/lwjgl2/patches/gamepad-hotplug.patch",
+      "sha256": "6ba107fb8e057b55143ef73d4ac7bdcbd58857af85ecc284bc7e1399cef64221",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -14873,7 +14901,7 @@
     },
     {
       "path": "prebuilt/lwjgl3/legacy-slots.manifest.json",
-      "sha256": "305ab4b88202fb28e2001a305dff0d8b65fd9226f050e7f31ccbb6fb422ee435",
+      "sha256": "ff96b0a6d4061bad540ddee86678454dad730093079fcff8ee51ef7acf5d7176",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -16336,7 +16364,63 @@
     },
     {
       "path": "prebuilt/mod-natives/manifest.json",
-      "sha256": "c1c68c64f60d00931b662a566c31ca8766005615c6843d1a4964cbd016f41ee0",
+      "sha256": "867189c1417a44d70a413a6655e6390c1af0231cadf44fa7e12d049bcafb6390",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/artifacts.json",
+      "sha256": "fa583defd4db26bbe4c0fdd55839b86355801b298fd7e72cf1075eb614826e7f",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/controller-thread.h",
+      "sha256": "0bf4df8a84ea83b480c295cdfb5e52456fdff3d04e80dedb3f198de7f9d1684e",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/GenerateBindings.java",
+      "sha256": "f77bccd72d3fc961bd14d1aee461944a20563d026e1dc3379df04154ef52b45c",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/Jamepad-LICENSE.txt",
+      "sha256": "e1efe69d371970c529a38c600168c2e67eaff63dab58d027831ea46a0a33a2e4",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/SDL2-LICENSE.txt",
+      "sha256": "888a051838996fa8d9ebdc3649647a56d294c31fcd2ae27492a61c75ff07dedb",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/sdl2gdx-LICENSE-EXCEPTION.txt",
+      "sha256": "2862e624a9fda4b46eaa86168e19aa866a48d936c8a54d4d3bbcbc23ffbfbb00",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/sdl2gdx-LICENSE.txt",
+      "sha256": "6ac1791b0d0fa36c0f1512c1836bbc8dffa2b0e32ec8338880a4cbfc173ac389",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/mod-natives/sdl2/sources.json",
+      "sha256": "e33add55d2d6f9d65163bdf20892eddde6de743d2672a0efb5ef813c47d33fae",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17105,6 +17189,13 @@
       "owner": "source"
     },
     {
+      "path": "prebuilt/sdl3/controller-build-provenance.json",
+      "sha256": "8ffbefb61ce43ba99d149c64a70614b419c278e0f22e626c3624999ad63dbc29",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "prebuilt/sdl3/patches/0001-openharmony-host-window-input-and-backend-fixes.patch",
       "sha256": "10231434c86acab2b671ca030425886b86dd66b9727d227265796a8c0f264fe0",
       "normalization": "lf",
@@ -17357,8 +17448,22 @@
       "owner": "source"
     },
     {
+      "path": "prebuilt/sdl3/patches/0037-openharmony-controller-instance.patch",
+      "sha256": "b4a1ced120e65623616c38cf057780ad5d4c38a12cb01cda8d9a46f256b99a73",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "prebuilt/sdl3/patches/series",
       "sha256": "ee3c4bc7759a8157c5b3bc0df00fca9ad5d9dc33c0e5fa5b2316c9dc53a5ed33",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "prebuilt/sdl3/patches/series-controller",
+      "sha256": "82542d4f573c8c6ce2ef117af6fa3fd113281ed5468c9382c3471402f549a7c7",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17666,7 +17771,7 @@
     },
     {
       "path": "scripts/build-cpu-agent.py",
-      "sha256": "e92bdb795ce9c43c4dd5899e1f4b067d45d761b11e5038f1b2ce4d001c4336b6",
+      "sha256": "7ce0775b943d853a4b69d9f18eca4813579e583c6ec95dc9b8241271c7366182",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17722,7 +17827,7 @@
     },
     {
       "path": "scripts/build-lwjgl2-ohos.py",
-      "sha256": "e421a302f745b874dfa88af538d5f89a655cca1566a488921adbc508687c47f1",
+      "sha256": "1488c4df48a9d2e3ed4f2c0e12720113c76e5c95e86c9b1d910670bcb65a9e84",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17742,8 +17847,15 @@
       "owner": "source"
     },
     {
+      "path": "scripts/build-sdl2-gamepads.py",
+      "sha256": "eea31c9fcde20082b05446dd801924209d5195fd79ce8b9f93c1e71cd3c2679c",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "scripts/build-sdl3-ohos.ps1",
-      "sha256": "938045df8944596d764728ed7210854f2f182639eee6390942abdd154436e8ca",
+      "sha256": "369369c037058108831c7a8b1c3e53f1996424419e407cb3980fe1cf9ac278e3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17820,7 +17932,7 @@
     },
     {
       "path": "scripts/check-application-abi.mjs",
-      "sha256": "0e90171c914a105079eee07402bee2dfdf64b2916c7d219d3178bc3c76905956",
+      "sha256": "b129782f5ceff0e1487e57f261fcb0c9f5c1676c06e9f8a867b1ea39616bdf68",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17862,7 +17974,7 @@
     },
     {
       "path": "scripts/check-critical-logging.mjs",
-      "sha256": "b4d5f09881ad2f56c88fa8cf81b829ee709c920f30eac714d310fbdf240d2bb4",
+      "sha256": "090c9e8eb9612064dd51fc6e74f5b6839615938721639f74080d7e0b391aa047",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17988,7 +18100,7 @@
     },
     {
       "path": "scripts/check-hap-native-providers.mjs",
-      "sha256": "883670ed03b7633f991aaacfbc4647bda49e45e935f6265335c2e0e9ca6207a7",
+      "sha256": "cb4589c277c148eac3eda183dd0172839cc9431337cebad8d5ecd59eebe5001c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18345,14 +18457,14 @@
     },
     {
       "path": "scripts/check-sdl3-artifact.mjs",
-      "sha256": "53c7d741222aa6b24c3c95a4dfc40cc5d81ab9ab09c1f36509d8bedc4a35483e",
+      "sha256": "e847431af1a2beae5ef38abeaa521c90f0749705ef0e6b590de854eca9c8cb5e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/check-sdl3-launch-contract.mjs",
-      "sha256": "c1f0763b29c6e735a3cf2bf569204a14993bbaaa7765fbc3c74db545faa0908c",
+      "sha256": "346220486939da212497a592d5ae0626b706889172e06a75198d89c6a1b8e4c4",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18380,7 +18492,7 @@
     },
     {
       "path": "scripts/check-sdl3-surface.mjs",
-      "sha256": "d9d1b6357de017af939c7af81f50736ddbe578147d68c57840635d291d7c00de",
+      "sha256": "0d4482f2badedf451578cf51e872594a3379b86249c38a3ac77a4d53a01b6b87",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18464,7 +18576,7 @@
     },
     {
       "path": "scripts/comment-layering-baseline.json",
-      "sha256": "c64007a79ac2ec82469aa8874b3dd95ba4cb37d2f8970b88c6ba142ea69431b1",
+      "sha256": "e1414de13a1e066f2a6a93ba525f07b48964af9c1003b59b53a02c54a0c356db",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18681,7 +18793,7 @@
     },
     {
       "path": "scripts/fixtures/input-consumer/l2_source_owner.cpp.in",
-      "sha256": "2bd938f17646e6d162791ec89d91375af51eba94cc6007067ea6a74e3dc95662",
+      "sha256": "7fb1ff34affcc487c7a4b27fe9a0fa607808a3b259ae8d7ceadee4eac7e9a724",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18710,6 +18822,20 @@
     {
       "path": "scripts/fixtures/input-consumer/l2-baseline/README.md",
       "sha256": "852ebe3c607bca50c37548773ea8fa47a51d22575dabcd3b25995130111762ce",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/fixtures/input-consumer/l2-gamepad/device.c",
+      "sha256": "d2715d8ba8d0c51a5d083bf6dc20e92890739f7e8ff849c903b7786da8a6a41a",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/fixtures/input-consumer/l2-gamepad/L2GamepadProbe.java",
+      "sha256": "465391cf0640ed737da012c41343d36690b50223bdcbaf8dd0a3c6ea4324e2c6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18772,7 +18898,7 @@
     },
     {
       "path": "scripts/fixtures/input-consumer/L2SourceProductionTest.java",
-      "sha256": "a59d64ece49f0d69f641a2b95312787c555656029d8fa37f6857b1c922c26e56",
+      "sha256": "cb9685f411743ce8b7c1f051df1e918860facccae96f9cd504273c4b809a6e97",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18836,6 +18962,13 @@
     {
       "path": "scripts/fixtures/input-consumer/sdl_text_demand_queue.c",
       "sha256": "252131dcfa4c4f86b337cfa368b5e9ceba6c716ca2cd4745597cbc2fce46482e",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/fixtures/input-consumer/sdl2_worker_reader.c",
+      "sha256": "0c4c6f6822e86cf650c6d001f0b97bbb3dd848255b333d339c51f9b888872de9",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19388,7 +19521,7 @@
     },
     {
       "path": "scripts/lib/ets-runtime-fixture.mjs",
-      "sha256": "628a1a172d5e45ab09386b95524896e05470f55d15ad374781a32be1cadc5309",
+      "sha256": "ee94afcf40e8fb06e8697cd63eb7e8c36a79c1c4a2db3ad70d993e2e3bc4ee8b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19499,6 +19632,13 @@
       "owner": "source"
     },
     {
+      "path": "scripts/lib/lwjgl2_gamepad.py",
+      "sha256": "2b87ab068e41e65a6c36974baedab5b567cffa7c57a867d295e3593b76747d23",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "scripts/lib/mg-context-identity-evidence.mjs",
       "sha256": "aaf90ad05c261601ace38dfceb5f5ee64d7332469e66fc23ed27e7c2eaf6c8fc",
       "normalization": "lf",
@@ -19541,8 +19681,15 @@
       "owner": "source"
     },
     {
+      "path": "scripts/lib/sdl2-gamepad-artifacts.mjs",
+      "sha256": "4f0f565b7fa1ce7145d1115477e8b6e9e0fe43a34d902cc53cda1f3bcc8aaa77",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
       "path": "scripts/lib/sdl3-artifact-lock.mjs",
-      "sha256": "eaea9d9f20ccb2fe5de1a2f8df1f8fb13276b58395ff501135f98880478ff703",
+      "sha256": "de58cc51fb0d7878192aab5ccedd69ab78fd08c972c7a7ad1d9d0c60e1c15080",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19745,7 +19892,7 @@
     },
     {
       "path": "scripts/preflight.mjs",
-      "sha256": "d6ca3dd9941c3842439a5b1ad73dc458d289e872fea541991220a48283a7220b",
+      "sha256": "d98b29dc195795fa017442f99c97f50fadad63ddbdeb2450b108fe018ee0c216",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19829,7 +19976,7 @@
     },
     {
       "path": "scripts/rebuild-lwjgl2-input-jar.py",
-      "sha256": "afb678d388611110f06686a1edbd7476f35c0008658b17fa8c0e5122dd5b04dd",
+      "sha256": "478ce8714a7d7f139ba59ed87594b7bc99c6d39f7df45d4e025c6e1da97a97eb",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -19913,7 +20060,7 @@
     },
     {
       "path": "scripts/sdl3-patchset-digest.mjs",
-      "sha256": "86cc2fdc7bc6471bbff5bd363bd9f19a5fc2b9791dc8d7dc86aae8e51bd3980e",
+      "sha256": "b66cdde261b24b88ae087192e7c03acb1f3e2b30a8ec16ba0d3e4c1c62011d37",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20200,7 +20347,7 @@
     },
     {
       "path": "scripts/test-build-gate-session.mjs",
-      "sha256": "ae93688999b8105804a704ee71877b9d18865177f2b10567680d0f1dfe97dcc5",
+      "sha256": "1331a0e7866923a5475a0d42c3733ce07f6ab3d202d6a9223d913dc1c1b4f3d6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20347,7 +20494,7 @@
     },
     {
       "path": "scripts/test-check-gamecontrol-runtime-scope.mjs",
-      "sha256": "9b9e1fb11cb69fdd59d0d6c8fd10ce7233192d997a55fbc8abeedba44eb6b81b",
+      "sha256": "584dfd09fbf3e6f4776a54e1a65773fd6046d8b96a7804e999cbf378973879f5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20620,7 +20767,7 @@
     },
     {
       "path": "scripts/test-check-sdl3-launch-contract.mjs",
-      "sha256": "e0f35acec73393c4541173fba6f5c5f05e7ba4f8891bc841be889ffb3ad16431",
+      "sha256": "71c0d6bf9ee7fba3ff20ba291bef359ef04e98404076d098802851a48c5c2c36",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20683,7 +20830,7 @@
     },
     {
       "path": "scripts/test-control-groups-editor.mjs",
-      "sha256": "1c97304b5a64626411a0f248860e2d10d002fb5849d17fbb1549b59dc3000289",
+      "sha256": "40c61bea5ea366c7ea8bbd2f80c7585f38307c6b417da5819fcf48648fb5faa8",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20781,7 +20928,7 @@
     },
     {
       "path": "scripts/test-device-connection-runtime.mjs",
-      "sha256": "a10e74bc47b948940ae1642b7ff028d20a7e0cde2af181526ced92eed375eaa4",
+      "sha256": "299bbf0ea798737f2ec5963ff4a2974167bd31f072824edd32ba0ecc35b1d089",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21026,7 +21173,7 @@
     },
     {
       "path": "scripts/test-frozen-settings-save.mjs",
-      "sha256": "e3b9f3adade67e9545454f6cee8c62284439f2f8c1a7a6fceb0ada8287d12631",
+      "sha256": "142eec3dcddae7920f1f8ddcabb2bc90e9c3567a4d54b538c688d0912811a95c",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21110,7 +21257,7 @@
     },
     {
       "path": "scripts/test-game-input-runtime.mjs",
-      "sha256": "9a83c03281d847f2fdf0b85b1c2e727e5d1dd299a6fba3541412252dba1ef7e8",
+      "sha256": "83a4811c9fdcd3c3d88498e416b4a6d25dc47466b1b465f93b074522a154fc5b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21145,14 +21292,14 @@
     },
     {
       "path": "scripts/test-game-page-input-lease.mjs",
-      "sha256": "d0bab736b0487d5b208b7e12807846d9688665af885d8995dc2420b1e2c9c86b",
+      "sha256": "2033dd3ddaa098e0af43cd490b7aa0787a46955f9ab0c823e797a92a1898055b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-game-page-session-facts.mjs",
-      "sha256": "4c6e19a0f286c533a305effe29261d79f3c7e7e3f5032d6682ac29d838fb2230",
+      "sha256": "3f6baaaa26ba15a063889137d4b408da55ac281af2a47bd3f3798032b0710b06",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21194,14 +21341,14 @@
     },
     {
       "path": "scripts/test-game-session-host.mjs",
-      "sha256": "8b622723c8f2a6df599fc23d77c8585f88845b0cb68c0cd3fedb5b4e6aaf4f83",
+      "sha256": "58dd067d16a978bb6fa4e5abc21e8c482208c6a58c14848aecb1701f2e810d80",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-game-startup.mjs",
-      "sha256": "ec418d49067bb5f9279979c95e437cdccdb63fc0aac0f5c6f964283abab6334d",
+      "sha256": "2187cbc046284fe9fa4f9a94e66fb660c89f329d9cfa2e813cad90a103e007b6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21209,13 +21356,6 @@
     {
       "path": "scripts/test-game-vulkan-preference.mjs",
       "sha256": "2a946655eb8c681ae3f5b2b00f384a73ab372d8a26cb5ea77433f6cc7c79f8fa",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
-      "path": "scripts/test-gamepad-analog-stability.mjs",
-      "sha256": "3c1da5fc32342f25e97d778ba6381843e508548b095251dd6bc250966eee98b6",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21516,14 +21656,14 @@
     },
     {
       "path": "scripts/test-immersive-light.mjs",
-      "sha256": "aa175f7dbb0cdc764205f027f79adeb3ef92ef60613125399d8b110007927d74",
+      "sha256": "d5c1fbda692ad543584be00c1c7c92c6f5e8a538566e76493179a2a9e697351d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-input-architecture-regressions.mjs",
-      "sha256": "906b22c45ef5ac5226063d6641939474e1175e77eb74ef980d625112228aaa12",
+      "sha256": "686be979fbd891c9ba4f88a3f686b9a5267c439750477f558ff57b89f3b0cb99",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21586,21 +21726,21 @@
     },
     {
       "path": "scripts/test-input-policy-activation.mjs",
-      "sha256": "231debe64141552bd0abc89fd4ee8d7317ce455e43570b375e86c7e64713834a",
+      "sha256": "bcc8ab0ffba072e72f8d19d530de84da44a3ebcf6449abc607615c89e1db37dd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-input-settings-editor.mjs",
-      "sha256": "71342fec9927ca12126b1510dae161c14fca6e605bd8152ff8eb7eca86cf791f",
+      "sha256": "7020333abaf3ad4a6e46bd33a557cb2a7f5cfe28b996126c315ddc83783b196f",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-input-slim-boundaries.py",
-      "sha256": "d2e7eeb889e1b04a05bb4c2b13933a89b3da127b9c72a768c97ed6f6ff150707",
+      "sha256": "2e6a26bd0ffbf5658cbd4c8edc65ab12e5ae23ba977524f474aa4193ddf7dacf",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21985,7 +22125,7 @@
     },
     {
       "path": "scripts/test-look-execution.py",
-      "sha256": "42b4a2da71b939ed8cbddf5757e57df57e33a22ac11b6f4d8010ca2471194de6",
+      "sha256": "0a31ed66fe9931d6f1403cc7509ce5c5ca6482c69ab1375dc4c6c0b93f52fded",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22019,15 +22159,15 @@
       "owner": "source"
     },
     {
-      "path": "scripts/test-lwjgl2-source-control.py",
-      "sha256": "0a6cedb5d67eedbe81cece086858e9e750bc61964f250369768aeb726e014f10",
+      "path": "scripts/test-lwjgl2-gamepad.py",
+      "sha256": "ab96068b3d419d0e2e4036a16da0e2934515102b5bfc6108c02b1f077746cedb",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
-      "path": "scripts/test-mapped-look-execution.mjs",
-      "sha256": "a9dffa80cb8898814bf745f669c854d5339b1ba7c29eb7c40054eb28ec4edd85",
+      "path": "scripts/test-lwjgl2-source-control.py",
+      "sha256": "0a6cedb5d67eedbe81cece086858e9e750bc61964f250369768aeb726e014f10",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22055,14 +22195,14 @@
     },
     {
       "path": "scripts/test-menu-cursor-startup.py",
-      "sha256": "feb193c22ef7610d99e4a4f1e455cc8dda74f457bc0abf279a8f776345938f89",
+      "sha256": "accb079b3016feaf690161d59d92a53d2769458c1df5caba77f17c18d7c20c8a",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
     },
     {
       "path": "scripts/test-menu-mouse-production.py",
-      "sha256": "959160afa304e85335fff916d02f7b5118df3d479ae6991115a8fe22b49e7a22",
+      "sha256": "88b5e62f91db127d00c96941e3ccaee5cda85c07ec05378c9f7e167d2c48f808",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22285,13 +22425,6 @@
       "owner": "source"
     },
     {
-      "path": "scripts/test-native-gamepad-route.mjs",
-      "sha256": "ea89677925e69d211067e176281c23433e12101c19f0e8816e6fe08125400360",
-      "normalization": "lf",
-      "mode": "100644",
-      "owner": "source"
-    },
-    {
       "path": "scripts/test-native-gl-probe.py",
       "sha256": "c6bcd2cc4fba377febb02cf6964575297e9ed0c74c84a1c685f9112d7b2a5a9f",
       "normalization": "lf",
@@ -22391,7 +22524,7 @@
     },
     {
       "path": "scripts/test-player-skill-accounts-layout.mjs",
-      "sha256": "e155ab1fde13c8ae9651c0fd9b7dfd3536c06bcb9eb657eea67d175a8264c15c",
+      "sha256": "d731065eb6a4ff4ddddfc3a37f7ba18db9f8be02f4078800254f0095dae05df3",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22678,7 +22811,7 @@
     },
     {
       "path": "scripts/test-sdl-bootstrap-contract.py",
-      "sha256": "8af797f26d0d540925bb682fb24dae332c8f0f121b1f4729b0c56be195849876",
+      "sha256": "2d324792c05a23c9975b46da43d0c3a3560daf598225017e70195cf757e1e9eb",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22763,6 +22896,20 @@
     {
       "path": "scripts/test-sdl-source-delivery.py",
       "sha256": "71cfd1a7f7adf162d2dc100b36e70da65dd1762000f3a758603c21e9c538ba1d",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/test-sdl2-controller-pump.py",
+      "sha256": "ffb30a604471f3cd4e84366505df3d9a7060411e6e966470d95aac87486a1e0c",
+      "normalization": "lf",
+      "mode": "100644",
+      "owner": "source"
+    },
+    {
+      "path": "scripts/test-sdl2-mod-loaders.py",
+      "sha256": "925ab04414759bc8996d84c34bad1fedd05e635045c636d0239675173a4407fe",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22895,7 +23042,7 @@
     },
     {
       "path": "scripts/test-settings-ui.mjs",
-      "sha256": "dd7df560894f58cba04777e1b0f7af10ac94f439deeada9249f0d41f940c6065",
+      "sha256": "bb5f091b2794f82f3075580fa93f21e1e12036f6f9e33b45f616d85c902973ef",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -23035,7 +23182,7 @@
     },
     {
       "path": "scripts/test-source-look-policy.mjs",
-      "sha256": "cfc843f99a45aa9af755dc23f266da6f3e20db93c0f57f58deeae4950003aa91",
+      "sha256": "c98fd4d19c75b8fdf9e199c91792ba8e5211c944d45e01f76eb6b9e89e933d2e",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -23140,7 +23287,7 @@
     },
     {
       "path": "scripts/test-touch-basics.mjs",
-      "sha256": "3343c34714033bf8679b0f2d29041915eff25fe2ceb789aaff09ffe0f8c08fd8",
+      "sha256": "2e89848be7f9b30d40ae6e0527765e4dfdc2a270e982f85318c7c626a0bb1abe",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -23161,7 +23308,7 @@
     },
     {
       "path": "scripts/test-touch-editing-contract.mjs",
-      "sha256": "dc02c124e0feb812b487d21c9ed043c56c657f7c1d4afbde9a3d2a39273528e7",
+      "sha256": "3ce6e9e6256415f65d78c169e6613ed628ff7a30c83012239b59b81764123f16",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -23210,7 +23357,7 @@
     },
     {
       "path": "scripts/test-touch-menu-registration.py",
-      "sha256": "596c2a3d8700635516e639a9ff5b7a607856fcbdc9acb21cbeff7eac13b6e364",
+      "sha256": "0c93330e79b86d284fbb8922dfb1461827422b900c349edea5d06754adc8ed55",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -27296,6 +27443,6 @@
     "generated": 1,
     "private": 822,
     "public-owned": 39,
-    "source": 3891
+    "source": 3912
   }
 }

@@ -97,7 +97,7 @@ export interface DeviceChangeEvent {
  *   - 'touchpad' 与 'mouse' 都按"绝对坐标 + 按键 + 滚轮"上报；RELATIVE / CAPTURE 只有
  *     对应显式参数为 true 时才置位，理由见文件头。
  *   - 'touchscreen' 只给绝对坐标：它不是实体键鼠，也没有物理按键。
- *   - 'joystick' / 'trackball' 目前不映射任何位。手柄走 GamepadManager 合成路径，
+ *   - 'joystick' / 'trackball' 目前不映射任何位。实体手柄由游戏设备接口读取，
  *     不参与实体键鼠 core 的能力集；trackball 在目标设备上无证据。
  *   - 空数组或全部未识别 → 返回 0。0 是合法的"没有已知能力"，native 不会因此拒收
  *     ADDED/REMOVED（deviceId 才是 owner 域的关键）。

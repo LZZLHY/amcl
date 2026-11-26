@@ -298,10 +298,10 @@ int main(){
         CHECK(look->retireStream(touchStream)==0);delivery.clear();
         std::puts("PASS unchanged joystick state cannot flush camera smoothing; real edges retain look order");
     }
-    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=2;
-    stream.kind=AMCL_LOOK_MAPPED_RATE;stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;
-    stream.device=9;stream.connection=1;stream.resource=resource;uint64_t velocity=0;CHECK(look->openStream(&stream,&velocity)==0);
-    CHECK(look->submitVelocity(velocity,1080,0,now())==0);std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=1;
+    stream.kind=AMCL_LOOK_TOUCH_DELTA;stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.unit=AMCL_LOOK_VIRTUAL_COUNTS;
+    stream.device=9;stream.connection=1;stream.resource=resource;uint64_t touchDelta=0;CHECK(look->openStream(&stream,&touchDelta)==0);
+    CHECK(look->submitDelta(touchDelta,9,0,now())==0);std::this_thread::sleep_for(std::chrono::milliseconds(10));
     inputBridge_pushEvent(1005,80,0,1,0);inputBridge_pushEvent(1005,81,0,1,0);
     AmclSourceSnapshotV1 before{},after{};CHECK(source->query(producer,0,nullptr,&before)==0);
     auto combo=acquire(2,"combo",{340,70,71,72,73,74});const auto rejected=transaction(source,producer,combo);
@@ -310,9 +310,9 @@ int main(){
     pump(window);delivery.clear();const double oldCursor=window.cursorX;const auto accepted=transaction(source,producer,combo);
     // 只有整批完成通知一次；任何逐码通知都会让跨线程 source query 撞上未释放的事务锁。
     CHECK(accepted.accepted&&accepted.transportAccepted&&accepted.finalEdges==6);
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));CHECK(inputBridge_submitLookV1(0,0,0,0,1)==1);pump(window);
+    CHECK(look->submitDelta(touchDelta,5,0,now())==0);CHECK(inputBridge_submitLookV1(0,0,0,0,1)==1);pump(window);
     CHECK(delivery.size()==8&&delivery.front()==1&&delivery.back()==1&&actionCursor>oldCursor&&window.cursorX>actionCursor);
-    CHECK(look->submitVelocity(velocity,0,0,now())==0);CHECK(look->retireStream(velocity)==0);
+    CHECK(look->retireStream(touchDelta)==0);
     CHECK(release(source,producer,accepted.owner).accepted);pump(window);
     // 真队列满时合法 cohold 无边沿接受；普通 release 拒绝保原 token，明确 cancel 可退休并留 terminal。
     const auto terminal=transaction(source,producer,acquire(1,"terminal",{75}));CHECK(terminal.accepted);pump(window);

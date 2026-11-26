@@ -183,10 +183,6 @@ export default class LauncherSkill {
     await invokeSkill(info, "setLookOption", argv);
   }
 
-  public async setGamepadOption(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
-    await invokeSkill(info, "setGamepadOption", argv);
-  }
-
   public async readWorkbenchOutcome(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
     await invokeSkill(info, "readWorkbenchOutcome", argv);
   }
@@ -653,14 +649,6 @@ export default class LauncherSkill {
 
   public async setDesktopInteraction(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
     await invokeSkill(info, "setDesktopInteraction", argv);
-  }
-
-  public async getGamepadMode(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
-    await invokeSkill(info, "getGamepadMode", argv);
-  }
-
-  public async setGamepadMode(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {
-    await invokeSkill(info, "setGamepadMode", argv);
   }
 
   public async openLauncherDiagnostic(info: scriptManager.ArkTSScriptInfo, ...argv: string[]): Promise<void> {

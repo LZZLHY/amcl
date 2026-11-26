@@ -437,7 +437,7 @@ struct LayoutListPage {
       (offered && this.importPageMounted && generation===this.importPageGeneration && this.deletionId_===review.profileId && this.deletionState_==='pending'));
     const cancelled=():void=>{offered=false;if(this.importPageMounted && generation===this.importPageGeneration && this.deletionId_===review.profileId)this.deletionState_='cancelled'}
     this.getUIContext().showAlertDialog({title:'删除操控方案「'+review.name+'」', cancel:cancelled,
-      message:'将删除此方案的布局、触控、视角和手柄设置。'+
+      message:'将删除此方案的布局、触控和视角设置。'+
         (review.profileId===review.activeId ? '\n删除后将使用「'+review.fallbackName+'」。' : '')+'\n确认后不能在此页面撤销。',
       primaryButton:{value:'取消',action:cancelled},secondaryButton:{value:'删除方案',action:(): void=>{
         offered = false;
@@ -510,7 +510,7 @@ struct LayoutListPage {
           .fontSize(11).fontColor(this.titleTheme.textSecondary).layoutWeight(1)
       }
 
-      Text('含布局、触控、视角与手柄设置').fontSize(12).fontColor(this.titleTheme.textSecondary).width('100%')
+      Text('含布局、触控与视角设置').fontSize(12).fontColor(this.titleTheme.textSecondary).width('100%')
       Row({space:8}) {
         Button(name===this.activeName ? '当前使用' : '使用').height(44).fontSize(13).layoutWeight(1)
           .enabled(name!==this.activeName && !this.mutationBusy && !this.importBusy)

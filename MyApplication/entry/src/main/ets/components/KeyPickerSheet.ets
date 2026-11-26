@@ -2,7 +2,7 @@
 /**
  * KeyPickerSheet.ets — 游戏内键位选择浮层。
  *
- * 普通按钮、专用触控动作和手柄映射共用本组件；颜色和圆角来自编辑器主题。
+ * 普通按钮和专用触控动作共用本组件；颜色和圆角来自编辑器主题。
  * 选择、搜索和解除绑定只修改浮层草稿，宿主仍负责撤销、保存以及失败回滚。
  * 确定时通过 onPick 返回 number[]；关闭、遮罩和取消返回 null，不提交草稿。
  *
@@ -30,7 +30,7 @@ export struct KeyPickerSheet {
   @Prop currentDescription: string = '当前绑定'
   /** 专用语义动作只接受单键；普通控件继续允许组合键。 */
   @Prop allowCombo: boolean = true
-  /** 系统必备入口使用明确默认键；0保持普通键原有的显式解绑语义，不影响手柄和专用动作。 */
+  /** 系统必备入口使用明确默认键；0保持普通键原有的显式解绑语义，不影响专用触控动作。 */
   @Prop requiredDefaultKey: number = 0
   /** 阶段绑定只展示其真实码域；普通旧按钮继续保留更宽的合法输出。 */
   @Prop phaseOnly: boolean = false

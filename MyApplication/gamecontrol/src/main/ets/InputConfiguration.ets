@@ -1,9 +1,8 @@
 /** 输入配置的语义投影与投递回执。只管理确认后的内存快照，不读Preferences，不调用NAPI或ArkUI。 */
 import { AppLogger } from 'commons'
 import {
-  LayoutProfile, ControlItem, GamepadConfig, AlignGroup, cloneLayout, effectiveKeys,
-  DEFAULT_LOOK_SENSITIVITY, DEFAULT_INVERT_Y, DEFAULT_LOOK_SMOOTHING, DEFAULT_LOOK_ACCEL,
-  DEFAULT_GAMEPAD_DEAD_ZONE, DEFAULT_TRIGGER_THRESHOLD, defaultGamepadButtonMap
+  LayoutProfile, ControlItem, AlignGroup, cloneLayout, effectiveKeys,
+  DEFAULT_LOOK_SENSITIVITY, DEFAULT_INVERT_Y, DEFAULT_LOOK_SMOOTHING, DEFAULT_LOOK_ACCEL
 } from './ControlLayout'
 import { normalizeTouchPreferences } from './TouchPreferences'
 import { LookParameters, SourceLookPreferences, copySourceLookPreferences } from './LookPreferences'
@@ -25,19 +24,18 @@ export class LegacyGlobalLookPolicy {
   mode: string = 'LegacyGlobalLookCompat'
   parameters: LookConfiguration = { sensitivity: DEFAULT_LOOK_SENSITIVITY, invertY: DEFAULT_INVERT_Y,
     smoothing: DEFAULT_LOOK_SMOOTHING, acceleration: DEFAULT_LOOK_ACCEL }
-  affectedSources: string[] = ['UntaggedCompat0', 'TouchControls1', 'Gamepad2', 'PhysicalKBM3', 'TouchGyroscopeInternal']
+  affectedSources: string[] = ['UntaggedCompat0', 'TouchControls1', 'PhysicalKBM3', 'TouchGyroscopeInternal']
   exceptions: string[] = ['PhysicalRelativeSmoothingAlpha1', 'GyroscopeNoTouchSmoothingOrAcceleration']
   /** 独立模式携完整来源值，报告仍是值副本；旧模式明确缺席，不静默分源。 */
   sources: SourceLookPreferences | undefined = undefined
 }
 
-/** 投影当前登记的视角、触控行为与映射手柄域；补缺省值不授予配置应用权。 */
+/** 投影当前登记的视角与触控行为；补缺省值不授予配置应用权。 */
 export class InputPolicyProjection {
   profileId: string = ''
   profileRevision: number = 0
   look: LegacyGlobalLookPolicy = new LegacyGlobalLookPolicy()
   touchKey: string = ''
-  gamepadKey: string = ''
 }
 
 /** 输入为仓库已确认的独立方案快照；输出补缺省的值投影，既不回写旧 JSON 也不执行应用。 */
@@ -48,12 +46,6 @@ export function projectInputPolicy(profile: LayoutProfile): InputPolicyProjectio
   result.look.sources = copySourceLookPreferences(profile.lookPolicies)
   if (result.look.sources?.mode === 'independent') result.look.mode = 'IndependentSources'
   result.touchKey = touchBehaviorKey(profile)
-  const gamepad: GamepadConfig = profile.gamepad ?? {}
-  result.gamepadKey = gamepadBehaviorKey({ enabled: gamepad.enabled ?? true,
-    leftStick: gamepad.leftStick ?? 'move', rightStick: gamepad.rightStick ?? 'look',
-    buttonMap: gamepad.buttonMap ?? defaultGamepadButtonMap(),
-    stickDeadZone: gamepad.stickDeadZone ?? DEFAULT_GAMEPAD_DEAD_ZONE,
-    triggerThreshold: gamepad.triggerThreshold ?? DEFAULT_TRIGGER_THRESHOLD, lookScale: gamepad.lookScale ?? 1 })
   return result
 }
 
@@ -61,7 +53,6 @@ export function projectInputPolicy(profile: LayoutProfile): InputPolicyProjectio
 export class InputPolicyDifference {
   lookChanged: boolean = true
   touchChanged: boolean = true
-  gamepadChanged: boolean = true
 }
 
 /** 同局前后有效行为分类。第一次登记所有已知域均需应用；反馈的完整发布另有真实回执。 */
@@ -70,7 +61,6 @@ export function inputPolicyDifference(before: InputPolicyProjection | undefined,
   if (before !== undefined) {
     result.lookChanged = JSON.stringify(before.look) !== JSON.stringify(after.look)
     result.touchChanged = before.touchKey !== after.touchKey
-    result.gamepadChanged = before.gamepadKey !== after.gamepadKey
   }
   return result
 }
@@ -145,9 +135,9 @@ export function inputPolicyStatusMessage(snapshot: InputPolicyActivationSnapshot
     if (!state.pending && state.stage === 'Applied') continue
     const name: string = state.name === 'native-look' ? '视角设置（旧方案兼容）' :
       state.name === 'look-physical' ? '物理鼠标视角' : state.name === 'look-touch' ? '触控与陀螺仪视角' :
-      state.name === 'look-gamepad' ? '映射手柄视角' : state.name === 'look-external' ? '外部兼容视角' :
+      state.name === 'look-external' ? '外部兼容视角' :
       state.name === 'touch-controls' ? '触控布局' : state.name === 'touch-gyro' ? '陀螺仪' :
-      state.name === 'mapped-gamepad' ? '手柄映射' : state.name
+      state.name
     // terminalRejection只能由原完成元组确认；永久不支持应解释安全禁用，不能显示待生效或Applied。
     if (!state.pending && state.stage === 'Rejected' && state.terminalRejection) {
       disabled.push(name + '：方案功能不支持，已安全禁用')
@@ -212,20 +202,6 @@ export function touchBehaviorKey(profile: LayoutProfile): string {
   // 组名仅用于编辑展示；次序、身份、初始态与能力会改变解释结果，必须进入行为签名。
   for (const group of profile.controlGroups ?? []) fields.push(JSON.stringify([group.id, group.initialVisible]))
   for (let i = 0; i < profile.controls.length; i++) fields.push(controlBehaviorKey(profile.controls[i]))
-  return JSON.stringify(fields)
-}
-
-/** 调用方先归一化缺省值；映射表按名字排序，导入JSON的属性顺序不构成改键。 */
-export function gamepadBehaviorKey(config: GamepadConfig): string {
-  const fields: string[] = [String(config.enabled ?? true), config.leftStick ?? 'move', config.rightStick ?? 'look',
-    String(config.stickDeadZone), String(config.triggerThreshold), String(config.lookScale)]
-  if (config.buttonMap !== undefined) {
-    const names: string[] = Object.keys(config.buttonMap).sort()
-    for (let i = 0; i < names.length; i++) {
-      const action = config.buttonMap[names[i]]
-      fields.push(JSON.stringify([names[i], action.kind, String(action.code ?? 0)]))
-    }
-  }
   return JSON.stringify(fields)
 }
 

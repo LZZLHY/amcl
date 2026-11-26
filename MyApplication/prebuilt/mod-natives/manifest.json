@@ -4,6 +4,36 @@
   "runtimeDeps": ["libc++_shared.so", "libc.so"],
   "libraries": [
     {
+      "name": "sdl2-compat",
+      "artifact": "libSDL2.so",
+      "distribution": "bundled",
+      "bundledPath": "entry/libs/arm64-v8a/libSDL2.so",
+      "loadMechanism": "SDL2 ABI for controller mods, backed by the same HAP's libamcl_sdl_controller.so",
+      "sourceDir": "prebuilt/mod-natives/sdl2",
+      "artifactLock": "prebuilt/mod-natives/sdl2/artifacts.json",
+      "buildScript": "scripts/build-sdl2-gamepads.py"
+    },
+    {
+      "name": "sdl2gdx",
+      "artifact": "libsdl2gdx.so",
+      "distribution": "bundled",
+      "bundledPath": "entry/libs/arm64-v8a/libsdl2gdx.so",
+      "loadMechanism": "verified game-classloader JNI, SDL2",
+      "triggeredBy": ["Controllable 0.11.2 for Minecraft 1.12.2"],
+      "artifactLock": "prebuilt/mod-natives/sdl2/artifacts.json",
+      "buildScript": "scripts/build-sdl2-gamepads.py"
+    },
+    {
+      "name": "jamepad",
+      "artifact": "libjamepad.so",
+      "distribution": "bundled",
+      "bundledPath": "entry/libs/arm64-v8a/libjamepad.so",
+      "loadMechanism": "verified game-classloader JNI, SDL2",
+      "triggeredBy": ["Controllable 0.2.0 for Minecraft 1.12.2"],
+      "artifactLock": "prebuilt/mod-natives/sdl2/artifacts.json",
+      "buildScript": "scripts/build-sdl2-gamepads.py"
+    },
+    {
       "name": "sherpa-onnx-jni",
       "artifact": "libsherpa-onnx-jni.so",
       "distribution": "bundled",

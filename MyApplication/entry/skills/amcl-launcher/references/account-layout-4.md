@@ -173,7 +173,7 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 
 ### readInputWorkbench
 
-读取当前方案的触控、视角和映射手柄完整草稿及输入选项
+读取当前方案的触控与视角完整草稿及输入选项
 
 执行参数
 
@@ -194,7 +194,7 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 - `{"state":"failed","reason":"invalidArguments"}`
 
 ```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字","minLength":1},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"gamepad":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"buttons":{"type":"array","description":"可用手柄按钮","items":{"type":"string","description":"业务标识或保存的文字"}},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
+{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字","minLength":1},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
 ```
 
 ### finishInputWorkbench
@@ -234,7 +234,7 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 - `{"state":"failed","reason":"invalidArguments"}`
 
 ```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","ready","needsUser","cancelled","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字"},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"gamepad":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"buttons":{"type":"array","description":"可用手柄按钮","items":{"type":"string","description":"业务标识或保存的文字"}},"layoutId":{"type":"string","description":"业务标识或保存的文字"},"revision":{"type":"integer","description":"产品读取的计数、修订或位置"},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["name","layoutId","revision"]}},{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
+{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","ready","needsUser","cancelled","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字"},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"layoutId":{"type":"string","description":"业务标识或保存的文字"},"revision":{"type":"integer","description":"产品读取的计数、修订或位置"},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["name","layoutId","revision"]}},{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
 ```
 
 ### setTouchOption
@@ -264,7 +264,7 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 - `{"state":"failed","reason":"invalidArguments"}`
 
 ```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","needsUser","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字"},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"gamepad":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"buttons":{"type":"array","description":"可用手柄按钮","items":{"type":"string","description":"业务标识或保存的文字"}},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
+{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","needsUser","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字"},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
 ```
 
 ### setLookOption
@@ -278,7 +278,7 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 ```
 
 ```json
-{"type":"object","properties":{"arg1":{"type":"string","description":"当前输入编辑器的草稿引用","maxLength":16384},"arg2":{"type":"integer","description":"当前草稿版本"},"arg3":{"type":"string","description":"输入来源","maxLength":16384,"enum":["physical","touch","gamepad","external"]},"arg4":{"type":"string","description":"视角选项","maxLength":16384,"enum":["independent","invertY","haptic","sensitivity","smoothing","acceleration"]},"arg5":{"type":"string","description":"百分比或布尔文本","maxLength":16384}},"required":["arg1","arg2","arg3","arg4","arg5"],"additionalProperties":false,"dependentRequired":{"arg2":["arg1"],"arg3":["arg1","arg2"],"arg4":["arg1","arg2","arg3"],"arg5":["arg1","arg2","arg3","arg4"]}}
+{"type":"object","properties":{"arg1":{"type":"string","description":"当前输入编辑器的草稿引用","maxLength":16384},"arg2":{"type":"integer","description":"当前草稿版本"},"arg3":{"type":"string","description":"输入来源","maxLength":16384,"enum":["physical","touch","external"]},"arg4":{"type":"string","description":"视角选项","maxLength":16384,"enum":["independent","invertY","haptic","sensitivity","smoothing","acceleration"]},"arg5":{"type":"string","description":"百分比或布尔文本","maxLength":16384}},"required":["arg1","arg2","arg3","arg4","arg5"],"additionalProperties":false,"dependentRequired":{"arg2":["arg1"],"arg3":["arg1","arg2"],"arg4":["arg1","arg2","arg3"],"arg5":["arg1","arg2","arg3","arg4"]}}
 ```
 
 执行返回值
@@ -294,37 +294,7 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 - `{"state":"failed","reason":"invalidArguments"}`
 
 ```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","needsUser","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字"},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"gamepad":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"buttons":{"type":"array","description":"可用手柄按钮","items":{"type":"string","description":"业务标识或保存的文字"}},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
-```
-
-### setGamepadOption
-
-设置映射手柄的开关、按钮、摇杆及阈值，恢复默认须用户确认
-
-执行参数
-
-```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'setGamepadOption' --args '{"arg1":"3f5f8109-6ea0-4251-9845-c5d300ec5963","arg2":2,"arg3":"enabled","arg4":"true"}')
-```
-
-```json
-{"type":"object","properties":{"arg1":{"type":"string","description":"当前输入编辑器的草稿引用","maxLength":16384},"arg2":{"type":"integer","description":"当前草稿版本"},"arg3":{"type":"string","description":"手柄选项","maxLength":16384,"enum":["reset","enabled","left","right","deadzone","threshold","scale","button"]},"arg4":{"type":"string","description":"布尔文本、角色、百分比或按钮动作；reset传空串","maxLength":16384},"arg5":{"type":["string"],"description":"按钮映射的按钮名","maxLength":16384}},"required":["arg1","arg2","arg3","arg4"],"additionalProperties":false,"dependentRequired":{"arg2":["arg1"],"arg3":["arg1","arg2"],"arg4":["arg1","arg2","arg3"],"arg5":["arg1","arg2","arg3","arg4"]}}
-```
-
-执行返回值
-
-返回 `draftRef` 时，该值等于原请求的 `arg1`（draftRef）。
-
-当请求参数为 `{"draftRef":"3f5f8109-6ea0-4251-9845-c5d300ec5963","draftRevision":2,"field":"enabled","value":"true"}` 时：
-- `{"state":"draft","draftRef":"3f5f8109-6ea0-4251-9845-c5d300ec5963","draftRevision":3}`
-- `{"state":"needsUser"}`
-- `{"state":"busy","reason":"anotherRequest"}`
-- `{"state":"unavailable","reason":"launcherNotReady"}`
-- `{"state":"unknown","reason":"operationUnconfirmed"}`
-- `{"state":"failed","reason":"invalidArguments"}`
-
-```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","needsUser","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字"},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"gamepad":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"buttons":{"type":"array","description":"可用手柄按钮","items":{"type":"string","description":"业务标识或保存的文字"}},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
+{"type":"object","required":["state"],"properties":{"state":{"enum":["draft","needsUser","busy","unavailable","unknown","failed"]},"reason":{"type":"string"},"draftRef":{"type":"string","description":"业务标识或保存的文字"},"draftRevision":{"type":"integer","description":"产品读取的计数、修订或位置"},"name":{"type":"string","description":"业务标识或保存的文字"},"touch":{"type":"string","description":"业务标识或保存的文字"},"joystickDeadZone":{"type":"number","description":"控件当前保存或投影的数值"},"haptic":{"type":"boolean","description":"真实状态标志"},"source":{"type":"string","description":"业务标识或保存的文字"},"independent":{"type":"boolean","description":"真实状态标志"},"look":{"type":"string","description":"业务标识或保存的文字"},"actions":{"type":"array","description":"触控动作名称","items":{"type":"string","description":"业务标识或保存的文字"}},"changed":{"type":"boolean","description":"该次动作是否改变了序列化业务草稿"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"draft"}}},"then":{"required":["draftRef","draftRevision"]}}]}
 ```
 
 ### readWorkbenchOutcome

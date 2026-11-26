@@ -1,67 +1,5 @@
 # 诊断、Java 版本与启动器更新
 
-### openLauncherDiagnostic
-
-在产品实际允许的情况下进入指定诊断页，界面内的探针由用户操作。
-
-执行参数
-
-```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'openLauncherDiagnostic' --args '{"arg1":"vulkan"}')
-```
-
-```json
-{"type":"object","properties":{"arg1":{"type":"string","description":"允许的诊断页面","maxLength":16384,"enum":["tools","gles","vulkan","input","desktop"]}},"required":["arg1"],"additionalProperties":false}
-```
-
-执行返回值
-
-返回 `tool` 时，该值等于原请求的 `arg1`（tool）。
-
-当请求参数为 `{"tool":"vulkan"}` 时：
-- `{"state":"needsUser","tool":"vulkan","reason":"performDiagnosticsInApp"}`
-- `{"state":"failed","reason":"invalidArguments"}`
-- `{"state":"busy","reason":"anotherRequest"}`
-- `{"state":"unavailable","reason":"launcherNotReady"}`
-- `{"state":"unknown","reason":"operationUnconfirmed"}`
-
-```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["needsUser","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"tool":{"type":"string"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"needsUser"}}},"then":{"required":["tool","reason"]}}]}
-```
-
-### readDiagnosticObservation
-
-读取当前前台诊断页的摘要，不读取或传出完整控制台日志。
-
-执行参数
-
-```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'readDiagnosticObservation' --args '{"arg1":"gles"}')
-```
-
-```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'readDiagnosticObservation' --args '{"arg1":"tools"}')
-```
-
-```json
-{"type":"object","properties":{"arg1":{"type":"string","description":"当前前台诊断页面","maxLength":16384,"enum":["tools","gles","vulkan","input","desktop"]}},"required":["arg1"],"additionalProperties":false}
-```
-
-执行返回值
-
-返回 `page` 时，该值等于原请求的 `arg1`（tool）。
-
-当请求参数为 `{"tool":"gles"}` 时：
-- `{"state":"ready","page":"gles","running":false,"hasOutput":false,"status":""}`
-- `{"state":"failed","reason":"invalidArguments"}`
-- `{"state":"busy","reason":"anotherRequest"}`
-- `{"state":"unavailable","reason":"launcherNotReady"}`
-- `{"state":"unknown","reason":"operationUnconfirmed"}`
-
-```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"page":{"type":"string"},"tool":{"type":"string"},"running":{"type":"boolean"},"status":{"type":"string"},"hasOutput":{"type":"boolean"},"vulkanAvailable":{"type":"boolean"},"paused":{"type":"boolean"},"events":{"type":"integer"},"verdict":{"type":"string"},"saved":{"type":"boolean"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["page"]}}]}
-```
-
 ### listJavaRuntimes
 
 读取真实JDK目录及本机槽位；分别返回目录来源、最新刷新状态和槽数组，缓存或失败不会充当成功空目录。
@@ -365,4 +303,58 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 
 ```json
 {"type":"object","required":["state"],"properties":{"state":{"enum":["needsUser","cancelled","failed","unknown","busy","unavailable"]},"reason":{"type":"string"},"target":{"type":"string"},"method":{"type":"string"},"operationRef":{"type":"string","minLength":1}},"additionalProperties":true,"allOf":[{"if":{"required":["state","reason"],"properties":{"state":{"const":"needsUser"},"reason":{"const":"updatePageOpened"}}},"then":{"required":["target"],"properties":{}}},{"if":{"required":["reason"],"properties":{"reason":{"const":"awaitingUser"}}},"then":{"properties":{"state":{"const":"needsUser"},"method":{"const":"installRecommendedUpdate"}},"required":["operationRef","method"]}}]}
+```
+
+### updateAccountAccess
+
+查看或检查华为开发者授权，由用户在产品真实登录界面完成授权。
+
+执行参数
+
+```text
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'updateAccountAccess' --args '{"arg1":"inspect"}')
+```
+
+```json
+{"type":"object","properties":{"arg1":{"type":"string","description":"按当前状态选择的操作","maxLength":16384,"enum":["inspect","check","login","retry","close"]}},"required":["arg1"],"additionalProperties":false}
+```
+
+执行返回值
+
+- `{"state":"ready","authorization":"missing","checking":false,"loginVisible":false,"needsLogin":true}`
+- `{"state":"needsUser","reason":"developerLogin"}`
+- `{"state":"cancelled"}`
+- `{"state":"failed","reason":"invalidArguments"}`
+- `{"state":"busy","reason":"anotherRequest"}`
+- `{"state":"unavailable","reason":"launcherNotReady"}`
+- `{"state":"unknown","reason":"operationUnconfirmed"}`
+
+```json
+{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","needsUser","cancelled","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"authorization":{"type":"string"},"checking":{"type":"boolean"},"loginVisible":{"type":"boolean"},"needsLogin":{"type":"boolean"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["authorization"]}}]}
+```
+
+### getActiveLauncherUpdate
+
+读取已打开更新事务的原活动、阶段、连接与进度。
+
+执行参数
+
+```text
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'getActiveLauncherUpdate' --args '{}')
+```
+
+```json
+{"type":"object","properties":{},"required":[],"additionalProperties":false}
+```
+
+执行返回值
+
+- `{"state":"ready","activityId":42,"phase":"running","version":"1.0.8-pre2","progress":0,"checkingConnection":false,"connectionReady":false,"loginVisible":false,"needsLogin":false,"recovery":"none","failedPhase":"","canContinue":false}`
+- `{"state":"failed","reason":"invalidArguments"}`
+- `{"state":"busy","reason":"anotherRequest"}`
+- `{"state":"unavailable","reason":"launcherNotReady"}`
+- `{"state":"unknown","reason":"operationUnconfirmed"}`
+
+```json
+{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"activityId":{"type":"integer"},"phase":{"type":"string"},"version":{"type":"string"},"progress":{"type":"number"},"checkingConnection":{"type":"boolean"},"connectionReady":{"type":"boolean"},"needsLogin":{"type":"boolean"},"loginVisible":{"type":"boolean"},"recovery":{"type":"string"},"failedPhase":{"type":"string"},"canContinue":{"type":"boolean"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["activityId","phase","version","progress","checkingConnection","connectionReady","loginVisible","needsLogin","recovery","failedPhase","canContinue"]}}]}
 ```

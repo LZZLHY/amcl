@@ -1,0 +1,121 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -4207,8 +4207,12 @@
+ endif()
+ 
+ if(SDL_SHARED)
++  # 独立无窗口 SDK：符号内部绑定本映像，同进程主 SDL 的全局状态不得被抢占。
++  if(OHOS)
++    target_link_options(SDL3-shared PRIVATE "-Wl,-Bsymbolic")
++  endif()
+   set_target_properties(SDL3-shared PROPERTIES
+-    OUTPUT_NAME "SDL3"
++    OUTPUT_NAME "amcl_sdl_controller"
+     POSITION_INDEPENDENT_CODE TRUE
+     LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/dynapi/SDL_dynapi.sym"
+     INTERFACE_LINK_DEPENDS "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/dynapi/SDL_dynapi.sym>"
+diff --git a/src/core/openharmony/SDL_amclhostruntime.h b/src/core/openharmony/SDL_amclhostruntime.h
+--- a/src/core/openharmony/SDL_amclhostruntime.h
++++ b/src/core/openharmony/SDL_amclhostruntime.h
+@@ -72,13 +72,17 @@
+ {
+     AMCL_SdlHostDescriptor value = { 0 };
+     const char *cursor=descriptor;
+-    if(!descriptor)return AMCL_SDL_HOST_STANDALONE;
++    if(!descriptor)return AMCL_SDL_HOST_MALFORMED;
+     if(!out || !AMCL_SdlHostReadNumber(&cursor,':',&value.abi) || (value.abi!=1 && value.abi!=2) ||
+        !AMCL_SdlHostReadNumber(&cursor,':',&value.pid) || !AMCL_SdlHostReadNumber(&cursor,':',&value.launch_tid) ||
+        !AMCL_SdlHostReadNumber(&cursor,value.abi==1?'\0':':',&value.session) ||
+        (value.abi==2 && (!AMCL_SdlHostReadNumber(&cursor,'\0',&value.role) || value.role!=1 || value.launch_tid>INT32_MAX)))
+         return AMCL_SDL_HOST_MALFORMED;
+     if(!current_pid || value.pid!=current_pid)return AMCL_SDL_HOST_WRONG_PID;
++    /* 只消费已经冻结的主 SDL 会话。实际无窗口映像在 graphics owner 通过设备/inode
++     * 及实例 cookie 验证后，沿原 ABI2 准入；不改进程环境或主实例身份。 */
++    if(value.launch_tid>INT32_MAX)return AMCL_SDL_HOST_MALFORMED;
++    value.abi=2;value.role=1;
+     *out=value;return AMCL_SDL_HOST_READY;
+ }
+ 
+diff --git a/src/SDL.c b/src/SDL.c
+--- a/src/SDL.c
++++ b/src/SDL.c
+@@ -636,6 +636,9 @@
+     Uint32 flags_initialized = 0;
+ #ifdef SDL_PLATFORM_OPENHARMONY
+     if(!SDL_AMCL_CheckProcess())return false;
++    /* 本映像仅有手柄、事件及可选音频；必须先完成 fork/PID 核验才能使用 SDL 错误 TLS。 */
++    const SDL_InitFlags allowed = SDL_INIT_EVENTS | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO | SDL_INIT_HAPTIC | SDL_INIT_SENSOR;
++    if (flags & ~allowed) return SDL_SetError("AMCL controller SDL subsystem unavailable");
+     if((flags & SDL_INIT_VIDEO) && !SDL_AMCL_AllowVideo())return false;
+ #endif
+ 
+@@ -1116,6 +1119,12 @@
+ }
+ 
+ /* 仅声明此实际制品实现辅助线程协议，不读取env、不cold初始化SDK/owner。 */
++/* 独立冷标记区分主库与带独立 SONAME、过滤器和生命周期的控制器库。 */
++SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_ControllerHostProtocolV1(void)
++{
++    return 1;
++}
++
+ SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_AuxHostProtocolV2(void)
+ {
+     return SDL_AMCL_AUX_HOST_PROTOCOL_V2;
+diff --git a/src/dynapi/SDL_dynapi.exports b/src/dynapi/SDL_dynapi.exports
+--- a/src/dynapi/SDL_dynapi.exports
++++ b/src/dynapi/SDL_dynapi.exports
+@@ -4,6 +4,7 @@
+ _SDL_AMCL_InputControlProtocolV1
+ _SDL_AMCL_InputLookProtocolV1
+ _SDL_AMCL_AuxHostProtocolV2
++_SDL_AMCL_ControllerHostProtocolV1
+ _SDL_AcquireCameraFrame
+ _SDL_AcquireGPUCommandBuffer
+ _SDL_AcquireGPUSwapchainTexture
+diff --git a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
+--- a/src/dynapi/SDL_dynapi.sym
++++ b/src/dynapi/SDL_dynapi.sym
+@@ -5,6 +5,7 @@
+     SDL_AMCL_InputControlProtocolV1;
+     SDL_AMCL_InputLookProtocolV1;
+     SDL_AMCL_AuxHostProtocolV2;
++    SDL_AMCL_ControllerHostProtocolV1;
+     SDL_AcquireCameraFrame;
+     SDL_AcquireGPUCommandBuffer;
+     SDL_AcquireGPUSwapchainTexture;
+diff --git a/src/events/SDL_quit.c b/src/events/SDL_quit.c
+--- a/src/events/SDL_quit.c
++++ b/src/events/SDL_quit.c
+@@ -28,9 +28,7 @@
+ 
+ #include "SDL_events_c.h"
+ 
+-#if defined(HAVE_SIGNAL_H) || defined(HAVE_SIGACTION)
+-#define HAVE_SIGNAL_SUPPORT 1
+-#endif
++/* 进程信号由 JVM/主 SDL 拥有，独立无窗口实例不安装进程级 handler。 */
+ 
+ #ifdef HAVE_SIGNAL_SUPPORT
+ static bool disable_signals = false;
+diff --git a/src/SDL.c b/src/SDL.c
+--- a/src/SDL.c
++++ b/src/SDL.c
+@@ -268,5 +268,6 @@
+         return AMCL_SDL_HOST_MALFORMED;
+     AmclSdlAuxRequestV1 request={0};AmclSdlAuxResultV1 response={0};
+-    request.structSize=sizeof(request);request.abiVersion=1;request.processId=pid;
++    /* 相同 wire 布局，版本 2 只允许本次独立手柄库的实例与生命周期。 */
++    request.structSize=sizeof(request);request.abiVersion=2;request.processId=pid;
+     request.sessionId=identity->session;request.launchThreadId=(int32_t)identity->launch_tid;
+     request.instanceCookie=(uint64_t)(uintptr_t)&SDL_amclHostRuntime;
+diff --git a/src/SDL_amclinputcontrol_c.h b/src/SDL_amclinputcontrol_c.h
+--- a/src/SDL_amclinputcontrol_c.h
++++ b/src/SDL_amclinputcontrol_c.h
+@@ -19,4 +19,5 @@
+ extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_InputLookProtocolV1(void);
+ extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_AuxHostProtocolV2(void);
++extern SDL_AMCL_INPUT_PUBLIC Uint32 SDLCALL SDL_AMCL_ControllerHostProtocolV1(void);
+ #if defined(__GNUC__)
+ extern __attribute__((visibility("hidden"))) bool SDL_AMCL_ValidateInputRuntimeV1(bool requireOwner);

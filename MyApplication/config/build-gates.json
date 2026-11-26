@@ -2937,22 +2937,6 @@
       ]
     },
     {
-      "id": "test-gamepad-analog-stability",
-      "script": "scripts/test-gamepad-analog-stability.mjs",
-      "tool": "node",
-      "kind": "behavior",
-      "domain": "input",
-      "quick": "affected",
-      "cachePolicy": "never",
-      "dependsOn": [],
-      "surfaces": [
-        "build-hap.ps1",
-        "scripts/preflight.mjs"
-      ],
-      "quickPilot": "download-tab",
-      "deferralEvidence": "docs/guides/build-validation.md#downloadtab-模型闭包"
-    },
-    {
       "id": "test-gate0-evidence-cmake",
       "script": "scripts/test-gate0-evidence-cmake.mjs",
       "tool": "node",
@@ -3937,19 +3921,6 @@
       ]
     },
     {
-      "id": "test-mapped-look-execution",
-      "script": "scripts/test-mapped-look-execution.mjs",
-      "tool": "node",
-      "kind": "behavior",
-      "domain": "build",
-      "quick": "affected",
-      "cachePolicy": "never",
-      "dependsOn": [],
-      "surfaces": [
-        "scripts/preflight.mjs"
-      ]
-    },
-    {
       "id": "test-maven-batch-result",
       "script": "scripts/test-maven-batch-result.mjs",
       "tool": "node",
@@ -4157,19 +4128,6 @@
       "dependsOn": [],
       "surfaces": [
         "build-hap.ps1"
-      ]
-    },
-    {
-      "id": "test-native-gamepad-route",
-      "script": "scripts/test-native-gamepad-route.mjs",
-      "tool": "node",
-      "kind": "behavior",
-      "domain": "input",
-      "quick": "affected",
-      "cachePolicy": "never",
-      "dependsOn": [],
-      "surfaces": [
-        "scripts/preflight.mjs"
       ]
     },
     {

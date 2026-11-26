@@ -84,7 +84,7 @@ int main(){
         CHECK(configureCalls==1&&configuredBackend==route.expected&&configuredSession==session&&callbackSession==session);
         CHECK(claimedTyped&&stores==1);
         if(route.expected==AMCL_MENU_CURSOR_BACKEND_SDL3){
-            CHECK(!claimedAuxiliary&&auxiliaryCalls==0&&storedDescriptor=="1:123:456:9007199254740993");
+            CHECK(!claimedAuxiliary&&auxiliaryCalls==1&&auxiliarySession==session&&!auxiliaryRetire&&storedDescriptor=="1:123:456:9007199254740993");
         }else{
             CHECK(claimedAuxiliary&&auxiliaryCalls==1&&auxiliarySession==session&&!auxiliaryRetire);
             CHECK(storedDescriptor=="2:123:456:9007199254740993:1");
@@ -113,7 +113,7 @@ int main(){
     reset("LWJGL3","GLFW");sdlClaimVerified=false;
     CHECK(!phase_publishPlatformRuntime(session)&&auxiliaryCalls==0&&configureCalls==0&&stores==0);
     reset("LWJGL3","SDL3");g_inputLaunchLegacy=true;CHECK(phase_publishPlatformRuntime(session));
-    CHECK(!claimedTyped&&!claimedAuxiliary&&auxiliaryCalls==0&&storedDescriptor=="1:123:456:9007199254740993");
+    CHECK(!claimedTyped&&!claimedAuxiliary&&auxiliaryCalls==1&&auxiliarySession==session&&!auxiliaryRetire&&storedDescriptor=="1:123:456:9007199254740993");
     reset("LWJGL3","GLFW");g_inputLaunchLegacy=true;CHECK(phase_publishPlatformRuntime(session));
     CHECK(claimedTyped&&claimedAuxiliary&&auxiliaryCalls==1);
     std::cout<<"PASS real startup phase: LWJGL2/322/3/SDL3, exact session, missing/unknown plan and configure failure\n";
@@ -141,7 +141,7 @@ with temporary_directory(prefix='menu-cursor-startup-') as directory:
     print('PASS negative control: forcing GLFW for every generation')
     check(production.replace(call,'('+call+', 1)',1),True)
     print('PASS negative control: ignoring configure failure')
-    auxiliary='if(auxiliarySdl && !configureAuxiliarySdlRuntime(session,false))return false;'
+    auxiliary='if(!configureAuxiliarySdlRuntime(session,false))return false;'
     assert production.count(auxiliary)==1
-    check(production.replace(auxiliary,'if(auxiliarySdl)(void)configureAuxiliarySdlRuntime(session,false);',1),True)
+    check(production.replace(auxiliary,'(void)configureAuxiliarySdlRuntime(session,false);',1),True)
     print('PASS negative control: ignoring auxiliary owner rejection')

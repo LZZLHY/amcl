@@ -51,14 +51,14 @@ int main(){
     brokerReady=false;assert(!VerifiedPresentingEgl(runtime,proof));brokerReady=true;
     broker.structSize=AMCL_NATIVE_WINDOW_LEASE_BROKER_V2_GEOMETRY_SIZE;assert(!VerifiedPresentingEgl(runtime,proof));broker.structSize=sizeof(broker);
     // 错误线程不得撤销正常owner；合法退休开始即撤销，即使真实driver随后失败。
-    assert(features.sdlAux.configure(11,20,30,41,42)>0);assert(features.sdlAux.publishVerified(proof,21)>0);
+    assert(features.sdlAux.policy.configure(11,20,30,41,42)>0);assert(features.sdlAux.policy.publishVerified(proof,21)>0);
     retiringSurface(runtime,window,22);assert(VerifiedPresentingEgl(runtime,proof));
-    retiringSurface(runtime,window,21);assert(!VerifiedPresentingEgl(runtime,proof));assert(!features.sdlAux.pendingProof(21));
+    retiringSurface(runtime,window,21);assert(!VerifiedPresentingEgl(runtime,proof));assert(!features.sdlAux.policy.pendingProof(21));
     assert(!attached(runtime,window,false,error));assert(!VerifiedPresentingEgl(runtime,proof));
     // hidden pbuffer最初不登记，晋升时旧auxiliary标记未清，真实window attach仍可登记。
     window.auxiliary=1;assert(created(runtime,window,true,false,error));assert(!VerifiedPresentingEgl(runtime,proof));
     assert(attached(runtime,window,true,error));assert(VerifiedPresentingEgl(runtime,proof));
-    features.sdlAux.publishVerified(proof,21);features.sdlAux.revoke(window.context,6);
+    features.sdlAux.policy.publishVerified(proof,21);features.sdlAux.policy.revoke(window.context,6);
     assert(VerifiedPresentingEgl(runtime,proof)); // 显式解绑仅清proof，重绑无需重建surface关联。
     window.contextLostFatal=1;RevokePresentingEglSurface(runtime,window);assert(!RecordPresentingEglSurface(runtime,window));window.contextLostFatal=0;
     window.eglSurfaceDetachPending=1;assert(!RecordPresentingEglSurface(runtime,window));window.eglSurfaceDetachPending=0;

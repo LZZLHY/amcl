@@ -52,7 +52,7 @@ function scenario(failure = '', pendingLedger = false) {
   }, desktopProcessId: () => 200, amclLogInit: () => {
     events.push('log-init'); if (failure === 'log') throw new Error('disk unavailable');
   }, getDiagnosticCapabilities: () => 0, amclLedgerSetLaunchActivity: noop,
-    desktopSetGamepadNativeMode: () => true, desktopGamepadFocus: noop, cancelAllInput: noop,
+    ...(before ? { desktopSetGamepadNativeMode: () => true } : {}), desktopGamepadFocus: noop, cancelAllInput: noop,
     setOhosFrameRateForeground: noop, mcForceExit: () => events.push('exit') };
   const monitor = { ensureStarted: () => {
     events.push('input'); monitors++;
@@ -75,7 +75,9 @@ function scenario(failure = '', pendingLedger = false) {
   const gamecontrol = { setControlNativeSink: noop, getInputDeviceMonitor: () => monitor,
     getInputSourceRegistry: () => ({ releaseAllEnds: noop, setNativeSink: noop, notifyAbilityForeground: noop }) };
   class UIAbility { constructor() { this.context = context; } }
-  class Preferences { phoneExternalDir = ''; desktopNativeGamepad = false; }
+  class Preferences { phoneExternalDir = ''; }
+  // 旧版源码回放使用当时的偏好字段，当前启动路径无需读取。
+  if (before) Object.defineProperty(Preferences.prototype, 'desktopNativeGamepad', { value: false });
   const dependencies = { 'libentry.so': { default: native }, 'commons': commons, 'feature_core': core,
     'gamecontrol': gamecontrol, '@kit.AbilityKit': { UIAbility }, '@kit.ArkUI': {}, '@kit.CoreFileKit': {},
     'entry/ProductBuildProfile': { ProductBuildProfile: {} }, 'entry/ProductLauncherWindowChrome': {},
@@ -89,10 +91,6 @@ function scenario(failure = '', pendingLedger = false) {
         events.push('jdk-install-port');
       } },
     'feature_system': { PreferenceManager: Preferences, GameStorage: { setPhoneExternalDir: noop }, setSystemNativeBridge: noop } };
-  // 初始化只发布用户请求与平台采集事实；策略模块仍使用真实输入计划解析器。
-  dependencies['./NativeGamepadRoutePolicy'] = makePureEtsLoader({
-    launch: makePureEtsLoader()('launch/src/main/ets/ResolvedInputPlan.ets')
-  })('entry/src/main/ets/runtime/NativeGamepadRoutePolicy.ets');
   dependencies['./ModAudioRuntime'] = { ModAudioRuntime: {
     attach: () => events.push('audio-attach'), detach: () => events.push('audio-detach'),
     setForeground: active => events.push('audio-foreground-' + active) } };

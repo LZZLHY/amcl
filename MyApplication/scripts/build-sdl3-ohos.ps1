@@ -2,7 +2,8 @@ param(
     [string]$SourceRepo = "",
     [string]$BuildRoot = "",
     [switch]$Deploy,
-    [switch]$Candidate
+    [switch]$Candidate,
+    [switch]$Controller
 )
 
 # 候选不具备工程消费/锁定交付资格。必须在路径解析、helper、目录或工具调用前拒绝，
@@ -133,12 +134,17 @@ if ($Candidate) {
 }
 
 $Phase = 'locked-source-inputs'
+# 主库与独立手柄库使用同一上游及工具链，各自校验实际 ELF 及追加补丁的完整身份。
+$ArtifactSection = if ($Controller) { 'sdl3-controller' } else { 'sdl3-native' }
+$LibraryName = if ($Controller) { 'libamcl_sdl_controller.so' } else { 'libSDL3.so' }
+$DigestArguments = @('--json')
+if ($Controller) { $DigestArguments += '--controller' }
 $Commit = Read-LockField 'sdl3-native' 'commit'
 $AbiBase = Read-LockField 'sdl3-native' 'abi_base'
 $Revision = Read-LockField 'sdl3-native' 'version_string'
-$ExpectedPatchsetSha = (Read-LockField 'sdl3-native' 'patchset_sha256').ToLowerInvariant()
-$ExpectedSize = [long](Read-LockField 'sdl3-native' 'size')
-$ExpectedSha = (Read-LockField 'sdl3-native' 'sha256').ToLowerInvariant()
+$ExpectedPatchsetSha = (Read-LockField $ArtifactSection 'patchset_sha256').ToLowerInvariant()
+$ExpectedSize = [long](Read-LockField $ArtifactSection 'size')
+$ExpectedSha = (Read-LockField $ArtifactSection 'sha256').ToLowerInvariant()
 
 if ($Commit -notmatch '^[0-9a-f]{40}$' -or $AbiBase -notmatch '^[0-9a-f]{40}$') {
     throw 'SDL3 commit/abi_base must be exact 40-character hashes'
@@ -151,7 +157,7 @@ if ($ExpectedPatchsetSha -notmatch '^[0-9a-f]{64}$') {
 }
 $DigestScript = Join-Path $ProjectRoot 'scripts\sdl3-patchset-digest.mjs'
 $Phase = 'ordered-patch-inputs'
-$PatchsetReport = ((Invoke-Checked 'node' @($DigestScript, '--json') -Capture) -join "`n") | ConvertFrom-Json
+$PatchsetReport = ((Invoke-Checked 'node' (@($DigestScript) + $DigestArguments) -Capture) -join "`n") | ConvertFrom-Json
 $ActualPatchsetSha = ([string]$PatchsetReport.sha256).ToLowerInvariant()
 if ($ActualPatchsetSha -notmatch '^[0-9a-f]{64}$') { throw 'SDL3 actual patchset digest is invalid' }
 if (-not $Candidate -and $ActualPatchsetSha -ne $ExpectedPatchsetSha) {
@@ -167,6 +173,7 @@ if ($Candidate) {
     }
     $StableInputs = @($PatchInputs | ForEach-Object { [ordered]@{ ordinal = $_.ordinal; name = $_.name; size = $_.size; sha256 = $_.sha256 } })
     $CandidateReceipt.patchset = [ordered]@{ actualSha256 = $ActualPatchsetSha; lockedSha256 = $ExpectedPatchsetSha; artifactRevision = $ArtifactRevision; series = (File-Identity $Series); orderedInputs = $PatchInputs; inputListSha256 = (Text-Sha256 ($StableInputs | ConvertTo-Json -Depth 5 -Compress)) }
+    if ($Controller) { $CandidateReceipt.patchset.controllerSeries = File-Identity (Join-Path (Split-Path -Parent $Series) 'series-controller') }
     $CandidateReceipt.source = [ordered]@{ repository = $SourceRepo; pin = $Commit; abiBase = $AbiBase; worktree = $null; worktreeHead = $null }
     $CandidateReceipt.lockedExpected = [ordered]@{ size = $ExpectedSize; sha256 = $ExpectedSha; patchsetSha256 = $ExpectedPatchsetSha; lockFile = (File-Identity $LockPath) }
     Write-CandidateReceipt
@@ -254,6 +261,8 @@ $CmakeArgs = @(
     '-DCMAKE_PLATFORM_NO_VERSIONED_SONAME:BOOL=ON',
     "-DSDL_REVISION:STRING=$ArtifactRevision"
 )
+# 控制器无需 GPU 设备。公共 SDL ABI 保留，而该实例不能申请图形设备。
+if ($Controller) { $CmakeArgs += '-DSDL_GPU:BOOL=OFF' }
 $Phase = 'sdk-cmake-configure'
 Invoke-Checked $Cmake $CmakeArgs
 if ($Candidate) {
@@ -287,7 +296,7 @@ if ($Candidate) {
 $Phase = 'sdk-ninja-build'
 Invoke-Checked $Ninja @('-C', $Build, 'SDL3-shared')
 
-$Artifact = Join-Path $Build 'libSDL3.so'
+$Artifact = Join-Path $Build $LibraryName
 if (-not (Test-Path -LiteralPath $Artifact)) { throw "SDL3 artifact missing: $Artifact" }
 $ActualSize = (Get-Item -LiteralPath $Artifact).Length
 $ActualSha = (Get-FileHash -LiteralPath $Artifact -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -306,17 +315,19 @@ if ($Candidate) {
 $Phase = 'final-abi-layout-surface-launch-gates'
 Invoke-Checked 'node' @((Join-Path $ProjectRoot 'scripts\check-sdl3-abi.mjs'), '--repo', $Worktree, '--base', $AbiBase, '--head', $Commit)
 Invoke-Checked 'node' @((Join-Path $ProjectRoot 'scripts\check-sdl3-layout.mjs'), '--repo', $Worktree, '--sdk', $Hwsdk)
-Invoke-Checked 'node' @(
+$SurfaceArguments = @(
     (Join-Path $ProjectRoot 'scripts\check-sdl3-surface.mjs'),
     '--so', $Artifact,
     '--jar', (Join-Path $ProjectRoot 'prebuilt\lwjgl3\jars\lwjgl-sdl.jar')
 )
+if ($Controller) { $SurfaceArguments += '--controller' }
+Invoke-Checked 'node' $SurfaceArguments
 Invoke-Checked 'node' @((Join-Path $ProjectRoot 'scripts\check-sdl3-launch-contract.mjs'))
 
 if ($Candidate) {
     # 成功前再核当前实际输入，发现构建中漂移则失败，不给新旧recipe混合产物签发候选完成。
     $Phase = 'candidate-input-consistency'
-    $FinalPatchset = ((Invoke-Checked 'node' @($DigestScript, '--json') -Capture) -join "`n") | ConvertFrom-Json
+    $FinalPatchset = ((Invoke-Checked 'node' (@($DigestScript) + $DigestArguments) -Capture) -join "`n") | ConvertFrom-Json
     if ($FinalPatchset.sha256 -ne $ActualPatchsetSha) { throw 'SDL3 patch inputs changed during candidate build' }
     foreach ($Input in $CandidateReceipt.patchset.orderedInputs) {
         $Now = File-Identity $Input.path
@@ -331,7 +342,7 @@ if ($Candidate) {
 }
 
 if ($Deploy) {
-    $Destination = Join-Path $ProjectRoot 'entry\libs\arm64-v8a\libSDL3.so'
+    $Destination = Join-Path $ProjectRoot ('entry\libs\arm64-v8a\' + $LibraryName)
     $TempDestination = "$Destination.amcl-new"
     Copy-Item -LiteralPath $Artifact -Destination $TempDestination -Force
     Move-Item -LiteralPath $TempDestination -Destination $Destination -Force

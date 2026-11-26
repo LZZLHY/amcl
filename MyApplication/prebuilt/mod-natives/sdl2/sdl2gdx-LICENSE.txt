@@ -1,0 +1,7 @@
+Copyright 2020 Electron Studio
+
+This project is released under
+
+GNU GENERAL PUBLIC LICENSE WITH THE CLASSPATH EXCEPTION
+
+However Github incorrectly detects this license, so it has been moved into REAL-LICENSE.txt file.

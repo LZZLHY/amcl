@@ -58,7 +58,6 @@ import versionIdUtilsTest from './VersionIdUtils.test';
 import physicalHeldKeyTrackerTest from './PhysicalHeldKeyTracker.test';
 // 2026-08-20（多输入端架构改进提案 B2-b）：摇杆八向扇区判定，与 native 侧同一份规格表
 import joystickSectorTest from './JoystickSector.test';
-import gamepadManagerTest from './GamepadManager.test';
 // 2026-08-21（提案 B1 方案 A / 计划 §63）：逐设备手柄身份表的三值语义与竞态方向
 import deviceGamepadIdentityTest from './DeviceGamepadIdentity.test';
 // 2026-08-21（提案 D1 / 计划 §66）：物理键鼠端抽出的两个纯判定单元
@@ -191,8 +190,6 @@ export default function testsuite() {
   // 断言同一张规格表，任一侧偏离都会失败 —— 那套逻辑此前在三处各写一遍且无人保证一致。
   joystickSectorTest();
 
-  // 2026-09-01：GamepadManager 离线可确定的状态安全契约。真机轴符号/型号矩阵不在此声称。
-  gamepadManagerTest();
 
   // 2026-08-21（提案 B1 方案 A）：逐设备手柄身份表。钉住的是**方向性**契约 ——
   // Unknown 与 NotGamepad 的正确处置相反，压成两值就会漏放（用户可感知的卡键）。

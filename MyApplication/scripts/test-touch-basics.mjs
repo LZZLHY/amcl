@@ -890,23 +890,6 @@ check('普通组合第7键即时拒绝并保留合法6键，宿主异常回调�
   picker.toggleKey(72);picker.confirmChoice();assert.equal(confirmations,2);assert.ok(layout.validateAndNormalizeLayout(p));
 });
 
-check('手柄改键真实入参禁组合且真实回调拒绝多键，单键与解绑仍能保存',()=>{
-  const source=fs.readFileSync(path.join(root,settingsFile),'utf8'),ast=compiler.createSourceFile(settingsFile,source,compiler.ScriptTarget.Latest,true);
-  let properties;
-  const visit=node=>{if(compiler.isCallExpression(node)&&node.expression.getText(ast)==='KeyPickerSheet'&&
-    node.arguments[0]?.getText(ast).includes('gamepadBtnCurrentKeys'))properties=node.arguments[0];compiler.forEachChild(node,visit);};visit(ast);
-  assert.equal(properties.properties.find(node=>node.name?.getText(ast)==='allowCombo')?.initializer.getText(ast),'false');
-  const editor=component(settingsFile,'InputSettingsEditor',['applyGamepadKey','ensureButtonMap','gamepadBtnDisplayName','gamepadActionLabel','setGamepadAction_'],
-    {glfwKeyName:String,defaultGamepadButtonMap:layout.defaultGamepadButtonMap});
-  Object.assign(editor,{gamepad:layout.defaultGamepadConfig(),gamepadBtnPicker:'A',pushUndo(){},cloneGamepad:value=>structuredClone(value)});
-  const onPick=originalComponentCallback(settingsFile,'InputSettingsEditor','build',(node,tree)=>
-    compiler.isArrowFunction(node)&&node.getText(tree).includes('const button: string=this.gamepadBtnPicker'),editor);
-  const before=structuredClone(editor.gamepad.buttonMap.A);onPick([341,81]);assert.deepEqual(editor.gamepad.buttonMap.A,before);
-  assert.equal(editor.gamepadBtnPicker,'A');assert.match(editor.statusMsg,/只支持单键/);
-  onPick([81]);assert.deepEqual(editor.gamepad.buttonMap.A,{kind:'key',code:81});assert.equal(editor.gamepadBtnPicker,'');
-  editor.gamepadBtnPicker='A';onPick([]);assert.deepEqual(editor.gamepad.buttonMap.A,{kind:'none'});assert.equal(editor.statusMsg,'A → 无');
-});
-
 check('Pojav抽屉孩子保留菜单场景，强隐与解绑不再进入投影占用热区',()=>{
   const importer=load('gamecontrol/src/main/ets/ExternalLayoutImporter.ets');
   const candidates=load('gamecontrol/src/main/ets/LayoutCandidate.ets');

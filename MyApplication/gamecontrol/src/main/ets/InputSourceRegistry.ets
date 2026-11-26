@@ -8,7 +8,7 @@ import { AppLogger } from 'commons';
  * 端内通道才仲裁）。ArkTS 侧**没有**对应物，后果是三端的代码归属层次完全不同：
  *
  *   触控虚拟按键端 : UI 组件（GameControls）+ C 层解释器，双层
- *   手柄端         : HAR 里的纯逻辑类（GamepadManager），输出靠 McGamePage 注入 emitter
+ *   手柄端         : 通过原生设备接口读取；会话只同步焦点与连接状态
  *   物理键鼠端     : 散在 McGamePage 的页面方法里 + native core
  *
  * 没有共同接口，直接导致两类结构性缺陷：
@@ -83,8 +83,7 @@ export function inputSourceName(source: AmclInputSource): string {
  * 一个输入端。三端各自实现它，注册表只认这个接口。
  *
  * 刻意只有一个动作（releaseAll）：注册表的职责是清点与广播复位，不是代理端的业务。
- * 端内部怎么维护按下集合、经哪条 NAPI 下沉，注册表一概不关心 —— 这样
- * GamepadManager 能继续保持"零 ArkUI 依赖、零 NAPI 依赖"的纯逻辑形态。
+ * 来源各自维护持有状态；注册表按会话生命周期广播。
  */
 export interface InputEnd {
   /** 端身份。同一个 source 允许注册多个实例（例如多个手柄），注册表不去重。 */
@@ -121,7 +120,7 @@ export interface InputEnd {
    * 那一路**不**清 native 的 external held 与 ledger（详见
    * `dropAllEndStateAfterNativeReset` 上方那段）。所以前提由**注册表**在广播完本方法之后
    * 调按端释放来强制成立，不是由各端假设成立。各端实现**不要**自己去调 native 释放 ——
-   * 那会让端级复位计数翻倍，并且把 `GamepadManager` 的零 NAPI 依赖打破。
+   * 那会让端级复位计数翻倍。
    *
    * 实现要求：只清"我认为哪些键还按着"这类缓存；不发 GLFW 边沿、不动可见性、
    * 不动 IME/抽屉/toggle 之类用户可见状态。
@@ -135,7 +134,7 @@ export interface InputEnd {
  *
  * 为什么需要它而不是直接写对象字面量：ArkTS 的 `arkts-no-untyped-obj-literals` 不允许用
  * 对象字面量去实现**带方法**的接口（属性式函数字段可以，方法不行）。而把
- * `releaseAllInputs` 改成属性式函数又会让 `GamepadManager implements InputEnd` 变得别扭
+ * `releaseAllInputs` 改成属性式函数又会让 来源端的实现 变得别扭
  * （它本来就是一个方法）。所以接口保持方法形态，需要临时适配的地方用这个类。
  *
  * 典型用法是"某个端的状态住在页面/组件的字段里"，例如物理键鼠端的 held 缓存与触控端
@@ -193,7 +192,7 @@ export interface NativeInputSourceSink {
  *
  * 当前拓扑下这条约束**没有被触发**：`entry/oh-package.json5` 是唯一声明依赖 gamecontrol
  * 的模块，注册表的全部使用方（McGamePage / GameControls / GameAbility / EntryAbility /
- * GamepadManager）都在 entry 里，因此只有一份拷贝、一个单例。
+ * GameInputRuntime）都在 entry 里，因此只有一份拷贝、一个单例。
  *
  * **一旦有第二个模块（feature_core / launch / 任何 HSP）import 本文件，注册表会分裂成
  * 多份**：那个模块注册的端对 entry 里的复位边界不可见，表现为"切后台后某个端卡键"，
@@ -299,7 +298,7 @@ class InputSourceRegistryImpl {
    * **不越端不跨 owner 域**（grabbed 下的 schema owner 直接进 ledger、不经 external 表）。
    *
    * 频率不是问题：只在 epoch **变化时**才广播，一次会话个位数 —— 所以走按端释放原语，
-   * 而不是各端的 `releaseAll()`（后者才是 `GamepadManager` 那句注释担心的东西）。
+   * 而不是各端的 `releaseAll()`。
    */
   dropAllEndStateAfterNativeReset(reason: string): void {
     for (let i = 0; i < this.ends.length; i++) {

@@ -2,6 +2,7 @@
 #include "update_install_lease.h"
 #include <memory>
 #include "../platform/graphics_runtime_binding.h"
+#include "../platform/sdl_aux_runtime_policy.h"
 #include "../platform/graphics_observation_abi.h"
 #include "../platform/graphics_fault_injection.h"
 #include "../platform/mobilegl_capture_request.h"
@@ -849,6 +850,8 @@ static amcl::input::LaunchPlan g_inputLaunchPlan;
 // SDL的选定制品由进程持有，准备失败或单局结束都不卸仍可能被消费者借用的DSO。
 // 本对象在模块建立时取得PID；cold校验只声明制品协议，游戏SDK实例Ready仍由合法初始化证明。
 static amcl::input::ProcessSdlInputLibraryClaim g_sdlInputLibraryClaim;
+// SDL 窗口游戏的 FFM 消费者拥有独立无窗口实例。冷句柄只证明包内文件及协议身份。
+static amcl::input::ProcessSdlInputLibraryClaim g_sdlControllerLibraryClaim;
 static bool g_inputLaunchLegacy = false;
 
 /**
@@ -873,6 +876,8 @@ static bool phase_prepareInputArtifact(const amcl::input::LaunchPlan& plan, bool
         if ((!allowLegacySdl && !amcl::input::ValidateSelectedSdlEnvironment(std::getenv("SDL3_DYNAMIC_API"), error)) ||
             !amcl::input::FreezeSelectedSdlProperty(candidateArguments, candidateProperties, selectedPath, error) ||
             !g_sdlInputLibraryClaim.Claim(selectedPath, allowLegacySdl, error, !sdlInput)) return false;
+        if (!g_sdlControllerLibraryClaim.Claim(nativeDir + "/libamcl_sdl_controller.so",
+                false, error, true, true)) return false;
         // 同实际selected库独立核control/look两个冷标识；仍没有SDL_Init或游戏consumer Ready。
         AMCL_LOG_I(LOG_TAG, "AMCL_SDL_ARTIFACT role=%{public}s protocol=%{public}u look_protocol=%{public}u legacy=%{public}d selected=verified consumer_ready=0",
             sdlInput ? "primary-input" : "auxiliary", g_sdlInputLibraryClaim.Protocol(),
@@ -908,17 +913,20 @@ static bool phase_verifyRuntimeProperties(JNIEnv* env) {
  * （CallbackBridge 的 JNI_OnLoad、SDL_InitSubSystem）都在本线程之后执行。空槽位视为缺席。
  */
 // 只在真实游戏启动线程配置/退休辅助资格；SDK cold句柄不参加actual实例claim。
-static bool configureAuxiliarySdlRuntime(uint64_t session,bool retire) {
+static bool configureSdlConsumer(uint64_t session, bool retire, bool controller) {
     const auto* runtime=amcl::graphics::BoundGraphicsRuntime();
     if(!runtime || runtime->publicApi.structSize<AMCL_GRAPHICS_RUNTIME_V1_SDL_AUX_SIZE ||
        !runtime->publicApi.sdlAuxOperation) {
         if(!retire)g_mcStatus="InputContractMismatch:sdl_aux_host_api_missing";
         return false;
     }
-    AmclSdlAuxRequestV1 request{};request.structSize=sizeof(request);request.abiVersion=1;
+    AmclSdlAuxRequestV1 request{};request.structSize=sizeof(request);
+    request.abiVersion=controller ? amcl::graphics::SdlControllerRequestVersion : 1;
     request.processId=static_cast<uint64_t>(getpid());request.sessionId=session;
     request.launchThreadId=static_cast<int32_t>(syscall(SYS_gettid));
-    if(!retire && !g_sdlInputLibraryClaim.AuxiliaryArtifactIdentity(request.selectedFileDevice,request.selectedFileInode)) {
+    // 两种库各自核对已冷验的文件身份，不让其中一个库认领另一种角色。
+    const auto& selected = controller ? g_sdlControllerLibraryClaim : g_sdlInputLibraryClaim;
+    if(!retire && !selected.AuxiliaryArtifactIdentity(request.selectedFileDevice,request.selectedFileInode)) {
         g_mcStatus="InputContractMismatch:sdl_aux_artifact_unverified";return false;
     }
     AmclSdlAuxResultV1 result{};result.structSize=sizeof(result);result.abiVersion=1;
@@ -928,7 +936,17 @@ static bool configureAuxiliarySdlRuntime(uint64_t session,bool retire) {
         AMCL_LOG_W(LOG_TAG,"SDL auxiliary host operation=%{public}s result=%{public}d",retire?"retire":"configure",status);
         return false;
     }
+    // 宿主只记录本局配置成功。真实 SDL 初始化和实体设备枚举由游戏端分别确认。
+    if (!retire) AMCL_LOG_I("SdlHost", "SDL auxiliary configured role=%{public}s session=%{public}llu",
+        controller ? "controller" : "platform", static_cast<unsigned long long>(session));
     return true;
+}
+
+// GLFW/L2 保留通过原 SDL 导出的辅助消费者，所有游戏另有独立无窗口控制器库。
+static bool configureAuxiliarySdlRuntime(uint64_t session, bool retire) {
+    const bool controller = configureSdlConsumer(session, retire, true);
+    const bool original = g_inputLaunchPlan.abi == "SDL3" || configureSdlConsumer(session, retire, false);
+    return controller && original;
 }
 
 static bool phase_publishPlatformRuntime(uint64_t session) {
@@ -942,7 +960,7 @@ static bool phase_publishPlatformRuntime(uint64_t session) {
         g_mcStatus = "InputContractMismatch: SDL 输入制品尚未通过本局契约";
         return false;
     }
-    if(auxiliarySdl && !configureAuxiliarySdlRuntime(session,false))return false;
+    if(!configureAuxiliarySdlRuntime(session,false))return false;
     if (publishCallbackBridgeHostV1(session) != JNI_OK) {
         g_mcStatus = "JNI bridge 宿主接口发布失败";
         return false;
@@ -1602,7 +1620,7 @@ static void mcLaunchThreadWithProfile(std::string filesDir, std::string gameDir,
 cleanup:
     // 无论正常返回还是 Java 准备失败，已创建的 JVM 都不可再承载另一套游戏加载器。
     // 只撤销本方 bridge，绝不尝试卸载游戏 JNI 库来伪造“恢复干净”。
-    if(preparedInputSession && g_inputLaunchPlan.abi!="SDL3")
+    if(preparedInputSession)
         (void)configureAuxiliarySdlRuntime(preparedInputSession,true);
     revokeCallbackBridgeHostV1();
     jvmRetireRuntime();

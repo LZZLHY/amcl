@@ -281,57 +281,64 @@ exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scr
 {"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","unknown","busy","unavailable"]},"reason":{"type":"string"},"mode":{"type":"string"},"restartRequired":{"type":"boolean"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["mode","restartRequired"]}}]}
 ```
 
-### getGamepadMode
+### openLauncherDiagnostic
 
-查询手柄由游戏处理还是由启动器处理。
-
-执行参数
-
-```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'getGamepadMode' --args '{}')
-```
-
-```json
-{"type":"object","properties":{},"required":[],"additionalProperties":false}
-```
-
-执行返回值
-
-- `{"state":"ready","native":false,"effectiveAt":"nextLaunch"}`
-- `{"state":"failed","reason":"invalidArguments"}`
-- `{"state":"unknown","reason":"operationUnconfirmed"}`
-- `{"state":"busy","reason":"anotherRequest"}`
-- `{"state":"unavailable","reason":"launcherNotReady"}`
-
-```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","unknown","busy","unavailable"]},"reason":{"type":"string"},"native":{"type":"boolean"},"effectiveAt":{"type":"string"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["native","effectiveAt"]}}]}
-```
-
-### setGamepadMode
-
-修改下一次游戏启动时生效的手柄处理方式。
+在产品实际允许的情况下进入指定诊断页，界面内的探针由用户操作。
 
 执行参数
 
 ```text
-exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'setGamepadMode' --args '{"arg1":false}')
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'openLauncherDiagnostic' --args '{"arg1":"vulkan"}')
 ```
 
 ```json
-{"type":"object","properties":{"arg1":{"type":"boolean","description":"true交给游戏，false由启动器处理"}},"required":["arg1"],"additionalProperties":false}
+{"type":"object","properties":{"arg1":{"type":"string","description":"允许的诊断页面","maxLength":16384,"enum":["tools","gles","vulkan","input","desktop"]}},"required":["arg1"],"additionalProperties":false}
 ```
 
 执行返回值
 
-返回 `native` 时，该值等于原请求的 `arg1`（native）。
+返回 `tool` 时，该值等于原请求的 `arg1`（tool）。
 
-当请求参数为 `{"native":false}` 时：
-- `{"state":"ready","native":false,"effectiveAt":"nextLaunch"}`
+当请求参数为 `{"tool":"vulkan"}` 时：
+- `{"state":"needsUser","tool":"vulkan","reason":"performDiagnosticsInApp"}`
 - `{"state":"failed","reason":"invalidArguments"}`
-- `{"state":"unknown","reason":"operationUnconfirmed"}`
 - `{"state":"busy","reason":"anotherRequest"}`
 - `{"state":"unavailable","reason":"launcherNotReady"}`
+- `{"state":"unknown","reason":"operationUnconfirmed"}`
 
 ```json
-{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","unknown","busy","unavailable"]},"reason":{"type":"string"},"native":{"type":"boolean"},"effectiveAt":{"type":"string"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["native","effectiveAt"]}}]}
+{"type":"object","required":["state"],"properties":{"state":{"enum":["needsUser","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"tool":{"type":"string"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"needsUser"}}},"then":{"required":["tool","reason"]}}]}
+```
+
+### readDiagnosticObservation
+
+读取当前前台诊断页的摘要，不读取或传出完整控制台日志。
+
+执行参数
+
+```text
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'readDiagnosticObservation' --args '{"arg1":"gles"}')
+```
+
+```text
+exec-cli(command: ohos-arkTSScript --skillName 'amcl-launcher' --scriptPath 'scripts/LauncherSkill.ets' --functionName 'readDiagnosticObservation' --args '{"arg1":"tools"}')
+```
+
+```json
+{"type":"object","properties":{"arg1":{"type":"string","description":"当前前台诊断页面","maxLength":16384,"enum":["tools","gles","vulkan","input","desktop"]}},"required":["arg1"],"additionalProperties":false}
+```
+
+执行返回值
+
+返回 `page` 时，该值等于原请求的 `arg1`（tool）。
+
+当请求参数为 `{"tool":"gles"}` 时：
+- `{"state":"ready","page":"gles","running":false,"hasOutput":false,"status":""}`
+- `{"state":"failed","reason":"invalidArguments"}`
+- `{"state":"busy","reason":"anotherRequest"}`
+- `{"state":"unavailable","reason":"launcherNotReady"}`
+- `{"state":"unknown","reason":"operationUnconfirmed"}`
+
+```json
+{"type":"object","required":["state"],"properties":{"state":{"enum":["ready","failed","busy","unavailable","unknown"]},"reason":{"type":"string"},"page":{"type":"string"},"tool":{"type":"string"},"running":{"type":"boolean"},"status":{"type":"string"},"hasOutput":{"type":"boolean"},"vulkanAvailable":{"type":"boolean"},"paused":{"type":"boolean"},"events":{"type":"integer"},"verdict":{"type":"string"},"saved":{"type":"boolean"}},"additionalProperties":true,"allOf":[{"if":{"properties":{"state":{"const":"ready"}}},"then":{"required":["page"]}}]}
 ```

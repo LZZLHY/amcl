@@ -1,0 +1,135 @@
+--- a/src/java/org/lwjgl/input/Controllers.java
++++ b/src/java/org/lwjgl/input/Controllers.java
+@@ -45,8 +45,6 @@
+ public class Controllers {
+ 	/** The controllers available */
+ 	private static ArrayList<JInputController> controllers = new ArrayList<JInputController>();
+-	/** The number of controllers */
+-	private static int controllerCount;
+ 
+ 	/** The current list of events */
+ 	private static ArrayList<ControllerEvent> events = new ArrayList<ControllerEvent>();
+@@ -66,44 +64,33 @@
+ 			return;
+ 
+ 		try {
+-			ControllerEnvironment env = ControllerEnvironment.getDefaultEnvironment();
+-
+-			net.java.games.input.Controller[] found = env.getControllers();
+-			ArrayList<net.java.games.input.Controller> lollers = new ArrayList<net.java.games.input.Controller>();
+-			for ( net.java.games.input.Controller c : found ) {
+-				if ( (!c.getType().equals(net.java.games.input.Controller.Type.KEYBOARD)) &&
+-				     (!c.getType().equals(net.java.games.input.Controller.Type.MOUSE)) ) {
+-					lollers.add(c);
+-				}
+-			}
+-
+-			for ( net.java.games.input.Controller c : lollers ) {
+-				createController(c);
+-			}
+-
++			refresh();
+ 			created = true;
+ 		} catch (Throwable e) {
+ 			throw new LWJGLException("Failed to initialise controllers",e);
+ 		}
+ 	}
+ 
+-	/**
+-	 * Utility to create a controller based on its potential sub-controllers
+-	 *
+-	 * @param c The controller to add
+-	 */
+-	private static void createController(net.java.games.input.Controller c) {
+-		net.java.games.input.Controller[] subControllers = c.getControllers();
+-		if (subControllers.length == 0) {
+-			JInputController controller = new JInputController(controllerCount,c);
+-
+-			controllers.add(controller);
+-			controllerCount++;
+-		} else {
+-			for ( net.java.games.input.Controller sub : subControllers ) {
+-				createController(sub);
+-			}
+-		}
++	/** 由 JInput 的连接对象身份判定插拔，同一设备保留校准/死区与未消费事件。 */
++	private static void refresh() {
++		net.java.games.input.Controller[] online = ControllerEnvironment.getDefaultEnvironment().getControllers();
++		boolean same = controllers.size() == online.length;
++		for (int i = 0; same && i < online.length; i++)
++			same = controllers.get(i).target == online[i];
++		if (same) return;
++		ArrayList<JInputController> next = new ArrayList<JInputController>();
++		for (net.java.games.input.Controller device : online) {
++			JInputController match = null;
++			for (JInputController active : controllers)
++				if (active.target == device) { match = active; break; }
++			if (match == null) match = new JInputController(next.size(), device);
++			match.index = next.size();
++			next.add(match);
++		}
++		// 旧连接最后轮询一次，释放已持有的轴与按钮；同槽新连接有独立的 JInput 对象。
++		for (JInputController previous : controllers)
++			if (!next.contains(previous)) previous.poll();
++		controllers = next;
+ 	}
+ 
+ 	/**
+@@ -122,6 +109,7 @@
+ 	 * @return The number of controllers available
+ 	 */
+ 	public static int getControllerCount() {
++		if (created) refresh();
+ 		return controllers.size();
+ 	}
+ 
+@@ -130,6 +118,7 @@
+ 	 * and generate events that must be cleared.
+ 	 */
+ 	public static void poll() {
++		if (created) refresh();
+ 		for (int i=0;i<controllers.size();i++) {
+ 			getController(i).poll();
+ 		}
+@@ -169,22 +158,11 @@
+ 	 * Destroys any resources used by the controllers
+ 	 */
+ 	public static void destroy() {
+-// 		FIXME! not currently possible to destroy a controller
+-
+-//		if (!created)
+-//			return;
+-//		created = false;
+-//
+-//		// nuke each controller
+-//		for (int i=0;i<controllers.size();i++) {
+-//			//
+-//		}
+-//
+-//		// cleanup
+-//		event = null;
+-//		events.clear();
+-//		controllers.clear();
+-//		controllerCount = 0;
++		// 只收回本消费者的视图，直接 JInput 用户仍可读取。
++		created = false;
++		event = null;
++		events.clear();
++		controllers.clear();
+ 	}
+ 
+ 	/**
+--- a/src/java/org/lwjgl/input/JInputController.java
++++ b/src/java/org/lwjgl/input/JInputController.java
+@@ -48,9 +48,9 @@
+  */
+ class JInputController implements Controller {
+ 	/** The JInput controller this class is wrapping */
+-	private net.java.games.input.Controller target;
++	final net.java.games.input.Controller target;
+ 	/** The index that has been assigned to this controller */
+-	private int index;
++	int index;
+ 	/** The Buttons that have been detected on the JInput controller */
+ 	private ArrayList<Component> buttons = new ArrayList<Component>();
+ 	/** The Axes that have been detected on the JInput controller */

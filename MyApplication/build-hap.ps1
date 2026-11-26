@@ -277,11 +277,9 @@ Invoke-AmclNode "$ProjectRoot\scripts\test-layout-editor-panel.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Layout editor precision/trigger/confirmation regression failed' }
 Invoke-AmclNode "$ProjectRoot\scripts\test-layout-store-metadata.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Layout catalog metadata must not trigger payload loading during UI rendering' }
-# 采样合并不能丢悬浮滚轮行程；手柄阈值与二维方向使用实际生产模型验证。
+# 采样合并不能丢悬浮滚轮行程。
 Invoke-AmclNode "$ProjectRoot\scripts\test-virtual-mouse-wheel.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Virtual mouse wheel sample conservation regression failed' }
-Invoke-AmclNode "$ProjectRoot\scripts\test-gamepad-analog-stability.mjs"
-if ($LASTEXITCODE -ne 0) { throw 'Gamepad analog stability/direction regression failed' }
 Invoke-AmclNode "$ProjectRoot\scripts\test-touch-surface-controller.mjs"
 if ($LASTEXITCODE -ne 0) { throw 'Touch publication/modal/feedback/geometry contract failed' }
 # 离线ILAT解释器执行原uint64/身份/时钟/冲突和不同终点规则；只用rule_fixture，不采集Native或设备。

@@ -165,15 +165,15 @@ check('second module devDependency is still a second HAR owner', root => {
 check('source import outside entry and gamecontrol', root => {
   write(root, 'feature_core/src/main/ets/Feature.ets', `
     import {
-      GamepadManager
+      GameInputRuntime
     } from "gamecontrol"
-    export const marker = GamepadManager
+    export const marker = GameInputRuntime
   `);
 }, expectIssue(/Feature\.ets:\d+ imports 'gamecontrol' outside entry\/gamecontrol/));
 
 check('re-export outside entry and gamecontrol', root => {
   write(root, 'feature_core/src/main/ets/Feature.ets', `
-    export { GamepadManager } from 'gamecontrol'
+    export { GameInputRuntime } from 'gamecontrol'
   `);
 }, expectIssue(/imports 'gamecontrol' outside entry\/gamecontrol/));
 
@@ -268,7 +268,7 @@ check('module srcPath outside repository fails closed', root => {
 
 check('generated oh_modules source is ignored', root => {
   write(root, 'feature_core/oh_modules/generated/Bad.ets', `
-    import { GamepadManager } from 'gamecontrol'
+    import { GameInputRuntime } from 'gamecontrol'
   `);
 }, expectClean);
 

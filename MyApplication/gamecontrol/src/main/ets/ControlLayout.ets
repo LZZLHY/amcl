@@ -103,29 +103,7 @@ export type VisibilityOverride = 'auto' | 'force_show' | 'force_hide'
 export type HideTrigger = 'mouse' | 'keyboard' | 'mouse_and_keyboard'
 
 /**
- * 手柄相关类型（v3 新增，为手柄接入打底）。
- *
- * 平台事实（docs/guides/input-system-unified-direction-2026-05-29.md §2.4；⚠️ 那份文档已部分过期，
- * 见其头部横幅，但 §2.4 这两条仍成立。当前契约以 docs/refactor/输入架构规范.md 为准）：
- *   - 手柄按键经 onKeyEvent 上报（KEYCODE_BUTTON_* / KEYCODE_DPAD_*）。
- *   - 摇杆 / 扳机经 onFocusAxisEvent 上报（AxisModel，since 15）。
- *   - ⚠️ 但**轴的取值范围与符号方向官方在两条 API 路径上都没写**，只能真机取证（规范 §九）。
- *
- * 全部字段 optional，向下兼容；未配置时 GamepadManager 用 DEFAULT_GAMEPAD_CONFIG 兜底。
- */
-
-/**
- * 手柄逻辑按钮名（与具体 OHOS keyCode 解耦，便于用户重映射 + UI 展示）。
- */
-export type GamepadButton =
-  'A' | 'B' | 'X' | 'Y' |
-  'L1' | 'R1' | 'L2' | 'R2' |
-  'START' | 'SELECT' | 'MODE' |
-  'L3' | 'R3' |
-  'DPAD_UP' | 'DPAD_DOWN' | 'DPAD_LEFT' | 'DPAD_RIGHT'
-
-/**
- * 手柄按钮触发的 MC 动作：
+ * 旧 v3 布局保存的手柄动作只供存档往返：
  *   - number > 0：GLFW key code
  *   - number < 0：编码鼠标按钮（encodeMouse）
  *   - 'hotbarPrev' / 'hotbarNext'：滚轮切手中物（sendScrollEvent ±1）
@@ -145,7 +123,7 @@ export type StickRole = 'move' | 'look' | 'none'
 
 export interface GamepadConfig {
   enabled?: boolean                 // 默认 true
-  buttonMap?: Record<string, GamepadAction>  // GamepadButton → 动作
+  buttonMap?: Record<string, GamepadAction>  // 旧逻辑按钮名 → 动作
   leftStick?: StickRole             // 默认 'move'
   rightStick?: StickRole            // 默认 'look'
   stickDeadZone?: number            // 默认 0.18
@@ -318,7 +296,7 @@ export interface LayoutProfile {
   snapEnabled?: boolean
   snapGap?: number
   snapStrength?: number
-  // v3 新增：手柄配置（全 optional，未设时用 DEFAULT_GAMEPAD_CONFIG 兜底）
+  // v3 兼容字段只参与存档往返；新方案不生成手柄映射。
   gamepad?: GamepadConfig
   controls: ControlItem[]       // 所有控件
 }
@@ -455,54 +433,6 @@ export function effectiveGlobalOpacity(p: LayoutProfile): number {
 export function renderOpacity(c: ControlItem, p: LayoutProfile): number {
   const v = effectiveOpacity(c) * effectiveGlobalOpacity(p)
   return v < 0.05 ? 0.05 : (v > 1 ? 1 : v)
-}
-
-// ==================== 手柄默认配置（v3） ====================
-export const DEFAULT_GAMEPAD_DEAD_ZONE: number = 0.18
-export const DEFAULT_TRIGGER_THRESHOLD: number = 0.5
-
-/**
- * 默认手柄按钮映射（Xbox 布局）。返回新对象，调用方可安全修改。
- *   A=跳 B=潜行 X=放置(RMB) Y=切手(F)
- *   L1/R1=切手中物  L2=丢弃(Q)  R2=攻击(LMB)
- *   START=ESC  SELECT=TAB  L3/R3=空（留给 sneak/sprint toggle 后续）
- *   DPAD=空（部分手柄方向键走轴，由 GamepadManager 的 HAT 轴兜底）
- */
-export function defaultGamepadButtonMap(): Record<string, GamepadAction> {
-  const m: Record<string, GamepadAction> = {}
-  m['A'] = { kind: 'key', code: GLFW_KEY_SPACE }
-  m['B'] = { kind: 'key', code: GLFW_KEY_LEFT_SHIFT }
-  m['X'] = { kind: 'key', code: encodeMouse(GLFW_MOUSE_BUTTON_RIGHT) }
-  m['Y'] = { kind: 'key', code: GLFW_KEY_F }
-  m['L1'] = { kind: 'hotbarPrev' }
-  m['R1'] = { kind: 'hotbarNext' }
-  m['L2'] = { kind: 'key', code: GLFW_KEY_Q }
-  m['R2'] = { kind: 'key', code: encodeMouse(GLFW_MOUSE_BUTTON_LEFT) }
-  m['START'] = { kind: 'key', code: GLFW_KEY_ESCAPE }
-  m['SELECT'] = { kind: 'key', code: GLFW_KEY_TAB }
-  m['MODE'] = { kind: 'none' }
-  m['L3'] = { kind: 'none' }
-  m['R3'] = { kind: 'none' }
-  m['DPAD_UP'] = { kind: 'none' }
-  m['DPAD_DOWN'] = { kind: 'none' }
-  m['DPAD_LEFT'] = { kind: 'hotbarPrev' }
-  m['DPAD_RIGHT'] = { kind: 'hotbarNext' }
-  return m
-}
-
-/**
- * 默认手柄配置。GamepadManager 在 profile.gamepad 缺字段时用它兜底。
- */
-export function defaultGamepadConfig(): GamepadConfig {
-  return {
-    enabled: true,
-    buttonMap: defaultGamepadButtonMap(),
-    leftStick: 'move',
-    rightStick: 'look',
-    stickDeadZone: DEFAULT_GAMEPAD_DEAD_ZONE,
-    triggerThreshold: DEFAULT_TRIGGER_THRESHOLD,
-    lookScale: 1.0
-  }
 }
 
 /**
@@ -649,7 +579,7 @@ export function cloneItem(c: ControlItem): ControlItem {
 }
 
 /** 深拷贝手柄配置（含 buttonMap）。undefined 透传。 */
-function cloneGamepadConfig(g: GamepadConfig | undefined): GamepadConfig | undefined {
+export function cloneLegacyGamepadConfig(g: GamepadConfig | undefined): GamepadConfig | undefined {
   if (!g) return undefined
   let buttonMap: Record<string, GamepadAction> | undefined = undefined
   if (g.buttonMap) {
@@ -700,7 +630,7 @@ export function cloneLayout(src: LayoutProfile): LayoutProfile {
     snapEnabled: src.snapEnabled,
     snapGap: src.snapGap,
     snapStrength: src.snapStrength,
-    gamepad: cloneGamepadConfig(src.gamepad),
+    gamepad: cloneLegacyGamepadConfig(src.gamepad),
     controls: controls
   }
 }

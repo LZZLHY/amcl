@@ -15,7 +15,6 @@ export interface SettingsCapabilities {
   chooseInteraction: boolean;
   mobileInput: boolean;
   tabletProcess: boolean;
-  nativeGamepad: boolean;
   developer: boolean;
   fixedRefreshRate: boolean;
 }
@@ -106,14 +105,13 @@ export function settingsItems(c: SettingsCapabilities): SettingsItem[] {
     items.push({ id: 'jdk-update', section: 'download', title: 'JDK 更新', description: '手动检查、自动检查与更新通道', keywords: 'java jdk 检查 更新 稳定 预览 通道 服务器' });
     if (c.tabletProcess) items.push({ id: 'process', section: 'performance', title: '独立游戏进程', description: '平板游戏运行方式，重启启动器后生效', keywords: '平板 进程 兼容模式 重启' });
     if (c.touch) {
-      items.push({ id: 'input', section: 'controls', title: '手感与输入', description: '视角、触觉反馈与手柄映射', keywords: '触控 输入 灵敏度 视角 手柄 死区 陀螺仪' });
-      items.push({ id: 'layouts', section: 'controls', title: '操控方案', description: '管理布局、触控、视角与手柄设置', keywords: '触控 布局 按键 摇杆 编辑' });
+      items.push({ id: 'input', section: 'controls', title: '手感与输入', description: '视角与触觉反馈', keywords: '触控 输入 灵敏度 视角 死区 陀螺仪' });
+      items.push({ id: 'layouts', section: 'controls', title: '操控方案', description: '管理布局、触控与视角设置', keywords: '触控 布局 按键 摇杆 编辑' });
       items.push({ id: 'touch-help', section: 'controls', title: '触控操作帮助', description: '进入游戏世界后学习真实控件', keywords: '触控 帮助 教学 引导 操作' });
       if (c.mobileInput) items.push({ id: 'mobile-input', section: 'controls', title: '移动端输入方式',
         description: '自动、手柄优先或键鼠优先', keywords: '手机 平板 输入设备 键盘 鼠标 触控板 虚拟按键 显影' });
     }
     if (c.chooseInteraction) items.push({ id: 'interaction', section: 'controls', title: '电脑游戏交互', description: '自动、触屏或键鼠', keywords: '电脑 交互 鼠标 键盘 触屏 重启' });
-    if (c.nativeGamepad) items.push({ id: 'gamepad', section: 'controls', title: '由游戏处理手柄', description: '游戏控制器模组与启动器映射', keywords: '手柄 控制器 模组 原生 映射' });
     if (!c.tabletProcess) items.push({ id: 'window', section: 'controls', title: '游戏窗口', description: '当前设备的实际游戏窗口模式', keywords: '窗口 桌面 独立 全屏' });
     if (c.developer) items.push({ id: 'developer', section: 'controls', title: '开发者工具', description: '当前诊断构建提供的工具', keywords: '开发 调试 诊断 测试' });
   }

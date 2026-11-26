@@ -237,7 +237,7 @@ def main(options):
             bridge,cpp/'input/adapters/glfw_source_plane_aggregate.cpp',
             cpp/'input/adapters/lwjgl2_event_translate.cpp',cpp/'platform/physical_wheel_quantizer.cpp',
             cpp/'tests/host/backend_input_bridge_host_stub.cpp']
-        if not test:targetSources += [cpp/'platform/mapped_look_producer.cpp',cpp/'platform/source_look_producer.cpp']
+        if not test:targetSources += [cpp/'platform/source_look_producer.cpp']
         if not test:targetSources += [cpp/'input/source/source_control.cpp',cpp/'platform/input_ledger.cpp',
             cpp/'platform/external_held_registry.cpp',cpp/'platform/external_held_edge_router.cpp',
             cpp/'platform/legacy_output_runtime.cpp',cpp/'platform/legacy_physical_edge_router.cpp']

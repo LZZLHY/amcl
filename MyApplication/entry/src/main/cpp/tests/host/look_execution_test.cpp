@@ -24,17 +24,18 @@ int main(){
     CHECK(look->bindSession(1)==0&&look->publishMode(1,1,1)==0);
     for(uint32_t backend=1;backend<=3;++backend)CHECK(look->setBackendActive(backend,1)==0);
     AmclInputSnapshotV1 facts{};facts.abiVersion=1;facts.structSize=sizeof(facts);CHECK(core->getSnapshot(&facts)==0);
-    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=2;stream.kind=AMCL_LOOK_MAPPED_RATE;
-    stream.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.device=7;stream.connection=1;
+    AmclLookStreamV1 stream{};stream.size=sizeof(stream);stream.source=1;stream.kind=AMCL_LOOK_TOUCH_DELTA;
+    stream.unit=AMCL_LOOK_VIRTUAL_COUNTS;stream.clock=AMCL_LOOK_OWNER_MONOTONIC;stream.device=7;stream.connection=1;
     stream.resource.size=sizeof(stream.resource);stream.resource.grabbed=1;stream.resource.gameSession=1;
     stream.resource.modeEpoch=1;stream.resource.sessionEpoch=facts.sessionEpoch;stream.resource.surfaceEpoch=facts.surfaceEpoch;
     stream.resource.focusEpoch=facts.focusEpoch;stream.resource.context=context.payload.surfaceContext;
     uint64_t a=0,b=0;CHECK(look->openStream(&stream,&a)==0&&a);stream.device=8;CHECK(look->openStream(&stream,&b)==0&&b!=a);
     const AmclLookPolicyV1 policy{sizeof(policy),0,1,0.6,0};CHECK(look->applyPolicy(-1,&policy)==0);
-    // 轴t0→动作t10→timer t16：首动作只封10ms；旧pending在action处flush，未来6ms在另一prefix。
-    CHECK(look->submitVelocity(a,1080,0,1000000000)==0);
-    CHECK(look->submitVelocity(b,0,0,1000000000)==0);
+    // 两次独立触控采样分别封存，后来的移动不能提前越过首个动作。
+    CHECK(look->submitDelta(a,10.8,0,1000000000)==0);
+    CHECK(look->submitDelta(b,0,0,1000000000)==0);
     AmclLookPrefixV1 first{},second{};CHECK(look->sealPrefix(1,1,1010000000,1,&first)==1);
+    CHECK(look->submitDelta(a,6.48,0,1016000000)==0);
     CHECK(look->sealPrefix(1,2,1016000000,1,&second)==1&&second.token!=first.token);
     for(uint32_t backend=1;backend<=3;++backend){uint64_t c=0;CHECK(control->open(backend,42,&c)==0);CHECK(look->bindConsumer(c,100,50)==0);
         AmclLookEmissionV1 e{};CHECK(look->prepare(c,first.token,&e)==1&&near(e.dx,10.8)&&near(e.x,110.8));
@@ -45,15 +46,16 @@ int main(){
         CHECK(look->claim(&e)==1);CHECK(control->bindTarget(c,43)==0);
         CHECK(look->validate(&e)==AMCL_LOOK_STALE&&look->complete(&e,5)==AMCL_LOOK_STALE);
         look->closeConsumer(c);control->close(c);}
-    // 一设备退休不丢兄弟速率；相反设备的总和为零也不靠除法分配。
-    CHECK(look->retireStream(a)==0);CHECK(look->submitVelocity(b,1080,0,1016000000)==0);
+    // 一设备退休不丢兄弟来源的移动；相反设备的总和为零也不靠除法分配。
+    CHECK(look->retireStream(a)==0);CHECK(look->submitDelta(b,10.8,0,1016000000)==0);
     AmclLookPrefixV1 sibling{};CHECK(look->sealPrefix(1,3,1026000000,1,&sibling)==1);
     uint64_t c=0;CHECK(control->open(1,42,&c)==0&&look->bindConsumer(c,0,0)==0);
     AmclLookEmissionV1 e{};CHECK(look->prepare(c,sibling.token,&e)==1&&near(e.dx,10.8));
     CHECK(look->claim(&e)==1&&look->complete(&e,3)==0);
     // prepare后热拔一来源：旧票未claim仍能准确撤销，不清兄弟；GC等实际consumer最终完成。
     stream.device=10;uint64_t extra=0;CHECK(look->openStream(&stream,&extra)==0);
-    CHECK(look->submitVelocity(extra,1080,0,1026000000)==0);
+    CHECK(look->submitDelta(extra,10.8,0,1026000000)==0);
+    CHECK(look->submitDelta(b,10.8,0,1026000000)==0);
     AmclLookPrefixV1 shared{};CHECK(look->sealPrefix(1,4,1036000000,1,&shared)==1);
     amclLookExecutionSetRecipientsV1(shared.token,1);CHECK(look->prepare(c,shared.token,&e)==1&&near(e.dx,21.6));
     CHECK(look->retireStream(extra)==0&&look->claim(&e)==AMCL_LOOK_STALE);
@@ -62,6 +64,7 @@ int main(){
     CHECK(look->claim(&e)==1&&look->complete(&e,AMCL_CONTROL_STATE_FINAL)==0&&look->retirePrefix(shared.token)==0);
     // L2 Mouse独立关闭/重建不能重新领取仍为SDL保留的旧token，不影响同control的Keyboard。
     uint64_t mouse=0,sdl=0;CHECK(control->open(2,42,&mouse)==0&&look->bindConsumer(mouse,0,0)==0);
+    CHECK(look->submitDelta(b,10.8,0,1046000000)==0);
     AmclLookPrefixV1 oldMouse{};CHECK(look->sealPrefix(1,5,1046000000,1,&oldMouse)==1);
     amclLookExecutionSetRecipientsV1(oldMouse.token,6);look->closeConsumer(mouse);
     CHECK(look->bindConsumer(mouse,0,0)==0&&look->prepare(mouse,oldMouse.token,&e)==AMCL_LOOK_STALE);
@@ -81,10 +84,10 @@ int main(){
     CHECK(look->openStream(&gyro,&gyroHandle)==0&&look->submitDelta(gyroHandle,2,3,3)==0);
     CHECK(look->sealPrefix(1,7,1046000000,1,&gyroPrefix)==1&&look->prepare(c,gyroPrefix.token,&e)==1&&near(e.dx,4)&&near(e.dy,-6));
     CHECK(look->claim(&e)==1&&look->complete(&e,AMCL_CONTROL_STATE_FINAL)==0);
-    CHECK(look->publishMode(1,2,0)==0&&look->submitVelocity(b,1,0,1030000000)==AMCL_LOOK_STALE);
+    CHECK(look->publishMode(1,2,0)==0&&look->submitDelta(b,1,0,1030000000)==AMCL_LOOK_STALE);
     // 超过固定容量的正常热插/模式次数不永久耗尽流槽，单调handle仍不复用。
-    CHECK(look->publishMode(1,3,1)==0);stream.resource.modeEpoch=3;stream.device=0;
+    CHECK(look->publishMode(1,3,1)==0);stream.resource.modeEpoch=3;stream.device=7;
     uint64_t lastHandle=0;for(uint64_t connection=1;connection<=700;++connection){stream.connection=connection;uint64_t value=0;
         CHECK(look->openStream(&stream,&value)==0&&value>lastHandle&&look->retireStream(value)==0);lastHandle=value;}
-    std::puts("LOOK EXECUTION PASS: real owner velocity/prefix/three consumer identities/retire/reentry");
+    std::puts("LOOK EXECUTION PASS: real owner delta/prefix/three consumer identities/retire/reentry");
 }

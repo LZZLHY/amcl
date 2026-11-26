@@ -7,6 +7,7 @@ from pathlib import Path
 import argparse,hashlib,json,os,subprocess,zipfile
 from datetime import datetime
 from lib.workspace_paths import external_output_path
+from lib.lwjgl2_gamepad import gamepad_members, package
 ROOT=Path(__file__).resolve().parents[1]
 def sha(p):
     """记录实取原字节SHA；固定ZIP/正式patch/每维护类均绑定这次实际读取的内容。"""
@@ -105,14 +106,11 @@ def main(options):
     run([options.jdk/'bin/javac.exe','-encoding','UTF-8','-source','1.6','-target','1.6','-cp',base,'-d',classes,*java,context,*readpoints],source,out/'javac.log',env)
     replacements=['org/lwjgl/opengl/ContextGL.class','org/lwjgl/opengl/AMCLDisplay.class','org/lwjgl/opengl/Display.class','org/lwjgl/input/Keyboard.class','org/lwjgl/input/Mouse.class','org/lwjgl/opengl/EventQueue.class']
     jar=out/'lwjgl.jar'
-    with zipfile.ZipFile(base) as old,zipfile.ZipFile(jar,'w') as result:
-        for info in old.infolist():result.writestr(info,(classes/info.filename).read_bytes() if info.filename in replacements else old.read(info))
-    changed=[]
-    with zipfile.ZipFile(base) as old,zipfile.ZipFile(jar) as current:
-        if old.namelist()!=current.namelist():raise ValueError('Jar membership changed')
-        for name in old.namelist():
-            if old.read(name)!=current.read(name):changed.append(name)
-            if name not in replacements and old.read(name)!=current.read(name):raise ValueError('Unrelated Jar class changed')
+    members = {name: (classes/name).read_bytes() for name in replacements}
+    members.update(gamepad_members(ROOT, archive, spec['sourceCommit'], options.jdk, base, out))
+    package(base, jar, members)
+    with zipfile.ZipFile(base) as old:
+        changed = [name for name, data in members.items() if name not in old.namelist() or old.read(name) != data]
     # 编译后核六个维护class的全部声明；既有私有JNI/协议/字段不因codec增量被放宽。
     for class_name in ['org.lwjgl.opengl.ContextGL','org.lwjgl.opengl.AMCLDisplay','org.lwjgl.opengl.Display',
         'org.lwjgl.input.Keyboard','org.lwjgl.input.Mouse','org.lwjgl.opengl.EventQueue']:
@@ -123,7 +121,7 @@ def main(options):
             if p.returncode:raise RuntimeError('Actual javap failed')
             declarations.append(p.stdout)
         verify_declarations(*declarations,class_name)
-    report={'recordedAt':datetime.now().astimezone().isoformat(),'scope':'Normal existing Java recipe; actual JDK8 compile and six-member deterministic packaging; SO untouched',
+    report={'recordedAt':datetime.now().astimezone().isoformat(),'scope':'Normal existing Java recipe; actual JDK8 compile and deterministic controller/legacy packaging; SO untouched',
         'baseJarSha':sha(base),'sourceArchiveSha':sha(archive),'patches':{str(p.relative_to(ROOT)):sha(p) for p in patches},
         'javaSources':{str(p.relative_to(ROOT)):sha(p) for p in java},'upstreamReadpoints':{str(p.relative_to(source)):sha(p) for p in readpoints},
         'changedMembers':changed,'artifact':{'size':jar.stat().st_size,'sha256':sha(jar)},'scriptSha':sha(Path(__file__))}

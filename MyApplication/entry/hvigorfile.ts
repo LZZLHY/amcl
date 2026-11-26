@@ -56,8 +56,10 @@ function prepareAudioServiceAgentPlugin() {
       // SDK先完成所有node配置/回调，再创建并执行任务；与现有HDC配方使用同一已验证时序。
       node.afterNodeEvaluate(() => {
         const projectRoot = resolve(__dirname, '..');
-        execFileSync(process.env.AMCL_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
-          [resolve(projectRoot, 'scripts/build-audio-service-agent.py')], { cwd: projectRoot, stdio: 'inherit' });
+        const python = process.env.AMCL_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+        // 两个 Agent 都生成供 launch HAR 编译的摘要。先完成 rawfile 与摘要，再允许模块编译。
+        execFileSync(python, [resolve(projectRoot, 'scripts/build-cpu-agent.py')], { cwd: projectRoot, stdio: 'inherit' });
+        execFileSync(python, [resolve(projectRoot, 'scripts/build-audio-service-agent.py')], { cwd: projectRoot, stdio: 'inherit' });
       });
     },
   };

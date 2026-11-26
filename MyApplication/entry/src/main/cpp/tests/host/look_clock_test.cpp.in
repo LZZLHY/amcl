@@ -75,18 +75,11 @@ int main(){
     CHECK(amclSourceLookSubmit(1,3,0,static_cast<int64_t>(sdkQueued+3000000)));
     CHECK(amclSourceLookFlush(1,true));pump(window);CHECK(clockNear(window.cursorX,basis+16));
 
-    // delta封尾仍推进已知mapped速率的owner时钟；未指定的mapped pending不能被flush2偷补。
-    CHECK(look->openStream(&stream,&handle)==0);
-    AmclLookStreamV1 mapped=stream;mapped.source=2;mapped.kind=AMCL_LOOK_MAPPED_RATE;
-    mapped.clock=AMCL_LOOK_OWNER_MONOTONIC;mapped.unit=AMCL_LOOK_VIRTUAL_COUNTS_PER_SECOND;
-    mapped.device=9;mapped.connection=1;uint64_t rate=0;CHECK(look->openStream(&mapped,&rate)==0);
-    const uint64_t rateStart=now();CHECK(look->submitVelocity(rate,1080,0,rateStart)==0);
-    CHECK(amclLookExecutionCommitV1(handle,0,0,0,1,107,rateStart+10000000,2,&next)==1);
-    const auto* control=amclControlDeliveryGetPortV1();uint64_t consumer=0;CHECK(control->open(1,42,&consumer)==0);
-    CHECK(look->bindConsumer(consumer,0,0)==0);AmclLookEmissionV1 emission{};
-    CHECK(look->prepare(consumer,next.token,&emission)==1&&clockNear(emission.dx,6.48));
-    CHECK(look->claim(&emission)==1&&look->complete(&emission,AMCL_CONTROL_STATE_FINAL)==0);
-    look->closeConsumer(consumer);control->close(consumer);
-    CHECK(look->retireStream(rate)==0&&look->retireStream(handle)==0&&look->retirePrefix(next.token)==0);
-    std::puts("LOOK CLOCK PASS: delayed SDK sample/stream reopen/true reverse/nonzero flush rejection/UP/CANCEL/mapped owner advance/real GLFW");
+    // 旧消费者持有的 V1 速率枚举和函数指针仍有效，但不能恢复模拟手柄视角。
+    AmclLookStreamV1 retired = stream;
+    retired.source = 2; retired.kind = AMCL_LOOK_MAPPED_RATE;
+    uint64_t handleOut = 99;
+    CHECK(look->openStream(&retired,&handleOut)==AMCL_LOOK_REJECTED && handleOut==0);
+    CHECK(look->submitVelocity(0,1080,0,now())==AMCL_LOOK_REJECTED);
+    std::puts("LOOK CLOCK PASS: delayed SDK sample/stream reopen/true reverse/nonzero flush rejection/UP/CANCEL/retired rate rejected/real GLFW");
 }

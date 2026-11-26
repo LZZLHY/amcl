@@ -32,7 +32,7 @@ inline bool HapNativeDirectoryFromOwner(const std::string& owner,
  */
 inline const std::vector<std::string>& HapExternalProviderArtifacts() {
     static const std::vector<std::string> artifacts{
-        "libglfw.so", "libopenal.so", "libSDL3.so", "libfreetype.so",
+        "libglfw.so", "libopenal.so", "libSDL3.so", "libamcl_sdl_controller.so", "libfreetype.so",
         "libshaderc.so", "libspirv-cross.so", "libamcl_vulkan_wsi.so"};
     return artifacts;
 }

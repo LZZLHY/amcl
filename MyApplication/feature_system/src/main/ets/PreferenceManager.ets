@@ -135,7 +135,6 @@ export class PreferenceManager {
   private phoneSheetHeightWrites: PhoneSheetHeightWriteState | undefined = undefined;
 
   /** 各设备共用已有偏好键；仅确认的布尔 true 能开启原生输入，缺项或损坏值沿用键鼠映射。 */
-  get desktopNativeGamepad(): boolean { return this.readFrozenSetting_('desktopNativeGamepad', false) === true; }
 
   private pref: LaunchPreferenceStore;
   private readonly preferencesDirectory: string;
@@ -216,10 +215,10 @@ export class PreferenceManager {
    * 保存设备输入偏好和用户在前台确认的隐私选择。先在原owner队列中读确认基线，再put和await
    * flush；失败只回滚本键，不覆盖另一键。回滚未确认时传播“磁盘未知”，保原基线供显式
    * 重试；后继事务仍串行，不能普通mount清墓碑或把旧任务接到后来owner。这个Promise
-   * 只证明持久保存，不激活本局的Native手柄或已冻结交互路线。
+   * 保存成功只确认持久值，本局冻结的交互路线继续沿用。
    */
   private saveFrozenSetting_(key: string, value: LaunchPreferenceValue, fallback: LaunchPreferenceValue): Promise<void> {
-    if (key !== 'desktopNativeGamepad' && key !== 'desktopInteraction' && key !== 'privacyAgreed') {
+    if (key !== 'desktopInteraction' && key !== 'privacyAgreed') {
       return Promise.reject(new Error('不是本次确认的设置字段'));
     }
     const state: FrozenSettingsWriteState | undefined = this.frozenSettings;
@@ -255,11 +254,6 @@ export class PreferenceManager {
     return task;
   }
 
-  /** 原生手柄偏好只供下一局初始化；非法值或child写入在任何put以前拒绝。 */
-  saveDesktopNativeGamepad(value: boolean): Promise<void> {
-    if (typeof value !== 'boolean') return Promise.reject(new Error('手柄设置值非法'));
-    return this.saveFrozenSetting_('desktopNativeGamepad', value, false);
-  }
 
   /** 交互模式保存完成以后才由调用方更新desired；不得利用这个方法改变已冻结路线。 */
   saveDesktopInteraction(value: string): Promise<void> {
@@ -297,7 +291,7 @@ export class PreferenceManager {
 
   strictLauncherField(key: string): LaunchPreferenceValue {
     const extra: Record<string, LaunchPreferenceValue> = {'customJvmArgs':'','resolutionScalePercent':0,'appUpdateChannel':'stable',
-      'desktopNativeGamepad':false,'desktopInteraction':'auto','modMicrophoneEnabled':false};
+      'desktopInteraction':'auto','modMicrophoneEnabled':false};
     const defaults = LAUNCHER_FIELD_DEFAULTS;
     if (!Object.keys(defaults).includes(key) && !Object.keys(extra).includes(key)) throw new Error('未知设置项');
     if ((key === 'gameKeepScreenOn' && PreferenceManager.gameKeepScreenOnBeforeSave.has(this.preferencesDirectory)) ||

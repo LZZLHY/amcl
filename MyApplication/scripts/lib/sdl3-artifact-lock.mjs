@@ -25,8 +25,8 @@ function readNativeSection(root, section) {
 }
 
 /** SDL 构建调用者继续读取原节，其他模块不会借用这份身份。 */
-export function readSdl3ArtifactLock(root) {
-  return readNativeSection(root, 'sdl3-native');
+export function readSdl3ArtifactLock(root, controller = false) {
+  return readNativeSection(root, controller ? 'sdl3-controller' : 'sdl3-native');
 }
 
 /** 分别锁定打包前后身份的库只接受所属模块、固定路径和锁节的组合。 */

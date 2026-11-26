@@ -68,7 +68,7 @@ reject('descriptor overwritten', 'source', 'previous && std::strcmp(previous, de
 reject('auxiliary role collapses to primary', 'source', '"2:%llu:%llu:%llu:1"',
   '"1:%llu:%llu:%llu"', 'auxiliary-role-before-descriptor');
 reject('auxiliary host configuration bypassed', 'source',
-  'if(auxiliarySdl && !configureAuxiliarySdlRuntime(session,false))return false;',
+  'if(!configureAuxiliarySdlRuntime(session,false))return false;',
   '/* skipped */', 'auxiliary-role-before-descriptor');
 // I27-05：回到游戏线程上的 setenv，或不再为 SDL3 预登记槽位，都必须具名失败。
 reject('late setenv on game thread', 'source',
