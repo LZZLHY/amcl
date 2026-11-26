@@ -563,40 +563,31 @@ napi_value PhysicalPointerMotionTransaction(napi_env env,
     }
 
     switch (decision.route) {
-        case amcl::input::ArktsPhysicalMotionRoute::RawRelative:
-            // 常开普查：ArkTS onMouse Move 是 grabbed 模式下唯一的合法视角来源。
-            // 若"滚轮转视角"时这个计数随之上升，说明平台把滚轮也报成了 Move。
+        case amcl::input::ArktsPhysicalMotionRoute::RawRelative: {
             amcl::input::census::Bump(
                 amcl::input::census::Channel::LookFromArktsMotion);
-            // 只有**真的带位移**才算这条通道活着。真机实测：按住左键期间 ArkTS 仍以
-            // 26 次/秒投递 Move，但 rawDelta 恒为 0；若按"被调用过"就让镜像让位，
-            // 结果是两条通道都不产出，拖动完全不动（§十九）。
-            if (decision.first != 0.0 || decision.second != 0.0) {
-                ohos_note_arkts_relative_motion();
-            }
-            (void)amcl::input::PlatformInputPhysicalRelativeTransaction(
+            const auto result = amcl::input::PlatformInputPhysicalRelativeTransaction(
                 decision.first, decision.second, true,
                 RoutePhysicalRelativeChecked, pointerIdentity);
-            break;
-        case amcl::input::ArktsPhysicalMotionRoute::UnverifiedRelativeFallback:
-            // rawDelta 缺失时的分支（窗口坐标差分）。
-            //
-            // 更正上一版写在这里的注释：它声称"RawRelative 在产品构建里走不到"，那是**错的**。
-            // ArktsPhysicalMotionState::Consume 里 RawRelative 的唯一条件是 rawDeltaPresent，
-            // verifiedNativeAbsolute 只影响非 grabbed 的菜单分支；而 legacy 平面
-            // （typedRoute 默认 OFF）照常把 delta 交给 enqueue 回调。真机普查
-            // look == lookArkts 也反证了这一点：若真走本分支，光标锁下窗口坐标恒定、
-            // 差分恒 0，look 只能是 0。两条分支打同一个计数，故普查目前不区分它们。
-            amcl::input::census::Bump(
-                amcl::input::census::Channel::LookFromArktsMotion);
-            // 同上：零位移的样本不算通道活跃，否则会把唯一有数据的镜像通道压死。
-            if (decision.first != 0.0 || decision.second != 0.0) {
+            // 只用已接受的非零位移判活，拒收的样本不能阻止捕获降级。
+            if ((result == AMCL_LEGACY_PHYSICAL_EMITTED ||
+                 result == AMCL_LEGACY_PHYSICAL_TYPED_ROUTE_HANDLED) &&
+                (decision.first != 0.0 || decision.second != 0.0)) {
                 ohos_note_arkts_relative_motion();
             }
-            (void)amcl::input::PlatformInputUnverifiedRelativeFallbackTransaction(
+            break;
+        }
+        case amcl::input::ArktsPhysicalMotionRoute::UnverifiedRelativeFallback: {
+            amcl::input::census::Bump(
+                amcl::input::census::Channel::LookFromArktsMotion);
+            const auto result = amcl::input::PlatformInputUnverifiedRelativeFallbackTransaction(
                 decision.first, decision.second, true,
                 ohos_send_cursor_delta_checked);
+            if (result == amcl::input::PlatformInputRelativeFallbackResult::Enqueued) {
+                ohos_note_arkts_relative_motion();
+            }
             break;
+        }
         case amcl::input::ArktsPhysicalMotionRoute::LegacyMenuAbsolute: {
             amcl::input::PlatformInputTraceUnverifiedAbsolute();
             // ---- vp → 组件内物理 px（2026-08-19，修"鼠标点不动菜单/无悬浮高亮"）----
