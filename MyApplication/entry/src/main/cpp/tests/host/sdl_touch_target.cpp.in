@@ -9,6 +9,7 @@
 #include <vector>
 using Uint64 = uint64_t;
 using Uint32 = uint32_t;
+using SDL_WindowID = Uint32; // SDL_video.h 的窗口标识，供完整桥表中的待处理光标目标使用。
 using Uint8 = uint8_t;
 struct AMCL_BackendInputEvent {};
 using SDL_AtomicInt = std::atomic<int>;
@@ -100,7 +101,7 @@ static void* OPENHARMONY_HostSym(void*, const char* name) {
 
 // 呈现窗口结构只承载生产发布函数实际读取的字段，真实id、Native发布代次与WSI域分别记录。
 struct SDL_WindowData { int role; void* native_xcomponent; Uint64 amcl_generation; void* native_window; };
-struct SDL_Window { Uint32 id; SDL_WindowData* internal; Uint64 flags; };
+struct SDL_Window { SDL_WindowID id; SDL_WindowData* internal; Uint64 flags; };
 struct SDL_VideoData { unsigned auxiliary_present_notify; };
 struct SDL_VideoDevice { void* internal; };
 static SDL_Window* OPENHARMONY_Window = nullptr;

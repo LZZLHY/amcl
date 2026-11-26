@@ -36,10 +36,19 @@ for (const slot of manifest.slots) {
 }
 const launcher = fs.readFileSync(new URL('entry/src/main/cpp/jvm/mc_launcher.cpp', root), 'utf8');
 verifyJnaWiring(launcher);
-for (const anchor of ['ResolveJnaBootstrap(classpath, hapNativeDir)', ', jnaBootstrap);',
+for (const anchor of ['ResolveJnaBootstrap(classpath, hapNativeDir)',
   'if (!jnaBootstrap.ok)', 'recordGraphicsLaunchFailure(-5, "bootstrap", "jna_runtime_artifact_missing"']) {
   assert.throws(() => verifyJnaWiring(launcher.replace(anchor, 'removed-jna-wiring')), /wiring missing/);
 }
+// 启动器必须把解析结果和分配器交给同一次属性构造，再冻结这份属性；相邻调用不能补证。
+const argumentsTail = /\bjnaBootstrap\s*,\s*allocatorSlot\s*\);/;
+assert.match(launcher, argumentsTail);
+for (const replacement of ['otherJna, allocatorSlot);', 'allocatorSlot, jnaBootstrap);',
+  'jnaBootstrap, otherSlot);', 'otherJna, allocatorSlot); unrelated(jnaBootstrap, allocatorSlot);']) {
+  assert.throws(() => verifyJnaWiring(launcher.replace(argumentsTail, replacement)), /wiring missing/);
+}
+assert.throws(() => verifyJnaWiring(launcher.replace('FreezeBootstrapProperties(finalJvmArgs, g_runtimeBootstrapProperties,',
+  'FreezeBootstrapProperties(finalJvmArgs, otherProperties,')), /wiring missing/);
 const failureStart = launcher.indexOf('if (!jnaBootstrap.ok)');
 const failureReturn = launcher.indexOf('return -5;', failureStart);
 assert.ok(failureReturn > failureStart);

@@ -46,8 +46,9 @@ def run_checks(args,build,output):
     start=bridge.index('typedef struct InputBridgeInstanceV1 {');table=bridge[start:bridge.index('} InputBridgeInstanceV1;',start)+len('} InputBridgeInstanceV1;')]
     start=bridge.index('#define INPUT_BRIDGE_OWNER_HAS_TAIL');macro=bridge[start:bridge.index('\n\n',start)]
     types='\n'.join(recipe.block(adapter,adapter.index(signature))+';' for signature in ['enum class GlfwAdapterStatus','struct GlfwSurfaceContextSinkEvent'])
-    # 完整 owner 表已追加真实 look 私有尾；带入生产类型声明，不能截短表或仿造类型掩盖缺闭包。
-    parts={'@PRODUCED_TYPES@':types,'@OWNER_TABLE@':'#include "delivery/look_transport.h"\n'+table,'@TAIL_MACRO@':macro,
+    # 完整 owner 表同时引用视角传输和延迟观测类型；沿用生产头，确保诊断关闭时仍保留完整尾部布局。
+    owner_headers='#include "delivery/look_transport.h"\n#include "input_latency_observation.h"\n'
+    parts={'@PRODUCED_TYPES@':types,'@OWNER_TABLE@':owner_headers+table,'@TAIL_MACRO@':macro,
       '@BRIDGE_READER@':recipe.block(bridge,bridge.index('JNIEXPORT int inputBridge_readSurfaceContextV1(')),
       '@GETTERS@':'\n'.join(recipe.function(compat,n) for n in ['glfwOHOS_ReadInputSurfaceContext','glfwOHOS_ClearInputSurfaceContext','typedSurfaceContextSink']),
       '@CALLER@':recipe.function(compat,'typedInputAdapterHasConsumer')+'\n'+
@@ -95,7 +96,7 @@ endif()
         if unit.count(before)!=1:raise ValueError('Unique production mutation anchor required: '+name)
         run(unit.replace(before,after),name,True);print('PASS compiled behavioral negative '+name)
     tracked=['glfw/input_bridge_ohos.c','glfw/glfw_compat.cpp','input/input_surface_context_snapshot.h','input/input_surface_context_semantics.h',
-      'input/input_state_core.h','input/delivery/look_transport.h','input/delivery/look_execution.h','input/adapters/backend_keymaps.cpp','input/adapters/glfw_typed_input_resolve_guard.h','input/adapters/glfw_input_adapter.h',*['input/'+n for n in names]]
+      'input/input_state_core.h','input/delivery/look_transport.h','input/input_latency_observation.h','input/delivery/look_execution.h','input/adapters/backend_keymaps.cpp','input/adapters/glfw_typed_input_resolve_guard.h','input/adapters/glfw_input_adapter.h',*['input/'+n for n in names]]
     receipt={'scope':'host actual owner/Core/GLFW reader/caller; no SDK/device claim',
       'buildDirectory':str(build),'buildRetained':True,
       'sources':{n:hashlib.sha256((CPP/n).read_bytes()).hexdigest() for n in tracked},'negatives':[n for n,_,_ in mutations]}

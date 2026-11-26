@@ -148,7 +148,10 @@ static bool SDLCALL watcher(void*userdata,SDL_Event*event) {
   CHECK(keyHeld(SDL_SCANCODE_LSHIFT));reentryMode=0;
  } else if(mode==8 && event->type==SDL_EVENT_KEY_DOWN && event->key.scancode==SDL_SCANCODE_A) {
   CHECK(keyHeld(SDL_SCANCODE_A));reentryMode=0;OPENHARMONY_RetireControls(1,0,false,false);
- } else if(mode==9 && event->type==SDL_EVENT_KEY_DOWN && event->key.scancode==SDL_SCANCODE_A) {
+ } else if((mode==9 || mode==10) && event->type==SDL_EVENT_KEY_DOWN && event->key.scancode==SDL_SCANCODE_A) {
+  // 同一 watcher 分别由外层泵和直接派发触发。直接派发时只有派发深度保护在起作用。
+  CHECK(host_control_dispatch_depth>0);
+  CHECK((bridge.pump_budget!=0)==(mode==9));
   reentryMode=0;pushLegacy(22,AMCL_EVENT_KEY,65,0,0,0);frameLimit=22;
   int unread=legacyBegin;OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
   CHECK(legacyBegin==unread&&keyHeld(SDL_SCANCODE_A));CHECK(drainControls()==0);
@@ -316,6 +319,14 @@ static void checkQueueAndPullReentry(void) {
  resetFixture();reentryMode=9;pushLegacy(21,AMCL_EVENT_KEY,65,0,1,0);frameLimit=21;
  OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(keyHeld(SDL_SCANCODE_A)&&legacyBegin==1);
  OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);CHECK(!keyHeld(SDL_SCANCODE_A));
+ CHECK(drainControls()==2&&polled[0].type==SDL_EVENT_KEY_DOWN&&polled[1].type==SDL_EVENT_KEY_UP);
+ CHECK(snapshot().pullCommitted==2&&snapshot().pollMismatches==0);
+ /* 直接派发不占泵预算。watcher 压入的 Up 在 Down 返回之后才交给下一次正常泵。 */
+ resetFixture();reentryMode=10;
+ OPENHARMONY_SendKeyFromPlane(1,0,0,SDL_SCANCODE_A,1);
+ CHECK(reentryMode==0&&keyHeld(SDL_SCANCODE_A)&&legacyBegin==0&&legacyEnd==1);
+ OPENHARMONY_PumpOrderedEvents(&bridge,activeWindow->id);
+ CHECK(!keyHeld(SDL_SCANCODE_A)&&legacyBegin==1);
  CHECK(drainControls()==2&&polled[0].type==SDL_EVENT_KEY_DOWN&&polled[1].type==SDL_EVENT_KEY_UP);
  CHECK(snapshot().pullCommitted==2&&snapshot().pollMismatches==0);
  puts("PASS SDL actual post-watcher queue validation, legal Poll reentry and nonrecursive source pull");

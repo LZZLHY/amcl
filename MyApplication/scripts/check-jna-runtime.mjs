@@ -8,7 +8,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {readUniqueZipEntry} from './zip-entry-buffer.mjs';
-import {stripComments} from './lib/source-noise.mjs';
+import {stripComments, stripStringLiterals} from './lib/source-noise.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -60,14 +60,22 @@ export function verifyJnaNative(bytes, slot, exact = false) {
 /** 守住实际resolver→失败传播→同次属性冻结的接线，不把helper中的错误码要求复制到调用点。 */
 export function verifyJnaWiring(source) {
   const launcher = stripComments(source, {lang: 'c'});
-  const resolve = launcher.indexOf('ResolveJnaBootstrap(classpath, hapNativeDir)');
-  const properties = launcher.indexOf('g_runtimeBootstrapProperties = amcl::jvm::RuntimeBootstrapProperties(', resolve);
-  const freeze = launcher.indexOf('FreezeBootstrapProperties(finalJvmArgs', properties);
+  const code = stripStringLiterals(launcher, {lang: 'c'});
+  const resolve = code.search(/\bjnaBootstrap\s*=\s*amcl::jvm::ResolveJnaBootstrap\(\s*classpath\s*,\s*hapNativeDir\s*\)/);
+  const assignment = 'g_runtimeBootstrapProperties = amcl::jvm::RuntimeBootstrapProperties(';
+  const properties = code.indexOf(assignment, resolve);
+  const freeze = code.indexOf('FreezeBootstrapProperties(', properties);
   const failure = launcher.slice(resolve, properties).match(/if\s*\(!jnaBootstrap\.ok\)\s*\{([\s\S]*?)\n\s*\}/)?.[1] ?? '';
+  // 只读取这次属性赋值的实参。JNA 按第六参转交，第七参选择 LWJGL 分配器；
+  // 后续语句或字符串中出现同名变量都不能证明本次转交成功。
+  const args = code.slice(properties + assignment.length, freeze).match(/^([^();]*)\)\s*;/)?.[1].split(',');
   if (resolve < 0 || properties <= resolve || freeze <= properties ||
       !failure.includes('recordGraphicsLaunchFailure(-5, "bootstrap", "jna_runtime_artifact_missing"') ||
       !/\breturn\s+-5\s*;/.test(failure) ||
-      !launcher.slice(properties, freeze).includes(', jnaBootstrap);')) throw Error('JNA production resolution wiring missing');
+      args?.[5]?.trim() !== 'jnaBootstrap' || args?.[6]?.trim() !== 'allocatorSlot' ||
+      !/^FreezeBootstrapProperties\(\s*finalJvmArgs\s*,\s*g_runtimeBootstrapProperties\s*,/.test(code.slice(freeze))) {
+    throw Error('JNA production resolution wiring missing');
+  }
 }
 
 /** 检查现役源/同步副本并可选检查精确HAP；不隐式寻找“最新包”。 */

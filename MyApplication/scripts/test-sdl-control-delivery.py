@@ -313,6 +313,7 @@ target_link_libraries(sdl_text_demand_queue PRIVATE SDL3::SDL3-static)
                 'static void OPENHARMONY_SendKeyFromPlane(Uint8 plane, Uint64 time, int raw, SDL_Scancode key, int action)\n{\n    (void)SDL_SendKeyboardKey(time,SDL_DEFAULT_KEYBOARD_ID,raw,key,action!=0); return;'),
             ('typed-crosses-legacy-order','? bridge->TypedNextThrough(AMCL_BACKEND_ID_SDL3, &event, bridge->pump_order_limit)',
                 '? bridge->TypedNextThrough(AMCL_BACKEND_ID_SDL3, &event, UINT64_MAX)'),
+            # 有序泵与 legacy/typed 两个子泵都守住派发深度；反控只撤这组判定，保留预算与线程/目标资格。
             ('source-pull-reentry','host_control_dispatch_depth || ',''),
         ]
         for mode,before,after in mutations:
@@ -326,9 +327,10 @@ target_link_libraries(sdl_text_demand_queue PRIVATE SDL3::SDL3-static)
         path.write_text(fixture.replace('@PRODUCTION@',body),encoding='utf-8')
         # SDK单正文负控：保留薄facade原样，仅移除SDK缓存之前的ticket再核证明测试穿过真实SDK。
         receipt=source/'src/events/SDL_inputdelivery_c.h';actual=receipt.read_bytes()
-        before=b'return !receipt || (receipt->target && receipt->current && receipt->cacheApplied && receipt->current(receipt->context));'
+        # 文本需求与目标资格仍独立生效；只撤掉已有控制票在实际 SDK 缓存/排队处的重验。
+        before=b'if (receipt->current && receipt->cacheApplied) return receipt->current(receipt->context);'
         if actual.count(before)!=1:raise ValueError('SDK current hook not found')
-        receipt.write_bytes(actual.replace(before,b'return true;',1))
+        receipt.write_bytes(actual.replace(before,b'if (receipt->current && receipt->cacheApplied) return true;',1))
         run([cmake,'--build',output/'build','--config','Release','--parallel','8'],output,output/'sdk-skips-reentry-guard-compile.log')
         facts.append({'mode':'sdk-skips-reentry-guard','exit':run([binary],output,output/'sdk-skips-reentry-guard.log',negative=True)})
         receipt.write_bytes(actual)

@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "sourceCommit": "5aa7b14dce5fa1e81a21f336ee2028795b5bee06",
+  "sourceCommit": "e94e7b2bde2126bf5d39d8bf63d30915669ebe73",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
     "versionName": "1.0.8",
-    "versionCode": 1001116
+    "versionCode": 1001119
   },
   "exporter": {
     "schemaVersion": 2,
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "a2f03ec4c04a39d898f4ea506f987c3bc5e480d3ce20b671ded137fcdd90b4fa",
+      "sha256": "90017f5f08a628cafd1f7ccb2bdbd0af99d88e8414a3e2bf0340d685f12dec38",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -817,7 +817,7 @@
     },
     {
       "path": "config/log-domains.json",
-      "sha256": "adad13a158e92c6f1e15a5cd56f407c4320c9f2f0016dcebd7f9e3fa2a308967",
+      "sha256": "f9565b000439acda37b56e079c9e0c0f7f0623e1af275b76267328a5a8ba7834",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -852,7 +852,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "073edaf09715ac32513207a9d52480df161e5410c0ad2b08fd04a4edebd260a5",
+      "sha256": "0c1aa81057a070fcdb2f9278224f2bfb3fb2098fa07410a915ced1aba6ecf646",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -7047,7 +7047,7 @@
     },
     {
       "path": "entry/src/main/cpp/tests/host/sdl_touch_target.cpp.in",
-      "sha256": "57fbfd2106af879e5d7a08d821d78e43cb6fc2f4badbe366ea022a7349220e9a",
+      "sha256": "c8ccb0f7545c73f623b23f6b85751ccf623ba330ab40c55b5a36640ca7a672ca",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10057,7 +10057,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "2f8f45702a176e5329116e9339cd72309552722031f9bc608e0ea0f2cc058a40",
+      "sha256": "4a8f45bab82ecd42931494867fc83951c206931cfc418a3c755c6986364ada23",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18030,7 +18030,7 @@
     },
     {
       "path": "scripts/check-jna-runtime.mjs",
-      "sha256": "41f8d4ac57324b3a3c14d84329383426767806a20954adefad657dd857459645",
+      "sha256": "91383c4175d1beed2d09f0fd1bd97700c63c6e8112490606413519e72619d1cd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -18779,7 +18779,7 @@
     },
     {
       "path": "scripts/fixtures/input-consumer/sdl_control_production.c.in",
-      "sha256": "efa612509a40203f467e65db64054c2d59bcdbd9cc03b0a00b8299df2905e194",
+      "sha256": "450a7421495d8e4476d2524fab82a1394201161d4fa24d574d695e7557d9d02d",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -20396,7 +20396,7 @@
     },
     {
       "path": "scripts/test-check-jna-runtime.mjs",
-      "sha256": "40a8505347f2c6fec385245b455f5105c7e634abfbf2466e0a912db0c5b907aa",
+      "sha256": "0ff831ea7dc8717a57d97a9cdf20b1458acfab2a554a795bcfee5162fd548d69",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -21614,7 +21614,7 @@
     },
     {
       "path": "scripts/test-input-surface-reader.py",
-      "sha256": "b0c4bd52675264657ade61b9f0d4e3f7c3cb1014ed92c58734cc591cf5053c26",
+      "sha256": "cc5a2ac90a85f2bf9bedfc344a0fe6afaad60c15be4a887393907ef40c77ad86",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -22692,7 +22692,7 @@
     },
     {
       "path": "scripts/test-sdl-control-delivery.py",
-      "sha256": "e44056d5ce79d979de767f72df987fdfc9fe091c6a386d54812a760dc6b4b901",
+      "sha256": "8af9c7956e980d759bfc231ce0aa150f05570b3eb16322499f451a487ea5bbf0",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
