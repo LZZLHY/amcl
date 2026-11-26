@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-26T13:57:59Z",
+  "generatedAt": "2026-11-26T14:04:27Z",
   "categories": [
     "highlight",
     "added",
@@ -11,14 +11,14 @@
   ],
   "latest": {
     "versionName": "1.0.8",
-    "versionCode": 1001114,
+    "versionCode": 1001115,
     "tag": "v1.0.8",
     "date": "2026-11-26"
   },
   "releases": [
     {
       "versionName": "1.0.8",
-      "versionCode": 1001114,
+      "versionCode": 1001115,
       "tag": "v1.0.8",
       "date": "2026-11-26",
       "prerelease": false,

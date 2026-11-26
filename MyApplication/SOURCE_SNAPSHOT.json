@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "sourceCommit": "55c7a32abb20dc70e02670088745fc76af51b647",
+  "sourceCommit": "ef5f080ceb48a32a622b4f72e543ffc85b13af78",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
     "versionName": "1.0.8",
-    "versionCode": 1001114
+    "versionCode": 1001115
   },
   "exporter": {
     "schemaVersion": 2,
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "1e797c29d26b51a683fdb9befbe1356a7f379f0bf149a9d5c703761d1254c44a",
+      "sha256": "e2ef9356552758f22bd9aa94ab9d5b872f9eabba5d96557b452d17c47dd85310",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -852,7 +852,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "635893f5b828181a79998f6cbba51ea14b965d2c4148e60cf6a3e418d5faf497",
+      "sha256": "1e0b6f13628b41e32b0266b99628d510f1bcea40ff89bc37e50f7fe433f1a890",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -10057,7 +10057,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "e6ceccceb5cbeae84fd39ca85890116664160703504e975797e4b7751a07829d",
+      "sha256": "19191c6418beb78304109ca8a8083b57127253ed61a7ecb57fd30f7e0be81eb5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -17561,7 +17561,7 @@
     },
     {
       "path": "qa/device/test-accounts.mjs",
-      "sha256": "4ec483f32037ff85517676e65fdadc3d28608271a2fff146bcb0c1034d5d25d3",
+      "sha256": "100a14d73dfa01e591732c4f078980429dddf250a457554d6700a3897551b9fd",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"

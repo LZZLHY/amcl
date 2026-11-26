@@ -2,7 +2,7 @@
   "app": {
     "bundleName": "com.amcl.launcher",
     "vendor": "dhao",
-    "versionCode": 1001114,
+    "versionCode": 1001115,
     "versionName": "1.0.8",
     // 系统先按设备能力启用GL/GLES提供者；Minecraft后端仍由本局profile选择。
     // 必须在进程首次EGL调用前生效，不能在游戏启动后动态改写。

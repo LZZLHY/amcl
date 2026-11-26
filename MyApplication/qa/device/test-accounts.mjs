@@ -16,7 +16,7 @@ function identity(id, type) {
 }
 const manager = { isReady: () => true, list: () => accounts.slice(), getSelectedId: () => selected,
   findById: id => accounts.find(item=>item.id===id),
-  getSelected: () => manager.findById(selected) ?? accounts[0],
+  getAvailableSelection: () => manager.findById(selected),
   add: async account => { accounts.push(account); }, select: async id => { selected = id; },
   remove: async (id,target,selection) => {
     assert.equal(manager.findById(id),target);assert.equal(selected,selection);
@@ -42,6 +42,12 @@ accounts.push(base);selected=base.id;
 const page=new Page();
 page.onAccountsChanged=()=>{};page.onClose=()=>page.aboutToDisappear();
 page.aboutToAppear();
+assert.equal(page.currentAcc,base);
+// 已选账号暂不可读时，其他可用账号仍可切换，但不能被当作当前身份。
+selected='unavailable-id';page.refresh();
+assert.equal(page.currentAcc,null);
+assert.deepEqual(Array.from(page.otherAccs),[base]);
+selected=base.id;page.refresh();
 const call=async(action,args={})=>JSON.parse(await handler('accounts.'+action, JSON.stringify(args),'f'.repeat(32)));
 let snapshot=await call('list');
 const ref=snapshot.data.accounts[0].accountRef;
@@ -102,17 +108,26 @@ const queued = new Manager();
 const original=identity('replace-id',types.MICROSOFT);
 const replacement={...original,serialize:()=>({id:original.id})};
 const writes=[];
+const persistedIds=[original.id,'unavailable-id',base.id];
+const savedIndexes=[];
 let enter,release;
 const entered=new Promise(resolve=>{enter=resolve;});
 const work=new Promise(resolve=>{release=resolve;});
-queued.storage={saveRecordConfirmed:async()=>{enter();await work;},
+// 持久索引包括暂不可读的账号，替换同 ID 的记录时应完整保留其位置。
+queued.storage={getAccountIndexEntries:()=>persistedIds.slice(),
+  saveRecordConfirmed:async(record,ids)=>{savedIndexes.push([record.id,ids.slice()]);enter();await work;},
   setSelectedIdConfirmed:async id=>{writes.push(id);}};
 queued.accounts=[original,base];queued.selectedId=base.id;
+queued.deferredIds.add('unavailable-id');
+await assert.rejects(queued.add(replacement),error=>error.code==='NOT_READY');
+assert.deepEqual(savedIndexes,[]);
+queued._ready=true;
 const replacing=queued.add(replacement);
 await entered;
 const staleSelect=queued.select(original.id,original);
 release();await replacing;await assert.rejects(staleSelect,error=>error.code==='ACCOUNT_CHANGED');
 assert.equal(queued.findById(original.id),replacement);
+assert.deepEqual(savedIndexes,[[original.id,persistedIds]]);
 assert.equal(queued.getSelectedId(),base.id);assert.deepEqual(writes,[]);
 await queued.select(replacement.id,replacement);
 assert.equal(queued.getSelectedId(),replacement.id);assert.deepEqual(writes,[replacement.id]);
