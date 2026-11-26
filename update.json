@@ -1,99 +1,159 @@
 {
-  "versionCode": 1000911,
-  "versionName": "1.0.7",
-  "tag": "v1.0.7",
-  "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.7",
-  "notes": "1.0.7\n- 新增：主题配色、离线皮肤与披风库、游戏分辨率缩放\n- 升级：设置页、触控编辑器、下载浏览与日志分享\n- 改进：整合包导入、资源另存与模组运行兼容\n- 更新：JDK 8、17、21、25 正式运行时与必要修复提醒\n- 提醒：升级后如有 JDK 修复提示，请先完成修复再启动游戏",
+  "versionCode": 1001122,
+  "versionName": "1.0.8",
+  "tag": "v1.0.8",
+  "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8",
+  "notes": "1.0.8\n- MobileGL 提升帧率。手机退游回首页（#38），游戏前台常亮（#24、#40）\n- 手机和平板可选手柄或键鼠优先，游戏可直接读取手柄。电脑在启动器调分辨率（#42）\n- 改善实体鼠标视角（#35）、悬浮滚轮方向（#36）和手机文本复制（#39）\n- 改进崩溃诊断、日志预览、侧载签名、版本下载与局内设置，新增原生 jemalloc\n- 保护账号和存档，修复 Forge 重试、模组安装、整合包补件及临时文件清理",
   "mandatory": false,
   "schema": 1,
-  "date": "2026-11-14",
+  "date": "2026-11-27",
   "prerelease": false,
-  "changelogUrl": "https://amcl.lovedhy.cn/changelog/v1.0.7",
+  "changelogUrl": "https://amcl.lovedhy.cn/changelog/v1.0.8",
   "notesEntries": [
     {
       "type": "highlight",
-      "text": "更完整的个性化体验：新增主题配色、离线皮肤与披风库，重做设置页和触控编辑器。"
+      "text": "MobileGL 横屏游戏帧率提升。 在 MatePad Pro 的同一 Minecraft 26.3 场景中，原生分辨率下，旧图形版本为 40.92 FPS，修正版不固定刷新率时为 60.01 FPS，请求 120 Hz 时为 80.56 FPS。感谢 cnoim 的贡献。 AMCL PR #43 · MobileGL PR #1"
     },
     {
       "type": "highlight",
-      "text": "更灵活的游戏与下载管理：新增分辨率缩放、二级触控组和资源另存为，完善整合包导入与任务恢复。"
-    },
-    {
-      "type": "highlight",
-      "text": "四套正式 JDK 配套更新：稳定通道提供兼容的 JDK 8、17、21、25，升级后需要修复运行环境时会明确提醒。"
+      "text": "优化实体手柄适配，游戏及 Controlify、Controllable 等模组可在鸿蒙 API 21 及以上直接读取按键和摇杆。"
     },
     {
       "type": "added",
-      "text": "主题配色与离线外观库。"
+      "text": "手机和平板新增「手柄优先」和「键鼠优先」。"
     },
     {
       "type": "added",
-      "text": "游戏分辨率缩放。"
+      "text": "游戏中可保持屏幕常亮，默认开启。 #24 · #40"
     },
     {
       "type": "added",
-      "text": "二级触控组与更多控件样式。"
+      "text": "可为游戏请求固定的屏幕刷新率。 PR #43"
     },
     {
       "type": "added",
-      "text": "资源另存与整合包任务管理。"
+      "text": "侧载更新可复用华为开发者登录与已有签名密钥。"
+    },
+    {
+      "type": "added",
+      "text": "现代 LWJGL 3.4.2 新增鸿蒙原生内存分配器 jemalloc。"
+    },
+    {
+      "type": "added",
+      "text": "启动器接入鸿蒙应用 Skill。"
     },
     {
       "type": "improved",
-      "text": "设置页与版本详情。"
+      "text": "重新整理横屏游戏设置与摆键工具窗。"
     },
     {
       "type": "improved",
-      "text": "账号、主题与弹层体验。"
+      "text": "减少触控、键鼠和手柄的重复输入处理。"
     },
     {
       "type": "improved",
-      "text": "下载浏览与传输。"
+      "text": "版本下载页先显示缓存，后台校验，筛选时平滑移位。"
     },
     {
       "type": "improved",
-      "text": "整合包导入与恢复。"
+      "text": "异常退出弹窗可查看原因、日志和处理入口。"
     },
     {
       "type": "improved",
-      "text": "活动详情、日志阅读与分享。"
+      "text": "首次安装优先使用可读写的外部游戏目录。"
     },
     {
       "type": "improved",
-      "text": "触控编辑与操作反馈。"
+      "text": "关闭版本隔离前先确认存档和模组的归属。"
     },
     {
       "type": "improved",
-      "text": "模组音频与本地语音。"
+      "text": "手机和平板可查看完整更新日志和更新进度。"
+    },
+    {
+      "type": "improved",
+      "text": "加强实例、模组及存档文件的操作保护。"
     },
     {
       "type": "fixed",
-      "text": "应用更新与 JDK 安装。"
+      "text": "手机从游戏主菜单正常退出后回到启动器。 #38"
     },
     {
       "type": "fixed",
-      "text": "图形渲染与内存使用。"
+      "text": "改善启动或调分辨率后实体鼠标无法转动视角的问题。 #35"
     },
     {
       "type": "fixed",
-      "text": "游戏信息与模组运行兼容。"
+      "text": "修正悬浮鼠标滚轮方向，下拖可向后浏览。 #36"
     },
     {
       "type": "fixed",
-      "text": "下载状态、页面与触控细节。"
+      "text": "手机游戏内复制的文本可跨应用粘贴。 #39"
+    },
+    {
+      "type": "fixed",
+      "text": "移除电脑端遮挡游戏的局内分辨率按钮。 #42"
+    },
+    {
+      "type": "fixed",
+      "text": "修复虚拟鼠键跨菜单拖动时的光标和视角跳动。"
+    },
+    {
+      "type": "fixed",
+      "text": "改善电脑端改键、菜单鼠标定位与 SDL 全屏切换。"
+    },
+    {
+      "type": "fixed",
+      "text": "修正自定义名和改名实例的加载器显示。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复部分设备注册、签名请求及授权文件下载失败。"
+    },
+    {
+      "type": "fixed",
+      "text": "取消导入或放弃本地整合包安装会清理副本。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复存储、离线外观和布局显示旧结果的问题。"
+    },
+    {
+      "type": "fixed",
+      "text": "密钥服务故障时保留已保存的账号和选中身份。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复 Forge 重试提前报完成的问题。"
+    },
+    {
+      "type": "fixed",
+      "text": "修复模组记录写入不全，补件时保留禁用状态。"
+    },
+    {
+      "type": "fixed",
+      "text": "同步游戏语言和窗口设置时保留其他配置。"
+    },
+    {
+      "type": "fixed",
+      "text": "迁移支持仅含存档的目录，失败时保留原位置。"
     },
     {
       "type": "notice",
-      "text": "升级后如出现 JDK 修复提示，请先完成对应运行环境的更新再启动游戏；保持 JDK 稳定通道即可获取本版配套的正式运行时。"
+      "text": "侧载 HAP 须签名安装，覆盖更新须沿用原签名。"
     },
     {
       "type": "notice",
-      "text": "部分整合包和模组的兼容性仍在持续完善。如遇启动、画面或运行异常，请通过应用内“问题反馈”提交日志，便于继续定位和适配。"
+      "text": "部分旧版更新器需等待镜像就绪，可先从官方发布页下载。"
+    },
+    {
+      "type": "notice",
+      "text": "在可选文件页放弃安装后，活动历史可能仍显示「运行中」。"
     }
   ],
   "updateChannel": "stable",
-  "publicationId": "f6f98e3682e86b5a8c639ec10c601b79f38dd36f9cf455a3e0742e8cf65825c3",
-  "sizeBytes": 122905956,
+  "publicationId": "b411c29c4b3590638172ce4eae413c39d907bf525bc1c7a71ec7a960ba6f109a",
+  "sizeBytes": 126737480,
   "delivery": {
     "schema": 1,
     "protocol": 1,
@@ -101,23 +161,23 @@
     "publicationReady": false,
     "assets": [
       {
-        "tag": "v1.0.7",
-        "versionCode": 1000911,
-        "versionName": "1.0.7",
+        "tag": "v1.0.8",
+        "versionCode": 1001122,
+        "versionName": "1.0.8",
         "product": "sideload",
-        "name": "amcl-v1.0.7-sideload-unsigned.hap",
-        "sha256": "4cc219cd47937e8f882fd2792733f31053ff2b75725fede864dbac271517bf4d",
-        "sizeBytes": 122905956,
-        "url": "https://github.com/LZZLHY/amcl/releases/download/v1.0.7/amcl-v1.0.7-sideload-unsigned.hap",
+        "name": "amcl-v1.0.8-sideload-unsigned.hap",
+        "sha256": "854515cc16b9ac80670289aad0eba7313f29e5145a0f7bbcf1594da41e204a62",
+        "sizeBytes": 126737480,
+        "url": "https://github.com/LZZLHY/amcl/releases/download/v1.0.8/amcl-v1.0.8-sideload-unsigned.hap",
         "legacyUniversal": false,
-        "githubAssetId": 747494427,
+        "githubAssetId": 797136960,
         "audit": {
           "bundleName": "com.amcl.launcher",
-          "versionCode": 1000911,
-          "versionName": "1.0.7",
+          "versionCode": 1001122,
+          "versionName": "1.0.8",
           "product": "sideload",
           "packagedProduct": "sideload",
-          "sourceRevision": "1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6",
+          "sourceRevision": "2d114e925ab191fde276a84274d131960b487e30",
           "auditLevel": "package-profile",
           "minApi": 20,
           "targetApi": 23,
@@ -148,7 +208,7 @@
           2
         ],
         "runtimePlanProtocol": 2,
-        "sourceRevision": "1e9890d8d7eb4db1b43e5faaec0fcbbf018d2fb6",
+        "sourceRevision": "2d114e925ab191fde276a84274d131960b487e30",
         "runtimeRequiredCapabilities": [
           "zipfs-transaction-v1"
         ],
@@ -162,25 +222,15 @@
           {
             "provider": "miawa",
             "projectId": "amcl",
-            "filePath": "amcl/v1.0.7/amcl-v1.0.7-sideload-unsigned.hap",
+            "filePath": "amcl/v1.0.8/amcl-v1.0.8-sideload-unsigned.hap",
             "ready": true,
-            "firstVerifiedAt": 1794661234331,
-            "lastVerifiedAt": 1794686550725,
-            "lastCheckedAt": 1794686550725,
-            "health": "available"
-          },
-          {
-            "provider": "fyhub",
-            "projectId": "amcl",
-            "assetId": "amcl:445296551:747494427",
-            "ready": true,
-            "firstVerifiedAt": 1794662152451,
-            "lastVerifiedAt": 1794686550725,
-            "lastCheckedAt": 1794686550725,
+            "firstVerifiedAt": 1795717249455,
+            "lastVerifiedAt": 1795717249455,
+            "lastCheckedAt": 1795717249455,
             "health": "available"
           }
         ],
-        "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/4cc219cd47937e8f882fd2792733f31053ff2b75725fede864dbac271517bf4d/amcl-v1.0.7-sideload-unsigned.hap"
+        "websiteUrl": "https://amcl.lovedhy.cn/api/packages/files/854515cc16b9ac80670289aad0eba7313f29e5145a0f7bbcf1594da41e204a62/amcl-v1.0.8-sideload-unsigned.hap"
       }
     ]
   }

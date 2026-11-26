@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-22T15:20:28Z",
+  "generatedAt": "2026-11-26T17:40:26Z",
   "categories": [
     "highlight",
     "added",
@@ -10,12 +10,557 @@
     "notice"
   ],
   "latest": {
-    "versionName": "1.0.8-pre2",
-    "versionCode": 1000911,
-    "tag": "v1.0.8-pre2",
-    "date": "2026-11-19"
+    "versionName": "1.0.8",
+    "versionCode": 1001122,
+    "tag": "v1.0.8",
+    "date": "2026-11-27"
   },
   "releases": [
+    {
+      "versionName": "1.0.8",
+      "versionCode": 1001122,
+      "tag": "v1.0.8",
+      "date": "2026-11-27",
+      "prerelease": false,
+      "url": "https://github.com/LZZLHY/amcl/releases/tag/v1.0.8",
+      "title": "MobileGL 帧率提升、原生手柄与游戏内设置",
+      "titleEn": "Higher MobileGL frame rates, native gamepad support and in-game settings",
+      "zh": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "MobileGL 横屏游戏帧率提升。 在 MatePad Pro 的同一 Minecraft 26.3 场景中，原生分辨率下，旧图形版本为 40.92 FPS，修正版不固定刷新率时为 60.01 FPS，请求 120 Hz 时为 80.56 FPS。感谢 cnoim 的贡献。 AMCL PR #43 · MobileGL PR #1",
+            "markdown": "**MobileGL 横屏游戏帧率提升。** 在 MatePad Pro 的同一 Minecraft 26.3 场景中，原生分辨率下，旧图形版本为 40.92 FPS，修正版不固定刷新率时为 60.01 FPS，请求 120 Hz 时为 80.56 FPS。感谢 cnoim 的贡献。 [AMCL PR #43](https://github.com/LZZLHY/amcl/pull/43) · [MobileGL PR #1](https://github.com/LZZLHY/MobileGL/pull/1)"
+          },
+          {
+            "type": "highlight",
+            "text": "优化实体手柄适配，游戏及 Controlify、Controllable 等模组可在鸿蒙 API 21 及以上直接读取按键和摇杆。",
+            "markdown": "**优化实体手柄适配，游戏及 Controlify、Controllable 等模组可在鸿蒙 API 21 及以上直接读取按键和摇杆。**"
+          },
+          {
+            "type": "added",
+            "text": "手机和平板新增「手柄优先」和「键鼠优先」。",
+            "markdown": "**手机和平板新增「手柄优先」和「键鼠优先」。**",
+            "details": [
+              "在启动器或游戏内的「移动端输入方式」中选择。默认「自动」保留当前触控布局。选「手柄优先」并连接手柄，或选「键鼠优先」并接齐全键盘和鼠标或触控板后，屏幕上只保留「显影」「设置」「聊」。仍可触摸游戏，也可点「显影」展开自己的按键布局。",
+              "游戏内面板会列出已连接的输入设备。断开所需外设会恢复自动收起的按键，手动显隐的选择优先。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "游戏中可保持屏幕常亮，默认开启。 #24 · #40",
+            "markdown": "**游戏中可保持屏幕常亮，默认开启。** [#24](https://github.com/LZZLHY/amcl/issues/24) · [#40](https://github.com/LZZLHY/amcl/issues/40)",
+            "details": [
+              "在「设置 → 游戏与性能」中调整，下次启动游戏生效。退到后台或退出后恢复系统息屏策略，切回同一局会重新保持亮屏。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "可为游戏请求固定的屏幕刷新率。 PR #43",
+            "markdown": "**可为游戏请求固定的屏幕刷新率。** [PR #43](https://github.com/LZZLHY/amcl/pull/43)",
+            "details": [
+              "默认「不固定」，可选 30、60、90、120 或 144 Hz。AMCL 会核对游戏所在屏幕支持的档位并遵守帧率上限，退到后台时停止请求。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "侧载更新可复用华为开发者登录与已有签名密钥。",
+            "markdown": "**侧载更新可复用华为开发者登录与已有签名密钥。**",
+            "details": [
+              "安装 1.0.8 后，可从设置总览、侧栏或搜索进入「软件更新」，提前登录、查看和复核授权。更新流程共用这份登录，取消后迟到的登录结果不会继续原操作。",
+              "在支持的签名环境下，更新器可复用或申请开发证书和设备授权，尝试恢复已识别的默认签名身份，省去手选签名文件的步骤。换证中途登录过期，重新登录后可继续使用已下载的安装包。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "现代 LWJGL 3.4.2 新增鸿蒙原生内存分配器 jemalloc。",
+            "markdown": "**现代 LWJGL 3.4.2 新增鸿蒙原生内存分配器 jemalloc。**",
+            "details": [
+              "需要通过 LWJGL 显式分配原生内存的游戏和模组可使用随包分配器。Java 缓冲区与使用 STB、SPNG、NanoVG 的原生模块可用配套接口分配和释放内存。"
+            ]
+          },
+          {
+            "type": "added",
+            "text": "启动器接入鸿蒙应用 Skill。",
+            "markdown": "**启动器接入鸿蒙应用 Skill。**",
+            "details": [
+              "系统智能体可通过相应接口操作实例、资源、存档、账号外观、控制布局、日志和更新。可用入口取决于平台开放范围。选文件、授权和删除等操作仍保留用户确认。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "重新整理横屏游戏设置与摆键工具窗。",
+            "markdown": "**重新整理横屏游戏设置与摆键工具窗。**",
+            "details": [
+              "手机从分类目录进入，平板窗口空间充足时并列显示分类与参数。",
+              "视角和摇杆设置按用途分组。本局分辨率页显示当前游戏的实际状态。平板设置窗更紧凑，工具入口固定在侧栏底部。",
+              "摆键工具窗可拖动、收起或移到屏幕另一侧。短菜单从顶部排列，长内容可滚动，保存入口保持固定。放弃修改、切回游戏时会按当前草稿恢复输入。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "减少触控、键鼠和手柄的重复输入处理。",
+            "markdown": "**减少触控、键鼠和手柄的重复输入处理。**",
+            "details": [
+              "静置时减少重复检查布局、虚拟摇杆和手柄状态。持续移动鼠标或推动摇杆时，按发生变化的状态更新。手柄重连或游戏失焦时仍会重新同步或归中。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "版本下载页先显示缓存，后台校验，筛选时平滑移位。",
+            "markdown": "**版本下载页先显示缓存，后台校验，筛选时平滑移位。**",
+            "details": [
+              "每次进入都会检查更新。校验失败仍可浏览缓存并重试。上方插入新版本时，会保留当前阅读位置。",
+              "首屏可见的版本依次出现。切换快照等类别时，已有版本平滑移到新位置，新匹配的版本依次显示。向下浏览时，每一行只在第一次滚入屏幕时淡入。关闭系统动画后，列表直接显示。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "异常退出弹窗可查看原因、日志和处理入口。",
+            "markdown": "**异常退出弹窗可查看原因、日志和处理入口。**",
+            "details": [
+              "原因卡显示本局技术摘要，可展开有关的日志片段。Fabric 缺少依赖时优先显示涉及的模组和依赖名称。可按错误类型进入 JDK、内存、模组或版本管理。",
+              "「分析日志」打开本局记录。支持开发者反馈的渠道另有「上传日志给开发者」入口，选好文件、查看脱敏预览并确认后才提交。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "首次安装优先使用可读写的外部游戏目录。",
+            "markdown": "**首次安装优先使用可读写的外部游戏目录。**",
+            "details": [
+              "AMCL 先尝试系统下载目录，获准且确认可读写后才使用，否则使用应用私有目录。升级沿用原有位置。已选外部目录但临时失去访问权限时会保留原位置偏好。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "关闭版本隔离前先确认存档和模组的归属。",
+            "markdown": "**关闭版本隔离前先确认存档和模组的归属。**",
+            "details": [
+              "普通实例关闭隔离后使用共享目录，重新开启后读取原实例目录。切换不搬动文件。关闭期间新增的内容留在共享目录，整合包继续独立存放。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "手机和平板可查看完整更新日志和更新进度。",
+            "markdown": "**手机和平板可查看完整更新日志和更新进度。**",
+            "details": [
+              "软件更新页突出目标版本、摘要、当前可用操作。长版本号可展开。需要先更新 AMCL 才能修复 JDK 时，会显示原因和处理入口。自动调试连接失败或选择手动连接时，可输入调试端口。",
+              "更新推荐优先从官网获取，官网不可用时回退到 GitHub 或 Pages。可从官网、GitHub 或已就绪的镜像下载，也可导入本地官方 HAP，核对发行身份和文件摘要后继续。"
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "加强实例、模组及存档文件的操作保护。",
+            "markdown": "**加强实例、模组及存档文件的操作保护。**",
+            "details": [
+              "删除或改名前重新核对选中的文件。删除期间恢复的同名世界会保留。部分删除失败时会提示剩余内容的位置。清理残留实例时会检查活动任务和额外用户文件。",
+              "向共享目录导入时会说明影响范围并保留已有同名文件，导出时会核对原文件和目标。已装资源的启停、更新和删除会复核实例及文件，避免对换入的同名项目执行旧操作。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "手机从游戏主菜单正常退出后回到启动器。 #38",
+            "markdown": "**手机从游戏主菜单正常退出后回到启动器。** [#38](https://github.com/LZZLHY/amcl/issues/38)"
+          },
+          {
+            "type": "fixed",
+            "text": "改善启动或调分辨率后实体鼠标无法转动视角的问题。 #35",
+            "markdown": "**改善启动或调分辨率后实体鼠标无法转动视角的问题。** [#35](https://github.com/LZZLHY/amcl/issues/35)"
+          },
+          {
+            "type": "fixed",
+            "text": "修正悬浮鼠标滚轮方向，下拖可向后浏览。 #36",
+            "markdown": "**修正悬浮鼠标滚轮方向，下拖可向后浏览。** [#36](https://github.com/LZZLHY/amcl/issues/36)"
+          },
+          {
+            "type": "fixed",
+            "text": "手机游戏内复制的文本可跨应用粘贴。 #39",
+            "markdown": "**手机游戏内复制的文本可跨应用粘贴。** [#39](https://github.com/LZZLHY/amcl/issues/39)",
+            "details": [
+              "GLFW 和 SDL3 均支持复制纯文本。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "移除电脑端遮挡游戏的局内分辨率按钮。 #42",
+            "markdown": "**移除电脑端遮挡游戏的局内分辨率按钮。** [#42](https://github.com/LZZLHY/amcl/issues/42)",
+            "details": [
+              "电脑的键鼠和触屏模式均可在启动器全局设置或版本详情调整比例，下次启动生效。手机和平板保留局内入口。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复虚拟鼠键跨菜单拖动时的光标和视角跳动。",
+            "markdown": "**修复虚拟鼠键跨菜单拖动时的光标和视角跳动。**",
+            "details": [
+              "按住虚拟鼠键打开游戏菜单后，同一根手指可继续从游戏指定的位置拖动。调节滑杆从当前刻度开始。松手回到世界时，菜单末段的位移不会带动镜头。适配 GLFW、LWJGL2 和 SDL3。",
+              "普通虚拟按键的「更多按键设置」可进入触发动作、拖动和显示规则，点按绑定可直接打开选键器。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "改善电脑端改键、菜单鼠标定位与 SDL 全屏切换。",
+            "markdown": "**改善电脑端改键、菜单鼠标定位与 SDL 全屏切换。**",
+            "details": [
+              "SDL 游戏按当前文本框启用物理输入法，快速切换文本框时忽略上一框迟到的输入。游戏工具取得焦点时释放已按下的修饰键。菜单点击先定位再按下，全屏切换后按游戏逻辑尺寸恢复光标位置。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修正自定义名和改名实例的加载器显示。",
+            "markdown": "**修正自定义名和改名实例的加载器显示。**",
+            "details": [
+              "安装任务、下载历史和版本库按实际加载器显示，NeoForge 实例可正确筛选。保留安装时选择的 Fabric API，普通模组任务结束后刷新首页已安装文件数。首次打开资源下载分类时会进入所选分类。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复部分设备注册、签名请求及授权文件下载失败。",
+            "markdown": "**修复部分设备注册、签名请求及授权文件下载失败。**",
+            "details": [
+              "改善冷启动后的授权恢复与令牌刷新。账号失效、现装签名不兼容、网络故障和签名服务暂不可用时会分别提示原因。临时故障可在原更新任务中重试。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "取消导入或放弃本地整合包安装会清理副本。",
+            "markdown": "**取消导入或放弃本地整合包安装会清理副本。**",
+            "details": [
+              "开始安装前关闭详情会清理导入副本。安装已经开始时，从恢复面板明确放弃，AMCL 会清理该任务的私有归档和解压目录，保留下载目录里的原包。",
+              "通过启动器接口导入时，填错安装名可更正并继续使用原文件。不同整合包的确认、原安装任务和后续排队重试分别回报结果。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复存储、离线外观和布局显示旧结果的问题。",
+            "markdown": "**修复存储、离线外观和布局显示旧结果的问题。**",
+            "details": [
+              "玩家改选位置或取消后可读回实际决定。布局、按键组、输入设置、离线账号改名及皮肤披风的保存和取消按原对象处理。改进日志翻页、分享与导出结果的回读。本地 HAP 选取结果在切页或重新打开应用后仍可查询。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "密钥服务故障时保留已保存的账号和选中身份。",
+            "markdown": "**密钥服务故障时保留已保存的账号和选中身份。**",
+            "details": [
+              "暂时读不出的账号可稍后重开账号管理重试。加密失败会停止保存微软登录凭据。旧账号索引中缺失的记录也不会挡住新账号首次安全保存。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复 Forge 重试提前报完成的问题。",
+            "markdown": "**修复 Forge 重试提前报完成的问题。**",
+            "details": [
+              "依赖文件迁移失败后，可在原安装任务上重试。冲突仍在时保留失败状态，依赖迁移成功后才会完成。首页也能识别允许读取版本文件、但不允许列出目录的旧实例。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "修复模组记录写入不全，补件时保留禁用状态。",
+            "markdown": "**修复模组记录写入不全，补件时保留禁用状态。**",
+            "details": [
+              "安装记录或索引只写入一部分时，会继续写完。写入失败会保留原文件。整合包补件会识别已禁用的模组副本，保留玩家的启用选择。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "同步游戏语言和窗口设置时保留其他配置。",
+            "markdown": "**同步游戏语言和窗口设置时保留其他配置。**",
+            "details": [
+              "读取已有设置失败时保留原文件。需要修改时先完整写出新配置，再替换原件，保留原有键位、亮度等其他设置。"
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "迁移支持仅含存档的目录，失败时保留原位置。",
+            "markdown": "**迁移支持仅含存档的目录，失败时保留原位置。**",
+            "details": [
+              "选择「迁移数据并切换」后，即使没有已安装版本，也会复制共享存档。读取、复制或保存新位置失败时会停止切换。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "侧载 HAP 须签名安装，覆盖更新须沿用原签名。",
+            "details": [
+              "自定义密钥安装可能仍需用原材料手动更新。同一开发者账号可有不同密钥。"
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "部分旧版更新器需等待镜像就绪，可先从官方发布页下载。"
+          },
+          {
+            "type": "notice",
+            "text": "在可选文件页放弃安装后，活动历史可能仍显示「运行中」。"
+          }
+        ],
+        "summary": "本版汇总了自 1.0.7 以来的改动，包含 1.0.8-pre1、pre2 的功能及后续修复。"
+      },
+      "en": {
+        "entries": [
+          {
+            "type": "highlight",
+            "text": "Higher frame rates with MobileGL in landscape. In the same Minecraft 26.3 scene on a MatePad Pro at native resolution, the previous graphics build reached 40.92 FPS. The updated build reached 60.01 FPS with the rate unfixed and 80.56 FPS when requesting 120 Hz. Thanks to cnoim. AMCL PR #43 · MobileGL PR #1",
+            "markdown": "**Higher frame rates with MobileGL in landscape.** In the same Minecraft 26.3 scene on a MatePad Pro at native resolution, the previous graphics build reached 40.92 FPS. The updated build reached 60.01 FPS with the rate unfixed and 80.56 FPS when requesting 120 Hz. Thanks to cnoim. [AMCL PR #43](https://github.com/LZZLHY/amcl/pull/43) · [MobileGL PR #1](https://github.com/LZZLHY/MobileGL/pull/1)"
+          },
+          {
+            "type": "highlight",
+            "text": "Improved gamepad support on HarmonyOS API 21 and later lets games and mods such as Controlify and Controllable read buttons and analog sticks directly.",
+            "markdown": "**Improved gamepad support on HarmonyOS API 21 and later lets games and mods such as Controlify and Controllable read buttons and analog sticks directly.**"
+          },
+          {
+            "type": "added",
+            "text": "Phones and tablets can prioritize a gamepad or a keyboard and mouse.",
+            "markdown": "**Phones and tablets can prioritize a gamepad or a keyboard and mouse.**",
+            "details": [
+              "Choose an input preference in the launcher or in-game settings. Automatic keeps your current touch layout. With Gamepad first, connect a controller. With Keyboard and mouse first, connect a full keyboard and either a mouse or a trackpad. The touch layout then keeps just the visibility, settings and chat buttons. You can still play by touch or use the visibility button to bring your layout back.",
+              "The in-game panel lists connected input devices. Disconnecting a required device restores controls that were hidden automatically. Manual visibility choices take precedence."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Keep the screen on during gameplay. Enabled by default. #24 · #40",
+            "markdown": "**Keep the screen on during gameplay.** Enabled by default. [#24](https://github.com/LZZLHY/amcl/issues/24) · [#40](https://github.com/LZZLHY/amcl/issues/40)",
+            "details": [
+              "Change the option in Settings → Game & Performance. Leaving or quitting restores the system sleep policy. Returning to the same game keeps the screen on again. Changes take effect on the next launch."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Request a fixed game display refresh rate. PR #43",
+            "markdown": "**Request a fixed game display refresh rate.** [PR #43](https://github.com/LZZLHY/amcl/pull/43)",
+            "details": [
+              "Leave it unfixed or choose 30, 60, 90, 120 or 144 Hz. AMCL checks the active display and configured frame-rate ceiling, and releases the request in the background."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Reuse your HUAWEI developer sign-in and signing key for sideload updates.",
+            "markdown": "**Reuse your HUAWEI developer sign-in and signing key for sideload updates.**",
+            "details": [
+              "After installing 1.0.8, open Software Update from the Settings overview, sidebar or search to sign in or check saved authorization. Updates use the same sign-in. Closing or cancelling the screen retires that sign-in attempt.",
+              "On supported setups, AMCL can reuse or request a developer certificate and device authorization and recover a recognized default signing identity without manually selecting signing files. If sign-in expires during renewal, sign in again to continue with the downloaded package."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "Native jemalloc for modern LWJGL 3.4.2.",
+            "markdown": "**Native jemalloc for modern LWJGL 3.4.2.**",
+            "details": [
+              "Games and mods that explicitly allocate native memory through LWJGL can use the bundled allocator. Java buffers and native modules using STB, SPNG or NanoVG have matching allocation and release callbacks."
+            ]
+          },
+          {
+            "type": "added",
+            "text": "HarmonyOS app Skill integration.",
+            "markdown": "**HarmonyOS app Skill integration.**",
+            "details": [
+              "Interfaces cover instances, resources, saves, accounts, appearance, controls, logs and updates. Availability through system agents depends on the platform. File selection, authorization and deletion retain their user confirmations."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Redesigned in-game settings and control editor for landscape. Phones open a category list. Wider tablet windows show categories and their settings side by side.",
+            "markdown": "**Redesigned in-game settings and control editor for landscape.** Phones open a category list. Wider tablet windows show categories and their settings side by side.",
+            "details": [
+              "Camera and joystick settings are grouped by purpose. The resolution panel shows the current session’s actual state. On tablets the panel is more compact, with tools at the bottom of the sidebar.",
+              "Drag the control-editing window, collapse it or move it to the other side. Short menus start at the top, longer ones scroll, and Save stays in place. Discarding changes restores the original controls before returning to the game."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Less repeated input processing for touch, mouse, keyboard and gamepads.",
+            "markdown": "**Less repeated input processing for touch, mouse, keyboard and gamepads.**",
+            "details": [
+              "Idle controls skip unnecessary layout, joystick and gamepad checks. Mouse motion and sustained stick input update the state that changed. Reconnection and loss of focus still synchronize or neutralize input."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "The version download page shows the cached list first, checks for updates in the background and moves existing rows smoothly when you change filters.",
+            "markdown": "**The version download page shows the cached list first, checks for updates in the background and moves existing rows smoothly when you change filters.**",
+            "details": [
+              "Each visit checks for changes. If the check fails, you can keep browsing the cached list and retry. When a new version appears above the one you’re reading, the list keeps your place.",
+              "The versions that fit on screen appear in sequence. When you change a filter, such as snapshots, existing rows slide into place and new matches appear in order. As you scroll, each row fades in only the first time you see it. With system animations turned off, rows appear immediately."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "More useful information when a game exits unexpectedly.",
+            "markdown": "**More useful information when a game exits unexpectedly.**",
+            "details": [
+              "The cause card shows a technical summary, with relevant log lines available to expand. For a missing Fabric dependency, the dialog prioritizes the mod and dependency names. Open the relevant JDK, memory, mod or version settings directly.",
+              "“Analyze logs” opens the current session. Supported channels also offer “Send logs to the developer”, with file selection, a redacted preview and explicit confirmation."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Fresh installs prefer a writable external game folder.",
+            "markdown": "**Fresh installs prefer a writable external game folder.**",
+            "details": [
+              "AMCL tries the system Downloads location and checks permission and read/write access. If that fails, it uses private storage. Upgrades keep the existing location. Temporary loss of access does not discard an existing external-folder preference."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Turning off version isolation now asks for confirmation.",
+            "markdown": "**Turning off version isolation now asks for confirmation.**",
+            "details": [
+              "Ordinary instances then share saves and mods. Turning isolation back on restores per-instance folders. Switching does not move files. Content added to the shared folder stays there, and modpacks keep their own directories."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Read the full changelog before updating and follow progress during the update on phones and tablets.",
+            "markdown": "**Read the full changelog before updating and follow progress during the update on phones and tablets.**",
+            "details": [
+              "Software Update displays the target version, summary and available actions. Expand long version numbers. If a JDK repair needs a launcher update, the page explains why and where to proceed. You can enter the debugging port when using manual setup or when automatic connection fails.",
+              "Recommendations come from the official site first, with GitHub and Pages as backups. Download from the official site, GitHub or a ready mirror, or import an official HAP and verify its release identity and digest."
+            ]
+          },
+          {
+            "type": "improved",
+            "text": "Safer handling of instances, mods, worlds and version files.",
+            "markdown": "**Safer handling of instances, mods, worlds and version files.**",
+            "details": [
+              "Deletion and renaming recheck the selected item. Restoring a world under the same name during deletion preserves the new world. Incomplete deletions report where remaining files are kept. Cleanup of incomplete instances checks active tasks and user files.",
+              "Imports into shared folders explain their scope and preserve existing files with the same name. Exports check both paths. Installed resource actions recheck the instance and file to avoid acting on a replacement."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Return to the launcher after a normal exit from Minecraft’s main menu on phones, ready to start another game. #38",
+            "markdown": "**Return to the launcher after a normal exit from Minecraft’s main menu on phones, ready to start another game.** [#38](https://github.com/LZZLHY/amcl/issues/38)"
+          },
+          {
+            "type": "fixed",
+            "text": "Improved physical mouse look after launching or changing the render scale. The game can request pointer capture again once its drawable size is confirmed. #35",
+            "markdown": "**Improved physical mouse look after launching or changing the render scale.** The game can request pointer capture again once its drawable size is confirmed. [#35](https://github.com/LZZLHY/amcl/issues/35)"
+          },
+          {
+            "type": "fixed",
+            "text": "Corrected the floating mouse wheel direction. Drag down to see later list entries. #36",
+            "markdown": "**Corrected the floating mouse wheel direction.** Drag down to see later list entries. [#36](https://github.com/LZZLHY/amcl/issues/36)"
+          },
+          {
+            "type": "fixed",
+            "text": "Plain text copied in a game on a phone can be pasted into other apps. Pasting back into the game works on the GLFW and SDL3 paths. #39",
+            "markdown": "**Plain text copied in a game on a phone can be pasted into other apps.** Pasting back into the game works on the GLFW and SDL3 paths. [#39](https://github.com/LZZLHY/amcl/issues/39)"
+          },
+          {
+            "type": "fixed",
+            "text": "Removed the desktop in-game resolution button that could cover gameplay. #42",
+            "markdown": "**Removed the desktop in-game resolution button that could cover gameplay.** [#42](https://github.com/LZZLHY/amcl/issues/42)",
+            "details": [
+              "For keyboard-and-mouse or touch play on a computer, set the render scale in global settings or instance details before the next launch. Phones and tablets retain their in-game controls."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Virtual mouse-button drags now carry across menus without the camera jumping on release.",
+            "markdown": "**Virtual mouse-button drags now carry across menus without the camera jumping on release.**",
+            "details": [
+              "Hold the virtual mouse button to open a menu and continue dragging with the same finger. Sliders start from the position set by the game. Releasing back into the world no longer turns the camera with the final menu movement. This covers GLFW, LWJGL2 and SDL3.",
+              "“More control settings” again opens the ordinary virtual button’s trigger, drag and visibility options. Selecting a binding opens the key picker directly."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Improved key rebinding, menu clicks and SDL fullscreen changes on computers.",
+            "markdown": "**Improved key rebinding, menu clicks and SDL fullscreen changes on computers.**",
+            "details": [
+              "SDL games use the physical keyboard input method for the active text field and ignore late input from the previous field. Opening a game tool releases held modifier keys. Menus receive the pointer position before a click, and fullscreen transitions restore it using the game’s logical size."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed incorrect loader identification for custom-named and renamed instances.",
+            "markdown": "**Fixed incorrect loader identification for custom-named and renamed instances.**",
+            "details": [
+              "Install tasks, download history and the version library use the actual loader, including NeoForge filtering. Installing Fabric preserves the Fabric API selection. The home screen refreshes the installed mod file count when a mod task ends. Opening a resource download category for the first time selects the requested page."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed certificate requests, authorization file downloads and device registration failures on some phones and tablets.",
+            "markdown": "**Fixed certificate requests, authorization file downloads and device registration failures on some phones and tablets.**",
+            "details": [
+              "Improved authorization recovery and token refresh after restart. Expired sign-in, an incompatible signing identity, network failures and a temporarily unavailable signing service have distinct guidance. Temporary failures can be retried within the current update."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Cancelling a local modpack import or abandoning its installation cleans up the temporary copy.",
+            "markdown": "**Cancelling a local modpack import or abandoning its installation cleans up the temporary copy.**",
+            "details": [
+              "Closing the details before starting removes the import copy. Once installation has started, abandoning the task from the recovery panel removes its private archive and extracted files. The original package stays in your Downloads folder.",
+              "When using the launcher interface, an invalid installation name can be corrected using the selected file. Each modpack confirmation, original installation and queued retry reports its own outcome."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed stale results after storage choices and edits to offline appearance or control layouts.",
+            "markdown": "**Fixed stale results after storage choices and edits to offline appearance or control layouts.**",
+            "details": [
+              "Storage changes report the player’s actual choice or cancellation. Layouts, control groups, input settings, offline names, skins and capes save or discard against the original item. Log pagination, sharing and export report results more accurately. Local HAP selection results can be queried after navigation or relaunch."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Saved game accounts and your account selection are preserved if the system key service is unavailable.",
+            "markdown": "**Saved game accounts and your account selection are preserved if the system key service is unavailable.**",
+            "details": [
+              "If an account is temporarily unavailable, reopen account management later to retry. AMCL stops saving Microsoft sign-in credentials if encryption fails. A missing record in an older account index no longer prevents a new account from being saved securely for the first time."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed Forge installation retries reporting completion too early.",
+            "markdown": "**Fixed Forge installation retries reporting completion too early.**",
+            "details": [
+              "Retry the original installation task after a dependency fails to move. The task stays failed while a conflict persists and completes once the dependencies are in place. The home screen also recognizes older instances whose version files can be read even if the folder cannot be listed."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Fixed incomplete mod installation records and disabled mods being re-enabled during modpack repair.",
+            "markdown": "**Fixed incomplete mod installation records and disabled mods being re-enabled during modpack repair.**",
+            "details": [
+              "If an installation record or index is only partly written, AMCL continues writing. If the write fails, the original file is preserved. Modpack repair recognizes disabled copies and keeps your choice of enabled mods."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Syncing game language and window settings on launch preserves existing options.",
+            "markdown": "**Syncing game language and window settings on launch preserves existing options.**",
+            "details": [
+              "If the existing settings cannot be read, AMCL keeps the original file. When a change is needed, it writes the complete replacement first, preserving other options such as key bindings and brightness."
+            ]
+          },
+          {
+            "type": "fixed",
+            "text": "Game folder migration now copies worlds even when no versions are installed.",
+            "markdown": "**Game folder migration now copies worlds even when no versions are installed.**",
+            "details": [
+              "When you choose “Migrate data and switch”, AMCL also copies shared saves from a folder containing only worlds. If reading, copying or saving the new location fails, AMCL continues using the original folder."
+            ]
+          },
+          {
+            "type": "notice",
+            "text": "Sign the universal sideload HAP before installation. Updating in place requires the installed signing identity. A custom key may require a manual update with the original signing material. One developer account can hold several keys."
+          },
+          {
+            "type": "notice",
+            "text": "Some older updaters require a ready mirror recommendation. If the update does not appear in the app, you can download it from the official release page."
+          },
+          {
+            "type": "notice",
+            "text": "If you abandon a modpack installation while it is waiting for optional files, activity history may still show it as running after the installation has stopped."
+          }
+        ],
+        "summary": "This release includes 1.0.8-pre1, pre2 and the subsequent changes since 1.0.7."
+      }
+    },
     {
       "versionName": "1.0.8-pre2",
       "versionCode": 1000911,
@@ -94,8 +639,8 @@
           },
           {
             "type": "added",
-            "text": "在设置中管理华为开发者账号。 可从设置进入账号登录，查看已保存的授权状态，或退出开发者登录。",
-            "markdown": "**在设置中管理华为开发者账号。** 可从设置进入账号登录，查看已保存的授权状态，或退出开发者登录。",
+            "text": "在设置中管理华为开发者账号。 可从设置登录账号，查看或重新核验已保存的授权。",
+            "markdown": "**在设置中管理华为开发者账号。** 可从设置登录账号，查看或重新核验已保存的授权。",
             "details": [
               "更新流程与设置复用同一个登录界面和已保存的授权。关闭页面或取消登录后，迟到的登录结果不会继续影响该次操作。",
               "软件更新页可从设置总览、侧栏和搜索进入。"
@@ -165,8 +710,8 @@
           },
           {
             "type": "added",
-            "text": "HUAWEI developer account in Settings. Sign in, check saved authorization or sign out from Settings.",
-            "markdown": "**HUAWEI developer account in Settings.** Sign in, check saved authorization or sign out from Settings.",
+            "text": "HUAWEI developer account in Settings. Sign in, view the status of your saved authorization, or check it again from Settings.",
+            "markdown": "**HUAWEI developer account in Settings.** Sign in, view the status of your saved authorization, or check it again from Settings.",
             "details": [
               "Settings and the updater share the same sign-in screen and saved authorization. A late sign-in response is ignored after closing the screen or cancelling.",
               "Software Update is also reachable from the Settings overview, sidebar and search."
