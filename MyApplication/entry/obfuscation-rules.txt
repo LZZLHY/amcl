@@ -170,6 +170,7 @@ mcLaunchWithProfile
 mcLaunchWithProfileV2
 mcReadLog
 probeNativePath
+verifyGameDirectoryWritable
 
 # --- napi_jvm.cpp （JVM / GPU / Vulkan / OSMesa）---
 checkJitAvailable
@@ -312,6 +313,7 @@ submitTextInputCandidates
 setControlSchema
 touchInteractionVisual
 maintainTouchInput
+maintainTouchFrontend
 gameGuiState
 # GUI会话/源租约是Native固定字符串ABI；Release属性混淆后仍须与真实导出同名。
 # 参数/返回为现有primitive及固定number array，不扩大到本地JSON签名字段。
@@ -570,6 +572,7 @@ driverIdentity
 
 # 触控发布v1与反馈身份为Native/ArkTS固定字段，所有不透明代次保持精确字符串。
 touchPublicationState
+touchPublicationStateIfChanged
 beginTouchPublication
 publishTouchSchema
 confirmTouchPublication

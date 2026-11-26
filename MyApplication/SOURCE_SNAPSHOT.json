@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "sourceCommit": "ef5f080ceb48a32a622b4f72e543ffc85b13af78",
+  "sourceCommit": "5aa7b14dce5fa1e81a21f336ee2028795b5bee06",
   "sourceBranch": "",
   "sourceDirty": false,
   "note": "Manually exported release source from immutable Git objects. Public-owned documentation and tooling are maintained separately. No continuous source synchronization.",
   "release": {
     "versionName": "1.0.8",
-    "versionCode": 1001115
+    "versionCode": 1001116
   },
   "exporter": {
     "schemaVersion": 2,
@@ -243,7 +243,7 @@
     },
     {
       "path": "AppScope/app.json5",
-      "sha256": "e2ef9356552758f22bd9aa94ab9d5b872f9eabba5d96557b452d17c47dd85310",
+      "sha256": "a2f03ec4c04a39d898f4ea506f987c3bc5e480d3ce20b671ded137fcdd90b4fa",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -852,7 +852,7 @@
     },
     {
       "path": "DEPENDENCY_INPUTS.json",
-      "sha256": "1e0b6f13628b41e32b0266b99628d510f1bcea40ff89bc37e50f7fe433f1a890",
+      "sha256": "073edaf09715ac32513207a9d52480df161e5410c0ad2b08fd04a4edebd260a5",
       "normalization": "lf",
       "mode": "100644",
       "owner": "derived"
@@ -1916,7 +1916,7 @@
     },
     {
       "path": "entry/obfuscation-rules.txt",
-      "sha256": "0181ed16b271953c573d4593542f3331f279043a739b9118e09e7856fb77cc00",
+      "sha256": "45652935c9ff4edf6b3740bafde4ea4c9c53e2f8a1cf8c095978b75300940a9b",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
@@ -10057,7 +10057,7 @@
     },
     {
       "path": "entry/src/main/resources/rawfile/changelog.json",
-      "sha256": "19191c6418beb78304109ca8a8083b57127253ed61a7ecb57fd30f7e0be81eb5",
+      "sha256": "2f8f45702a176e5329116e9339cd72309552722031f9bc608e0ea0f2cc058a40",
       "normalization": "lf",
       "mode": "100644",
       "owner": "source"
